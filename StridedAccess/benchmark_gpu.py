@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import typing
 
+rank_id = int(os.environ.get("SLURM_PROCID", "0"))
+
 # Configuration
 for M, N in [(4096, 4096), (4096*4, 4096*4)]:
     NUM_RUNS = 10
@@ -341,7 +343,7 @@ for M, N in [(4096, 4096), (4096*4, 4096*4)]:
     def save_perf_results(perf_results: Dict):
         """Save results to CSV files."""
         # Performance CSV
-        perf_file = RESULTS_DIR / f"cuda_performance_M_{M}_N_{N}.csv"
+        perf_file = RESULTS_DIR / f"cuda_performance_M_{M}_N_{N}_rank_{rank_id}.csv"
         with open(perf_file, 'w') as f:
             f.write("variant,kernel,a_layout,b_layout,thread_tile_sel,mean_ms,stdev_ms,min_ms,max_ms,checksum\n")
             for name in sorted(perf_results.keys()):
@@ -353,7 +355,7 @@ for M, N in [(4096, 4096), (4096*4, 4096*4)]:
 
     def save_papi_results(ncu_results: Dict):
         # NCU metrics CSV
-        ncu_file = RESULTS_DIR / f"ncu_metrics_M_{M}_N_{N}.csv"
+        ncu_file = RESULTS_DIR / f"ncu_metrics_M_{M}_N_{N}_rank_{rank_id}.csv"
 
         # Collect all unique metric names
         all_metrics = set()
