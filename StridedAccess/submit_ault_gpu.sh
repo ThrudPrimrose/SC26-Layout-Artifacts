@@ -15,7 +15,7 @@
 spack load gcc@14.2
 spack load python@3.12.9%gcc@14.2
 spack load sqlite
-spack load cuda@12.9 gcc@14.2
+ spack load cuda@12.8.0 
 
 # Set CUDA library path
 export LD_LIBRARY_PATH=$(spack location -i cuda)/lib64:$LD_LIBRARY_PATH

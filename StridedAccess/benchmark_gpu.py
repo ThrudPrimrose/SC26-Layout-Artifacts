@@ -183,7 +183,7 @@ for M, N in [(4096, 4096), (4096*4, 4096*4), (2048, 2048)]:
             "ncu",
             "--set=full",
             "--force-overwrite",
-            f"-o={ncu_report}",
+            f"-o {ncu_report}",
             str(exe)
         ]
         

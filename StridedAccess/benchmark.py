@@ -78,7 +78,7 @@ for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
         RESULTS_DIR.mkdir(exist_ok=True)
 
     def variant_name(kernel, a_layout, b_layout, tile_selection):
-        return f"k{kernel}_A{a_layout}_B{b_layout}_tl{tile_selection}"
+        return f"k{kernel}_A{a_layout}_B{b_layout}_tl{tile_selection[0]}_{tile_selection[1]}"
 
     def compile_variant(kernel, a_layout, b_layout, tile_selection, papi_metric="", with_reports=False):
         src = SCRIPT_DIR / "kernel.cpp"
