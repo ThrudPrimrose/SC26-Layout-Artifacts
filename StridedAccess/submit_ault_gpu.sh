@@ -40,6 +40,7 @@ srun --ntasks=$SLURM_NTASKS --gpus-per-task=1 --exact bash -c '
 export RANK=$SLURM_PROCID
 export LOCAL_RANK=$SLURM_LOCALID
 export CUDA_VISIBLE_DEVICES=$LOCAL_RANK
+export CUDA_ARCH=sm_80
 
 echo "Starting rank $RANK on GPU $CUDA_VISIBLE_DEVICES"
 python3 benchmark_gpu.py
