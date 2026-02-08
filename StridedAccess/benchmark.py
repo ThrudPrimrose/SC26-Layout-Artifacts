@@ -9,6 +9,11 @@ import subprocess
 import statistics
 from pathlib import Path
 import typing
+import os
+
+rank_id = int(os.environ.get("SLURM_PROCID", "0"))
+total_ranks = int(os.environ.get("SLURM_NTASKS", "1"))
+
 
 for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
     NUM_RUNS = 10
@@ -172,6 +177,49 @@ for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
         else:
             return ""
 
+    def get_valid_combinations():
+        global rank_id
+        global toatl_ranks
+        """
+        Generate valid (kernel, a_layout, b_layout, thread_tile_sel) combinations
+        and optionally split them across ranks.
+
+        Args:
+            rank_id: ID of the current rank (0 ... total_ranks-1)
+            total_ranks: Total number of ranks
+
+        Returns:
+            List of combinations assigned to this rank
+        """
+        combinations = []
+
+        # Generate all combinations
+        for kernel in KERNELS:
+            for a_layout, b_layout in LAYOUTS:
+                if kernel in [0, 1]:
+                    # Non-tiled kernels: only one config needed
+                    combinations.append((kernel, a_layout, b_layout, (1, 1)))
+                else:
+                    # Tiled kernels: iterate tile sizes and thread tile sizes
+                    for thread_tile_sel in TILE_CONFIGS:
+                        combinations.append((kernel, a_layout, b_layout, thread_tile_sel))
+
+        # If rank splitting is requested, compute the slice for this rank
+        if rank_id is not None and total_ranks is not None:
+            total_combos = len(combinations)
+            # Compute start/end indices for this rank
+            chunk_size = total_combos // total_ranks
+            remainder = total_combos % total_ranks
+
+            start = rank_id * chunk_size + min(rank_id, remainder)
+            end = start + chunk_size
+            if rank_id < remainder:
+                end += 1
+
+            combinations = combinations[start:end]
+
+        return combinations
+
     def benchmark_performance():
         print("\n" + "="*70)
         print("PERFORMANCE BENCHMARKING")
@@ -179,38 +227,37 @@ for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
         
         perf_results = {}
         
-        for kernel in KERNELS:
-            for a_layout, b_layout in LAYOUTS:
-                for tile_selection in TILE_CONFIGS:
-                    name = variant_name(kernel, a_layout, b_layout, tile_selection)
-                    # Tile selection relevant only for kernel 2
-                    if (kernel != 2 and kernel != 3) and tile_selection != 0:
-                        continue
-                    desc = f"K{kernel} ({KERNELS[kernel]}{tile_str(kernel, tile_selection)}), {layout_str(a_layout, b_layout)}"
-                    print(f"\n{desc}")
-                    
-                    exe = compile_variant(kernel, a_layout, b_layout, tile_selection, with_reports=True)
-                    if not exe:
-                        print("Failed compiling")
-                        continue
-                    
-                    results = run_executable(exe, NUM_RUNS)
-                    if results:
-                        times = [r['time_ms'] for r in results]
-                        perf_results[name] = {
-                            'kernel': kernel,
-                            'a_layout': a_layout,
-                            'b_layout': b_layout,
-                            'tile_sel': tile_selection,
-                            'mean': statistics.mean(times),
-                            'stdev': statistics.stdev(times) if len(times) > 1 else 0,
-                            'min': min(times),
-                            'max': max(times),
-                            'checksum': results[0]['checksum']
-                        }
-                        print(f"  Time: {perf_results[name]['mean']:.3f} ± {perf_results[name]['stdev']:.3f} ms")
-                    else:
-                        print("Failed running executable")
+        combinations = get_valid_combinations()
+        for kernel, a_layout, b_layout, tile_selection in combinations:
+            name = variant_name(kernel, a_layout, b_layout, tile_selection)
+            # Tile selection relevant only for kernel 2
+            if (kernel != 2 and kernel != 3) and tile_selection != 0:
+                continue
+            desc = f"K{kernel} ({KERNELS[kernel]}{tile_str(kernel, tile_selection)}), {layout_str(a_layout, b_layout)}"
+            print(f"\n{desc}")
+            
+            exe = compile_variant(kernel, a_layout, b_layout, tile_selection, with_reports=True)
+            if not exe:
+                print("Failed compiling")
+                continue
+            
+            results = run_executable(exe, NUM_RUNS)
+            if results:
+                times = [r['time_ms'] for r in results]
+                perf_results[name] = {
+                    'kernel': kernel,
+                    'a_layout': a_layout,
+                    'b_layout': b_layout,
+                    'tile_sel': tile_selection,
+                    'mean': statistics.mean(times),
+                    'stdev': statistics.stdev(times) if len(times) > 1 else 0,
+                    'min': min(times),
+                    'max': max(times),
+                    'checksum': results[0]['checksum']
+                }
+                print(f"  Time: {perf_results[name]['mean']:.3f} ± {perf_results[name]['stdev']:.3f} ms")
+            else:
+                print("Failed running executable")
             
         return perf_results
 

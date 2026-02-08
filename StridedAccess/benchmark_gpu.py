@@ -14,9 +14,10 @@ from typing import Dict, List, Optional, Any
 import typing
 
 rank_id = int(os.environ.get("SLURM_PROCID", "0"))
+total_ranks = int(os.environ.get("SLURM_NTASKS", "1"))
 
 # Configuration
-for M, N in [(4096, 4096), (4096*4, 4096*4)]:
+for M, N in [(4096, 4096), (4096*4, 4096*4), (2048, 2048)]:
     NUM_RUNS = 10
     NUM_NCU_RUNS = 1  # ncu is slow, typically 1 run suffices
 
@@ -72,10 +73,23 @@ for M, N in [(4096, 4096), (4096*4, 4096*4)]:
                     thread_tile_sel: int) -> str:
         return f"k{kernel}_A{a_layout}_B{b_layout}_tt{thread_tile_sel[0]}_{thread_tile_sel[1]}"
 
-    def get_valid_combinations() -> List[tuple]:
-        """Generate valid (kernel, a_layout, b_layout, tile_sel, thread_tile_sel) combinations."""
+    def get_valid_combinations():
+        global rank_id
+        global toatl_ranks
+        """
+        Generate valid (kernel, a_layout, b_layout, thread_tile_sel) combinations
+        and optionally split them across ranks.
+
+        Args:
+            rank_id: ID of the current rank (0 ... total_ranks-1)
+            total_ranks: Total number of ranks
+
+        Returns:
+            List of combinations assigned to this rank
+        """
         combinations = []
-        
+
+        # Generate all combinations
         for kernel in KERNELS:
             for a_layout, b_layout in LAYOUTS:
                 if kernel in [0, 1]:
@@ -84,10 +98,24 @@ for M, N in [(4096, 4096), (4096*4, 4096*4)]:
                 else:
                     # Tiled kernels: iterate tile sizes and thread tile sizes
                     for thread_tile_sel in THREAD_TILE_CONFIGS:
-                        # Validate: tile_size must be >= thread_tile_size and divisible
                         combinations.append((kernel, a_layout, b_layout, thread_tile_sel))
-        
+
+        # If rank splitting is requested, compute the slice for this rank
+        if rank_id is not None and total_ranks is not None:
+            total_combos = len(combinations)
+            # Compute start/end indices for this rank
+            chunk_size = total_combos // total_ranks
+            remainder = total_combos % total_ranks
+
+            start = rank_id * chunk_size + min(rank_id, remainder)
+            end = start + chunk_size
+            if rank_id < remainder:
+                end += 1
+
+            combinations = combinations[start:end]
+
         return combinations
+
 
     def compile_variant(kernel: int, a_layout: int, b_layout: int,
                         thread_tile_sel: typing.Tuple[int, int]) -> Optional[Path]:
