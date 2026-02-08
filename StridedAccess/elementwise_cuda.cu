@@ -28,8 +28,12 @@
 
 
 // Thread tile selection - elements per thread (0=1x1, 1=2x2, 2=4x4, 3=8x8, 4=16x16)
-#ifndef THREAD_TILE_SEL
-#define THREAD_TILE_SEL 1  // default 2x2
+#ifndef THREAD_TILE_X
+#define THREAD_TILE_X 1  // default 2x2
+#endif
+
+#ifndef THREAD_TILE_Y
+#define THREAD_TILE_Y 1  // default 2x2
 #endif
 
 // Scale factor
@@ -141,11 +145,11 @@ __global__ void __launch_bounds__(128) kernel_1(double* __restrict__ A, double* 
 
 // Kernel 2: Tiled - each thread computes THREAD_TILE x THREAD_TILE elements
 // Consecutive threads (threadIdx.x) access consecutive columns (j) for row-major coalescing
-template<int TILE_SIZE, int THREAD_TILE>
+template<int TILE_SIZE>
 __global__ void __launch_bounds__(128) kernel_2_impl(double* __restrict__ A, double* __restrict__ B) {
     // Block tile dimensions
-    constexpr int TILE_COLS = BLOCK_SIZE_X * THREAD_TILE;  // columns covered by block
-    constexpr int TILE_ROWS = BLOCK_SIZE_Y * THREAD_TILE;  // rows covered by block
+    constexpr int TILE_COLS = BLOCK_SIZE_X * THREAD_TILE_X;  // columns covered by block
+    constexpr int TILE_ROWS = BLOCK_SIZE_Y * THREAD_TILE_Y;  // rows covered by block
     
     // Block origin in global coordinates
     // blockIdx.x -> columns (j), blockIdx.y -> rows (i)
@@ -155,11 +159,11 @@ __global__ void __launch_bounds__(128) kernel_2_impl(double* __restrict__ A, dou
     // Each thread computes THREAD_TILE x THREAD_TILE elements
     // Strided pattern - consecutive threads access consecutive j values
     #pragma unroll
-    for (int di = 0; di < THREAD_TILE; di++) {
+    for (int di = 0; di < THREAD_TILE_Y; di++) {
         int i = block_row + threadIdx.y + di * BLOCK_SIZE_Y;
         
         #pragma unroll
-        for (int dj = 0; dj < THREAD_TILE; dj++) {
+        for (int dj = 0; dj < THREAD_TILE_X; dj++) {
             // Consecutive threadIdx.x values give consecutive j values
             int j = block_col + threadIdx.x + dj * BLOCK_SIZE_X;
 
@@ -170,13 +174,13 @@ __global__ void __launch_bounds__(128) kernel_2_impl(double* __restrict__ A, dou
     }
 }
 
-template<int TILE_SIZE, int THREAD_TILE>
+template<int TILE_SIZE>
 __global__ void __launch_bounds__(128)
 kernel_3_impl(double* __restrict__ A, double* __restrict__ B)
 {
     // Tile dimensions
-    constexpr int TILE_COLS = BLOCK_SIZE_X * THREAD_TILE; // columns (j)
-    constexpr int TILE_ROWS = BLOCK_SIZE_Y * THREAD_TILE; // rows (i)
+    constexpr int TILE_COLS = BLOCK_SIZE_X * THREAD_TILE_X; // columns (j)
+    constexpr int TILE_ROWS = BLOCK_SIZE_Y * THREAD_TILE_Y; // rows (i)
     constexpr int TILE_ELEMENTS = TILE_ROWS * TILE_COLS;
 
     extern __shared__ double smem[];
@@ -243,11 +247,11 @@ kernel_3_impl(double* __restrict__ A, double* __restrict__ B)
     // Per-thread computation using strided access
     // Shared memory is row-major, so this is always efficient
     #pragma unroll
-    for (int di = 0; di < THREAD_TILE; di++) {
+    for (int di = 0; di < THREAD_TILE_Y; di++) {
         int ti = threadIdx.y + di * BLOCK_SIZE_Y;  // row in tile
         
         #pragma unroll
-        for (int dj = 0; dj < THREAD_TILE; dj++) {
+        for (int dj = 0; dj < THREAD_TILE_X; dj++) {
             int tj = threadIdx.x + dj * BLOCK_SIZE_X;  // col in tile
             int smem_idx = ti * TILE_COLS + tj;
 
@@ -298,10 +302,10 @@ void launch_kernel_1(double* d_A, double* d_B) {
 }
 
 // grid.x covers columns (N), grid.y covers rows (M)
-template<int TILE_SIZE, int THREAD_TILE>
+template<int TILE_SIZE>
 void launch_kernel_2(double* d_A, double* d_B) {
-    constexpr int TILE_COLS = BLOCK_SIZE_X * THREAD_TILE;
-    constexpr int TILE_ROWS = BLOCK_SIZE_Y * THREAD_TILE;
+    constexpr int TILE_COLS = BLOCK_SIZE_X * THREAD_TILE_X;
+    constexpr int TILE_ROWS = BLOCK_SIZE_Y * THREAD_TILE_Y;
     
     // x dimension covers columns (N), y dimension covers rows (M)
     int num_blocks_x = (N + TILE_COLS - 1) / TILE_COLS;  // columns
@@ -309,13 +313,13 @@ void launch_kernel_2(double* d_A, double* d_B) {
     
     dim3 grid(num_blocks_x, num_blocks_y);
     dim3 block(BLOCK_SIZE_X, BLOCK_SIZE_Y);
-    kernel_2_impl<TILE_SIZE, THREAD_TILE><<<grid, block>>>(d_A, d_B);
+    kernel_2_impl<TILE_SIZE><<<grid, block>>>(d_A, d_B);
 }
 
-template<int TILE_SIZE, int THREAD_TILE>
+template<int TILE_SIZE>
 void launch_kernel_3(double* d_A, double* d_B) {
-    constexpr int TILE_COLS = BLOCK_SIZE_X * THREAD_TILE;
-    constexpr int TILE_ROWS = BLOCK_SIZE_Y * THREAD_TILE;
+    constexpr int TILE_COLS = BLOCK_SIZE_X * THREAD_TILE_X;
+    constexpr int TILE_ROWS = BLOCK_SIZE_Y * THREAD_TILE_Y;
     
     // x dimension covers columns (N), y dimension covers rows (M)
     int num_blocks_x = (N + TILE_COLS - 1) / TILE_COLS;  // columns
@@ -327,41 +331,18 @@ void launch_kernel_3(double* d_A, double* d_B) {
     // Shared memory size: 3 tiles (A, B, C)
     constexpr size_t smem_size = 3 * TILE_ROWS * TILE_COLS * sizeof(double);
     
-    kernel_3_impl<TILE_SIZE, THREAD_TILE><<<grid, block, smem_size>>>(d_A, d_B);
-}
-
-// Thread tile size mapping
-constexpr int get_thread_tile_size() {
-#if THREAD_TILE_SEL == 0
-    return 1;
-#elif THREAD_TILE_SEL == 1
-    return 2;
-#elif THREAD_TILE_SEL == 2
-    return 4;
-#elif THREAD_TILE_SEL == 3
-    return 8;
-#elif THREAD_TILE_SEL == 4
-    return 16;
-#else
-    return 2;
-#endif
+    kernel_3_impl<TILE_SIZE><<<grid, block, smem_size>>>(d_A, d_B);
 }
 
 // Dispatch based on THREAD_TILE_SEL (TILE_SIZE fixed at 128)
 #define DISPATCH_KERNEL_2(TILE_SIZE) \
     do { \
-        constexpr int TT = get_thread_tile_size(); \
-        static_assert(TILE_SIZE >= TT, "TILE_SIZE must be >= THREAD_TILE"); \
-        static_assert(TILE_SIZE % TT == 0, "TILE_SIZE must be divisible by THREAD_TILE"); \
-        launch_kernel_2<TILE_SIZE, TT>(d_A, d_B); \
+        launch_kernel_2<TILE_SIZE>(d_A, d_B); \
     } while(0)
 
 #define DISPATCH_KERNEL_3(TILE_SIZE) \
     do { \
-        constexpr int TT = get_thread_tile_size(); \
-        static_assert(TILE_SIZE >= TT, "TILE_SIZE must be >= THREAD_TILE"); \
-        static_assert(TILE_SIZE % TT == 0, "TILE_SIZE must be divisible by THREAD_TILE"); \
-        launch_kernel_3<TILE_SIZE, TT>(d_A, d_B); \
+        launch_kernel_3<TILE_SIZE>(d_A, d_B); \
     } while(0)
 
 void dispatch_kernel_2(double* d_A, double* d_B) {
@@ -402,9 +383,7 @@ int main(int argc, char** argv) {
     // Copy to device
     CUDA_CHECK(cudaMemcpy(d_A, h_A, M * N * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_B, h_B, M * N * sizeof(double), cudaMemcpyHostToDevice));
-    
-    int thread_tile_sizes[] = {1, 2, 4, 8, 16};
-    int thread_tile_size = thread_tile_sizes[THREAD_TILE_SEL < 5 ? THREAD_TILE_SEL : 1];
+
     
     // Warmup run
 #if KERNEL == 0
@@ -457,8 +436,8 @@ int main(int argc, char** argv) {
     double cs = checksum(h_A);
     
     // Output: kernel,a_layout,b_layout,block_tile,thread_tile,time_ms,gpu_metric,checksum
-    printf("%d,%d,%d,%d,%d,%.6f,%lld,%.6f\n", KERNEL, A_LAYOUT, B_LAYOUT, 128, 
-           thread_tile_size, (double)elapsed_ms, 0LL, cs);
+    printf("%d,%d,%d,%d,%d,%d,%.6f,%lld,%.6f\n", KERNEL, A_LAYOUT, B_LAYOUT, 128, 
+           THREAD_TILE_X, THREAD_TILE_Y, (double)elapsed_ms, 0LL, cs);
     
     // Cleanup
     CUDA_CHECK(cudaEventDestroy(start));

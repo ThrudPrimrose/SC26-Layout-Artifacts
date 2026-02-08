@@ -30,10 +30,14 @@
 #define PAPI_METRIC ""
 #endif
 
-// Tile size selection (0=4, 1=8, 2=16, 3=32, 4=64, 5=128)
-#ifndef TILE_SEL
-#define TILE_SEL 3  // default 32x32
+#ifndef TILE_DIM_X
+#define TILE_DIM_X 8
 #endif
+
+#ifndef TILE_DIM_Y
+#define TILE_DIM_Y 8
+#endif
+
 
 // Scale factor
 static constexpr double SCALE = 1.5;
@@ -95,15 +99,15 @@ static void kernel_1(double* __restrict__ A, double* __restrict__ B) {
 }
 
 // Kernel 2: Tiled/blocked - template version
-template<int TILE_SIZE>
+template<int TILE_SIZE_X, int TILE_SIZE_Y>
 static void kernel_2_impl(double* __restrict__ A, double* __restrict__ B) {
     #pragma omp parallel for schedule(static) collapse(2)
-    for (int ii = 0; ii < N; ii += TILE_SIZE) {
-        for (int jj = 0; jj < M; jj += TILE_SIZE) {
+    for (int ii = 0; ii < N; ii += TILE_SIZE_Y) {
+        for (int jj = 0; jj < M; jj += TILE_SIZE_X) {
             __asm__ volatile("" ::: "memory");
             
-            int i_end = ii + TILE_SIZE;
-            int j_end = jj + TILE_SIZE;
+            int i_end = ii + TILE_SIZE_Y;
+            int j_end = jj + TILE_SIZE_X;
             
             for (int i = ii; i < i_end; i++) {
                 for (int j = jj; j < j_end; j++) {
@@ -115,53 +119,54 @@ static void kernel_2_impl(double* __restrict__ A, double* __restrict__ B) {
 }
 
 // Kernel 3: Tiled with explicit copy - template version
-template<int TILE_SIZE>
+template<int TILE_SIZE_X, int TILE_SIZE_Y>
 static void kernel_3_impl(double* __restrict__ A, double* __restrict__ B) {
-    const int num_tiles_i = (N + TILE_SIZE - 1) / TILE_SIZE;
-    const int num_tiles_j = (M + TILE_SIZE - 1) / TILE_SIZE;
+    const int num_tiles_i = (N + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
+    const int num_tiles_j = (M + TILE_SIZE_X - 1) / TILE_SIZE_X;
     const int total_tiles = num_tiles_i * num_tiles_j;
     
     #pragma omp parallel for schedule(static)
     for (int tile_idx = 0; tile_idx < total_tiles; tile_idx++) {
         // Thread-local tile buffers
-        alignas(64) double A_tile[TILE_SIZE * TILE_SIZE];
-        alignas(64) double B_tile[TILE_SIZE * TILE_SIZE];
-        alignas(64) double C_tile[TILE_SIZE * TILE_SIZE];
+        // Tiles are all row-major
+        alignas(64) double A_tile[TILE_SIZE_Y * TILE_SIZE_X];
+        alignas(64) double B_tile[TILE_SIZE_Y * TILE_SIZE_X];
+        alignas(64) double C_tile[TILE_SIZE_Y * TILE_SIZE_X];
         
         int tile_i = tile_idx / num_tiles_j;
         int tile_j = tile_idx % num_tiles_j;
-        int ii = tile_i * TILE_SIZE;
-        int jj = tile_j * TILE_SIZE;
+        int ii = tile_i * TILE_SIZE_Y;
+        int jj = tile_j * TILE_SIZE_X;
 
-        constexpr int tile_h = TILE_SIZE;
-        constexpr int tile_w = TILE_SIZE;
+        constexpr int tile_h = TILE_SIZE_Y;
+        constexpr int tile_w = TILE_SIZE_X;
         
         // Copy A tile to local buffer
         for (int ti = 0; ti < tile_h; ti++) {
             for (int tj = 0; tj < tile_w; tj++) {
-                A_tile[ti * TILE_SIZE + tj] = A[A_IDX(ii + ti, jj + tj)];
+                A_tile[ti * TILE_SIZE_X + tj] = A[A_IDX(ii + ti, jj + tj)];
             }
         }
         
         // Copy B tile to local buffer
         for (int ti = 0; ti < tile_h; ti++) {
             for (int tj = 0; tj < tile_w; tj++) {
-                B_tile[ti * TILE_SIZE + tj] = B[B_IDX(ii + ti, jj + tj)];
+                B_tile[ti * TILE_SIZE_X + tj] = B[B_IDX(ii + ti, jj + tj)];
             }
         }
         
         // Compute on local buffers
         for (int ti = 0; ti < tile_h; ti++) {
             for (int tj = 0; tj < tile_w; tj++) {
-                C_tile[ti * TILE_SIZE + tj] = 
-                    (A_tile[ti * TILE_SIZE + tj] + B_tile[ti * TILE_SIZE + tj]) * SCALE;
+                C_tile[ti * TILE_SIZE_X + tj] = 
+                    (A_tile[ti * TILE_SIZE_X + tj] + B_tile[ti * TILE_SIZE_X + tj]) * SCALE;
             }
         }
         
         // Write C tile back
         for (int ti = 0; ti < tile_h; ti++) {
             for (int tj = 0; tj < tile_w; tj++) {
-                A[A_IDX(ii + ti, jj + tj)] = C_tile[ti * TILE_SIZE + tj];
+                A[A_IDX(ii + ti, jj + tj)] = C_tile[ti * TILE_SIZE_X + tj];
             }
         }
     }
@@ -169,44 +174,17 @@ static void kernel_3_impl(double* __restrict__ A, double* __restrict__ B) {
 
 // Dispatch wrappers that select tile size at compile time
 static void kernel_2(double* __restrict__ A, double* __restrict__ B) {
-#if TILE_SEL == 0
-    kernel_2_impl<4>(A, B);
-#elif TILE_SEL == 1
-    kernel_2_impl<8>(A, B);
-#elif TILE_SEL == 2
-    kernel_2_impl<16>(A, B);
-#elif TILE_SEL == 3
-    kernel_2_impl<32>(A, B);
-#elif TILE_SEL == 4
-    kernel_2_impl<64>(A, B);
-#elif TILE_SEL == 5
-    kernel_2_impl<128>(A, B);
-#else
-    kernel_2_impl<32>(A, B);
-#endif
+    kernel_2_impl<TILE_DIM_X, TILE_DIM_Y>(A, B);
 }
 
 static void kernel_3(double* __restrict__ A, double* __restrict__ B) {
-#if TILE_SEL == 0
-    kernel_3_impl<4>(A, B);
-#elif TILE_SEL == 1
-    kernel_3_impl<8>(A, B);
-#elif TILE_SEL == 2
-    kernel_3_impl<16>(A, B);
-#elif TILE_SEL == 3
-    kernel_3_impl<32>(A, B);
-#elif TILE_SEL == 4
-    kernel_3_impl<64>(A, B);
-#elif TILE_SEL == 5
-    kernel_3_impl<128>(A, B);
-#else
-    kernel_3_impl<32>(A, B);
-#endif
+    kernel_3_impl<TILE_DIM_X, TILE_DIM_Y>(A, B);
 }
 
 // Checksum for verification
 static double checksum(double* A) {
     double sum = 0.0;
+    #pragma omp unroll reduction(+:sum)
     for (int i = 0; i < N * M; i++) {
         sum += A[i];
     }
@@ -225,15 +203,11 @@ int main(int argc, char** argv) {
     
     // Initialize arrays
     init_arrays(A, B);
-    
+
     // Get PAPI metric from compile-time define
     const char* papi_metric = PAPI_METRIC;
     init_papi_single_thread(papi_metric);
-    
-    // Tile sizes for reporting
-    int tile_sizes[] = {4, 8, 16, 32, 64, 128};
-    int tile_size = tile_sizes[TILE_SEL < 6 ? TILE_SEL : 3];
-    
+
     // Warmup run
 #if KERNEL == 0
     kernel_0(A, B);
@@ -244,14 +218,14 @@ int main(int argc, char** argv) {
 #else
     kernel_3(A, B);
 #endif
-    
+
     // Re-initialize for timed run
     init_arrays(A, B);
-    
+
     // Start timing and PAPI
     start_papi_single_thread();
     auto start = std::chrono::high_resolution_clock::now();
-    
+
     // Execute kernel
 #if KERNEL == 0
     kernel_0(A, B);
@@ -274,7 +248,7 @@ int main(int argc, char** argv) {
     double cs = checksum(A);
     
     // Output: kernel,a_layout,b_layout,tile_size,time_ms,papi_value,checksum
-    printf("%d,%d,%d,%d,%.6f,%lld,%.6f\n", KERNEL, A_LAYOUT, B_LAYOUT, tile_size, elapsed_ms, papi_value, cs);
+    printf("%d,%d,%d,%d,%d,%.6f,%lld,%.6f\n", KERNEL, A_LAYOUT, B_LAYOUT, TILE_DIM_X, TILE_DIM_Y, elapsed_ms, papi_value, cs);
     
     free(A);
     free(B);

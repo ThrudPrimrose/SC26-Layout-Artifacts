@@ -4,11 +4,13 @@ Array Kernel Benchmark Script
 Tests 2 kernels (loop orders) × 4 data layouts (A/B row/col major combinations)
 """
 
+import math
 import subprocess
-import os
 import statistics
 from pathlib import Path
-for M, N in [(256,256), (4192, 4192), (128, 128)]:
+import typing
+
+for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
     NUM_RUNS = 10
     NUM_PAPI_RUNS = 3
 
@@ -28,15 +30,9 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
         (1, 1),  # A:col, B:col
     ]
 
-    TILE_CONFIGS = {
-        0: "4x4",
-        1: "8x8",
-        2: "16x16",
-        3: "32x32",
-        4: "64x64",
-        5: "128x128",
-    }
-    TILES = TILE_CONFIGS
+    sizes = [2 ** i for i in range(2, 8)]  # 4 → 128
+    TILES = [(w, h) for w in sizes for h in sizes]
+    TILE_CONFIGS = TILES
 
     def layout_str(a_layout, b_layout):
         a = "row" if a_layout == 0 else "col"
@@ -63,7 +59,7 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
     SCRIPT_DIR = Path(__file__).parent.resolve()
     BUILD_DIR = SCRIPT_DIR / "build"
     REPORT_DIR = SCRIPT_DIR / "opt_reports"
-    RESULTS_DIR = SCRIPT_DIR / "results"
+    RESULTS_DIR = SCRIPT_DIR / f"results"
 
     # Compiler and flags
     CXX = "g++"
@@ -91,7 +87,8 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
             f"-DA_LAYOUT={a_layout}",
             f"-DB_LAYOUT={b_layout}",
             f'-DPAPI_METRIC="{papi_metric}"',
-            f'-DTILE_SEL={tile_selection}'
+            f'-DTILE_DIM_X={tile_selection[0]}',
+            f'-DTILE_DIM_Y={tile_selection[1]}',
         ]
         
         libs = []
@@ -128,7 +125,8 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
             f"-DKERNEL={kernel}",
             f"-DA_LAYOUT={a_layout}",
             f"-DB_LAYOUT={b_layout}",
-            f"-DTILE_SEL={tile_selection}",
+            f"-DTILE_DIM_X={tile_selection[0]}",
+            f"-DTILE_DIM_Y={tile_selection[1]}",
             '-DPAPI_METRIC=""',
         ]
         
@@ -156,10 +154,10 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
                                 'kernel': int(parts[0]),
                                 'a_layout': int(parts[1]),
                                 'b_layout': int(parts[2]),
-                                'tile_sel': int(parts[3]),
-                                'time_ms': float(parts[4]),
-                                'papi': int(parts[5]),
-                                'checksum': float(parts[6])
+                                'tile_sel': (int(parts[3]), int(parts[4])),
+                                'time_ms': float(parts[5]),
+                                'papi': int(parts[6]),
+                                'checksum': float(parts[7])
                             })
             except subprocess.TimeoutExpired:
                 print("  Timeout!")
@@ -168,9 +166,9 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
         return results
 
 
-    def tile_str(kernel_id: int, tile_sel_id: int):
+    def tile_str(kernel_id: int, tile: typing.Tuple[int, int]):
         if (kernel_id == 2 or kernel_id == 3):
-            return f" {TILES[tile_sel_id]}"
+            return f" {tile}"
         else:
             return ""
 
@@ -183,7 +181,7 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
         
         for kernel in KERNELS:
             for a_layout, b_layout in LAYOUTS:
-                for tile_selection in [0, 1, 2, 3, 4, 5]:
+                for tile_selection in TILE_CONFIGS:
                     name = variant_name(kernel, a_layout, b_layout, tile_selection)
                     # Tile selection relevant only for kernel 2
                     if (kernel != 2 and kernel != 3) and tile_selection != 0:
@@ -312,9 +310,9 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
                     print(f"{'N/A':>12}", end="")
             print()
 
-    def save_results(perf_results, papi_results):
+    def save_perf_results(perf_results):
         # Performance CSV
-        perf_file = RESULTS_DIR / f"performance_N_{N}.csv"
+        perf_file = RESULTS_DIR / f"performance_cpu_N_{N}_M_{M}.csv"
         with open(perf_file, 'w') as f:
             f.write("variant,kernel,a_layout,b_layout,tile_sel,mean_ms,stdev_ms,min_ms,max_ms,checksum\n")
             for name in sorted(perf_results.keys()):
@@ -322,6 +320,7 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
                 f.write(f"{name},{r['kernel']},{r['a_layout']},{r['b_layout']},{r['tile_sel']},{r['mean']:.6f},{r['stdev']:.6f},{r['min']:.6f},{r['max']:.6f},{r['checksum']:.6f}\n")
                 f.flush()
 
+    def save_papi_results(papi_results):
         # PAPI CSV
         papi_file = RESULTS_DIR / f"papi_metrics_N_{N}.csv"
         with open(papi_file, 'w') as f:
@@ -361,9 +360,10 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
         papi_available = check_papi()
         if not papi_available:
             print("\nWarning: PAPI not available, skipping PAPI metrics")
-        
+
         perf_results = benchmark_performance()
-        
+        save_perf_results(perf_results)
+
         papi_results = {}
         if papi_available:
             papi_results = benchmark_papi()
@@ -372,11 +372,11 @@ for M, N in [(256,256), (4192, 4192), (128, 128)]:
                 for a_layout, b_layout in LAYOUTS:
                     name = variant_name(kernel, a_layout, b_layout)
                     papi_results[name] = {}
-        
+
         generate_reports()
         print_results(perf_results, papi_results)
-        save_results(perf_results, papi_results)
-        
+
+        save_papi_results(papi_results)
         print("\nDone!")
 
     main()
