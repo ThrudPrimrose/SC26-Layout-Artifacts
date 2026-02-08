@@ -378,11 +378,11 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMalloc(&d_B, M * N * sizeof(double)));
     
     // Initialize host arrays
-    init_arrays(h_A, h_B);
+    init_arrays(d_A, d_B);
     
     // Copy to device
-    CUDA_CHECK(cudaMemcpy(d_A, h_A, M * N * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_B, h_B, M * N * sizeof(double), cudaMemcpyHostToDevice));
+    //CUDA_CHECK(cudaMemcpy(d_A, h_A, M * N * sizeof(double), cudaMemcpyHostToDevice));
+    //CUDA_CHECK(cudaMemcpy(d_B, h_B, M * N * sizeof(double), cudaMemcpyHostToDevice));
 
     
     // Warmup run
@@ -398,9 +398,10 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Re-initialize for timed run
-    init_arrays(h_A, h_B);
-    CUDA_CHECK(cudaMemcpy(d_A, h_A, M * N * sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_B, h_B, M * N * sizeof(double), cudaMemcpyHostToDevice));
+    init_arrays(d_A, d_B);
+    
+    //CUDA_CHECK(cudaMemcpy(d_A, h_A, M * N * sizeof(double), cudaMemcpyHostToDevice));
+    //CUDA_CHECK(cudaMemcpy(d_B, h_B, M * N * sizeof(double), cudaMemcpyHostToDevice));
     
     // Create CUDA events for timing
     cudaEvent_t start, stop;
