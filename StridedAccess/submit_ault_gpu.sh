@@ -8,14 +8,14 @@
 #SBATCH --mem=0
 #SBATCH --partition=amda100
 #SBATCH --time=04:00:00
-#SBATCH --output=istrid_%j_%t.out
-#SBATCH --error=istrid_%j_%t.err
+#SBATCH --output=logs/nvstrid_%j_%t.out
+#SBATCH --error=logs/nvstrid_%j_%t.err
 
 # Load required modules
 spack load gcc@14.2
 spack load python@3.12.9%gcc@14.2
 spack load sqlite
- spack load cuda@12.8.0 
+spack load cuda@12.8.0 
 
 # Set CUDA library path
 export LD_LIBRARY_PATH=$(spack location -i cuda)/lib64:$LD_LIBRARY_PATH
@@ -27,12 +27,12 @@ echo "CUDA version:"
 nvcc --version
 echo ""
 echo "GPU info:"
-nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv
+srun nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv
 echo ""
 
 # Set OpenMP threads for CPU parallelism
 # Divide CPUs per task
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OMP_NUM_THREADS=64
 echo "OMP_NUM_THREADS=$OMP_NUM_THREADS"
 
 # Launch 1 Python process per GPU automatically using srun

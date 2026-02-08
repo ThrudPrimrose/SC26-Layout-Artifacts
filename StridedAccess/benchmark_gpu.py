@@ -53,9 +53,9 @@ for M, N in [(4096, 4096), (4096*4, 4096*4), (2048, 2048)]:
 
     # Directories
     SCRIPT_DIR = Path(__file__).parent.resolve()
-    BUILD_DIR = SCRIPT_DIR / "build"
-    NCU_DIR = SCRIPT_DIR / "ncu_reports"
-    RESULTS_DIR = SCRIPT_DIR / f"results"
+    BUILD_DIR = SCRIPT_DIR / f"build_r_{rank_id}"
+    REPORT_DIR = SCRIPT_DIR / f"opt_reports_r_{rank_id}"
+    RESULTS_DIR = SCRIPT_DIR / f"results_r_{rank_id}"
 
     # Compiler and flags
     NVCC = "nvcc"
@@ -66,7 +66,7 @@ for M, N in [(4096, 4096), (4096*4, 4096*4), (2048, 2048)]:
 
     def setup_dirs():
         BUILD_DIR.mkdir(exist_ok=True)
-        NCU_DIR.mkdir(exist_ok=True)
+        REPORT_DIR.mkdir(exist_ok=True)
         RESULTS_DIR.mkdir(exist_ok=True)
 
     def variant_name(kernel: int, a_layout: int, b_layout: int,
@@ -183,7 +183,7 @@ for M, N in [(4096, 4096), (4096*4, 4096*4), (2048, 2048)]:
             "ncu",
             "--set=full",
             "--force-overwrite",
-            f"-o {ncu_report}",
+            f"-o", f"{ncu_report}",
             str(exe)
         ]
         
@@ -377,7 +377,7 @@ for M, N in [(4096, 4096), (4096*4, 4096*4), (2048, 2048)]:
             for name in sorted(perf_results.keys()):
                 r = perf_results[name]
                 f.write(f"{name},{r['kernel']},{r['a_layout']},{r['b_layout']},"
-                        f"{r['thread_tile_sel']},{r['mean']:.6f},{r['stdev']:.6f},"
+                        f",{r['thread_tile_sel'][0]} {r['thread_tile_sel'][1]}, {r['mean']:.6f},{r['stdev']:.6f},"
                         f"{r['min']:.6f},{r['max']:.6f},{r['checksum']:.6f}\n")
         print(f"\nResults saved to {RESULTS_DIR}/")
 

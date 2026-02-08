@@ -62,9 +62,9 @@ for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
 
     # Directories
     SCRIPT_DIR = Path(__file__).parent.resolve()
-    BUILD_DIR = SCRIPT_DIR / "build"
-    REPORT_DIR = SCRIPT_DIR / "opt_reports"
-    RESULTS_DIR = SCRIPT_DIR / f"results"
+    BUILD_DIR = SCRIPT_DIR / f"build_r_{rank_id}"
+    REPORT_DIR = SCRIPT_DIR / f"opt_reports_r_{rank_id}"
+    RESULTS_DIR = SCRIPT_DIR / f"results_r_{rank_id}"
 
     # Compiler and flags
     CXX = "g++"
@@ -269,7 +269,7 @@ for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
         papi_results = {}
         for kernel in KERNELS:
             for a_layout, b_layout in LAYOUTS:
-                for tile_selection in [0, 1, 2, 3, 4, 5]:
+                for tile_selection in TILE_CONFIGS:
                     name = variant_name(kernel, a_layout, b_layout, tile_selection)
                     # Tile selection relevant only for kernel 2
                     if (kernel != 2 and kernel != 3) and tile_selection != 0:
@@ -282,7 +282,7 @@ for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
             
             for kernel in KERNELS:
                 for a_layout, b_layout in LAYOUTS:
-                    for tile_selection in [0, 1, 2, 3, 4, 5]:
+                    for tile_selection in TILE_CONFIGS:
                         name = variant_name(kernel, a_layout, b_layout, tile_selection)
                         # Tile selection relevant only for kernel 2
                         if (kernel != 2 and kernel != 3) and tile_selection != 0:
@@ -364,7 +364,7 @@ for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
             f.write("variant,kernel,a_layout,b_layout,tile_sel,mean_ms,stdev_ms,min_ms,max_ms,checksum\n")
             for name in sorted(perf_results.keys()):
                 r = perf_results[name]
-                f.write(f"{name},{r['kernel']},{r['a_layout']},{r['b_layout']},{r['tile_sel']},{r['mean']:.6f},{r['stdev']:.6f},{r['min']:.6f},{r['max']:.6f},{r['checksum']:.6f}\n")
+                f.write(f"{name},{r['kernel']},{r['a_layout']},{r['b_layout']},{r['tile_sel'][0]} {r['tile_sel'][1]},{r['mean']:.6f},{r['stdev']:.6f},{r['min']:.6f},{r['max']:.6f},{r['checksum']:.6f}\n")
                 f.flush()
 
     def save_papi_results(papi_results):

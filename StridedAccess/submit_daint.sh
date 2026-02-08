@@ -31,7 +31,7 @@ echo ""
 
 # Set OpenMP threads for CPU parallelism
 # Divide CPUs per task
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OMP_NUM_THREADS=72
 echo "OMP_NUM_THREADS=$OMP_NUM_THREADS"
 
 # Launch 1 Python process per GPU automatically using srun
