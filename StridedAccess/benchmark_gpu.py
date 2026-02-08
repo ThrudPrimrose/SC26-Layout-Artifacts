@@ -40,7 +40,7 @@ for M, N in [(4096, 4096), (4096*4, 4096*4), (2048, 2048)]:
 
     # Memory impact is 128 (num threads) * X * Y (thread tile x times y) * 3 (a, b, c) * 8 (doubles)
     # This should be less than 48*1024
-    sizes = [2 ** i for i in range(2, 8)]  # 4 → 128(
+    sizes = [2 ** i for i in range(0, 8)]  # 1 → 128(
     THREAD_TILES = [(w, h) for w in sizes for h in sizes]
     THREAD_TILES = [(w, h) for (w, h) in THREAD_TILES if (128*w*h*3*8) < (48*1024)]
     THREAD_TILE_CONFIGS = THREAD_TILES
