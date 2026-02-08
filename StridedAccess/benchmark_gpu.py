@@ -371,7 +371,7 @@ for M, N in [(4096, 4096), (4096*4, 4096*4), (2048, 2048)]:
     def save_perf_results(perf_results: Dict):
         """Save results to CSV files."""
         # Performance CSV
-        perf_file = RESULTS_DIR / f"cuda_performance_M_{M}_N_{N}_rank_{rank_id}.csv"
+        perf_file = RESULTS_DIR / f"performance_cuda_M_{M}_N_{N}_rank_{rank_id}.csv"
         with open(perf_file, 'w') as f:
             f.write("variant,kernel,a_layout,b_layout,thread_tile_sel,mean_ms,stdev_ms,min_ms,max_ms,checksum\n")
             for name in sorted(perf_results.keys()):

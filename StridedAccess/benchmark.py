@@ -359,7 +359,7 @@ for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
 
     def save_perf_results(perf_results):
         # Performance CSV
-        perf_file = RESULTS_DIR / f"performance_cpu_N_{N}_M_{M}.csv"
+        perf_file = RESULTS_DIR / f"performance_cpu_N_{N}_M_{M}_rank_{rank_id}.csv"
         with open(perf_file, 'w') as f:
             f.write("variant,kernel,a_layout,b_layout,tile_sel,mean_ms,stdev_ms,min_ms,max_ms,checksum\n")
             for name in sorted(perf_results.keys()):
