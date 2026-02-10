@@ -34,6 +34,7 @@ export OMP_DYNAMIC=false
 unset PAPI_METRICS
 unset PAPI_ENABLED
 
+export MULTI_CORE=TRUE
 
 python3.12 benchmark.py
 

@@ -15,9 +15,21 @@ rank_id = int(os.environ.get("SLURM_PROCID", "0"))
 total_ranks = int(os.environ.get("SLURM_NTASKS", "1"))
 multicore = os.environ.get("MULTI_CORE", "TRUE").lower() in ("true", "1", "on") 
 
+#==============================================================
+# Global variables to change per kernel:
+# KERNELS
+# LAYOUTS
+# TILES and TILE_CONFIGS
+# M, N
+
+# In compile_variant and compile_with_full_reports:
+# defines, file name
+#==============================================================
+
+
 for M, N in [(256,256), (4096, 4096), (2048, 2048), (128, 128)]:
     NUM_RUNS = 10
-    NUM_PAPI_RUNS = 3
+    NUM_PAPI_RUNS = 1
 
     # Kernels: loop order
     KERNELS = {

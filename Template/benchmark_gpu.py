@@ -16,6 +16,18 @@ import typing
 rank_id = int(os.environ.get("SLURM_PROCID", "0"))
 total_ranks = int(os.environ.get("SLURM_NTASKS", "1"))
 
+
+#==============================================================
+# Global variables to change per kernel:
+# KERNELS
+# LAYOUTS
+# TILES and TILE_CONFIGS
+# M, N
+
+# In compile_variant and compile_with_full_reports:
+# defines, file name
+#==============================================================
+
 # Configuration
 for M, N in [(4096, 4096), (4096*4, 4096*4), (2048, 2048)]:
     NUM_RUNS = 10
