@@ -18,314 +18,278 @@
     } while (0)
 
 // ---------------------------------------------------------------------------
-// For the 81920×90 case (reduce along dim-0, i.e. each column → 1 value),
-// elements of column j are strided: data[0*90+j], data[1*90+j], ...
-// CUB needs contiguous virtual segments, so we build a transform iterator
-// that remaps virtual linear index → physical strided index.
+//  Constants
+// ---------------------------------------------------------------------------
+constexpr int NROWS   = 81920;
+constexpr int NCOLS   = 90;
+constexpr int N       = NROWS * NCOLS;
+
+// 3 warps = 96 threads.  Threads 0..89 each own one column; 90..95 idle.
+constexpr int BLOCK_THREADS  = 96;
+// How many rows each block chews through.  Tune this.
+constexpr int ROWS_PER_BLOCK = 1024;
+constexpr int NUM_BLOCKS     = (NROWS + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK; // 80
+
+// ---------------------------------------------------------------------------
+//  Pass 1 — partial column-max
+//  Grid : NUM_BLOCKS blocks  (each 96 threads)
+//  Each block handles rows [block_start, block_end) for ALL 90 columns.
+//  Thread tid (tid < NCOLS) walks its column with stride NCOLS — coalesced
+//  because adjacent threads read adjacent addresses within the same row.
+//
+//  Output: partial[blockIdx.x * NCOLS + tid] = max over the block's row range
+// ---------------------------------------------------------------------------
+__global__ void column_max_partial(const float* __restrict__ data,
+                                   float*       __restrict__ partial,
+                                   int nrows, int ncols)
+{
+    const int tid   = threadIdx.x;
+    const int bid   = blockIdx.x;
+    const int r0    = bid * ROWS_PER_BLOCK;
+    const int r1    = min(r0 + ROWS_PER_BLOCK, nrows);
+
+    if (tid >= ncols) return;           // threads 90..95 bail out
+
+    float mx = -FLT_MAX;
+    // Walk down the column; consecutive threads hit consecutive floats
+    for (int r = r0; r < r1; ++r) {
+        mx = fmaxf(mx, data[r * ncols + tid]);
+    }
+    partial[bid * ncols + tid] = mx;
+}
+
+// ---------------------------------------------------------------------------
+//  Pass 2 — final reduction across NUM_BLOCKS partial maxes per column
+//  One block of 96 threads, each thread reduces its column across all blocks.
+// ---------------------------------------------------------------------------
+__global__ void column_max_final(const float* __restrict__ partial,
+                                 float*       __restrict__ out,
+                                 int num_blocks, int ncols)
+{
+    const int tid = threadIdx.x;
+    if (tid >= ncols) return;
+
+    float mx = -FLT_MAX;
+    for (int b = 0; b < num_blocks; ++b) {
+        mx = fmaxf(mx, partial[b * ncols + tid]);
+    }
+    out[tid] = mx;
+}
+
+// ---------------------------------------------------------------------------
+//  CUB baselines (same as before, inlined for self-contained file)
 // ---------------------------------------------------------------------------
 struct ColumnAccessOp {
     const float* data;
-    int num_cols;   // 90
-    int seg_len;    // 81920
-
+    int num_cols, seg_len;
     __host__ __device__ __forceinline__
-    float operator()(int virtual_idx) const {
-        int seg = virtual_idx / seg_len;   // which column
-        int pos = virtual_idx % seg_len;   // which row
-        return data[pos * num_cols + seg];
+    float operator()(int vi) const {
+        return data[(vi % seg_len) * num_cols + vi / seg_len];
     }
 };
 
-// ---------------------------------------------------------------------------
-// Build host-side offset array: [0, seg_len, 2*seg_len, ..., num_segs*seg_len]
-// ---------------------------------------------------------------------------
-static void make_offsets(int num_segs, int seg_len, int** d_offsets) {
+static void make_offsets(int num_segs, int seg_len, int** d_off) {
     std::vector<int> h(num_segs + 1);
     for (int i = 0; i <= num_segs; ++i) h[i] = i * seg_len;
-    CHECK_CUDA(cudaMalloc(d_offsets, h.size() * sizeof(int)));
-    CHECK_CUDA(cudaMemcpy(*d_offsets, h.data(), h.size() * sizeof(int),
+    CHECK_CUDA(cudaMalloc(d_off, h.size() * sizeof(int)));
+    CHECK_CUDA(cudaMemcpy(*d_off, h.data(), h.size() * sizeof(int),
                            cudaMemcpyHostToDevice));
 }
 
 // ---------------------------------------------------------------------------
-// Case A: 81920×90 row-major, reduce each column (strided) → 90 outputs
+//  Benchmark harness
 // ---------------------------------------------------------------------------
-static void bench_column_reduce(const float* d_data, float* d_out,
-                                int num_rows, int num_cols, int iters,
-                                int warmup, std::vector<float>& times_ms) {
-    const int num_segs = num_cols;  // 90
-    const int seg_len  = num_rows;  // 81920
-
-    int* d_offsets;
-    make_offsets(num_segs, seg_len, &d_offsets);
-
-    // Build the virtual iterator: virtual_idx → data[row * num_cols + col]
-    cub::CountingInputIterator<int> counting(0);
-    ColumnAccessOp op{d_data, num_cols, seg_len};
-    cub::TransformInputIterator<float, ColumnAccessOp,
-                                cub::CountingInputIterator<int>>
-        col_iter(counting, op);
-
-    // Query temp storage
-    void*  d_temp = nullptr;
-    size_t temp_bytes = 0;
-    CHECK_CUDA(cub::DeviceSegmentedReduce::Max(
-        d_temp, temp_bytes, col_iter, d_out,
-        num_segs, d_offsets, d_offsets + 1));
-    CHECK_CUDA(cudaMalloc(&d_temp, temp_bytes));
-
-    cudaEvent_t t0, t1;
-    CHECK_CUDA(cudaEventCreate(&t0));
-    CHECK_CUDA(cudaEventCreate(&t1));
-
-    for (int i = 0; i < warmup + iters; ++i) {
-        CHECK_CUDA(cudaEventRecord(t0));
-        CHECK_CUDA(cub::DeviceSegmentedReduce::Max(
-            d_temp, temp_bytes, col_iter, d_out,
-            num_segs, d_offsets, d_offsets + 1));
-        CHECK_CUDA(cudaEventRecord(t1));
-        CHECK_CUDA(cudaEventSynchronize(t1));
-        if (i >= warmup) {
-            float ms;
-            CHECK_CUDA(cudaEventElapsedTime(&ms, t0, t1));
-            times_ms.push_back(ms);
-        }
-    }
-
-    CHECK_CUDA(cudaEventDestroy(t0));
-    CHECK_CUDA(cudaEventDestroy(t1));
-    CHECK_CUDA(cudaFree(d_temp));
-    CHECK_CUDA(cudaFree(d_offsets));
-}
-
-// ---------------------------------------------------------------------------
-// Case B: 90×81920 row-major, reduce each row (contiguous) → 90 outputs
-// ---------------------------------------------------------------------------
-static void bench_row_reduce(const float* d_data, float* d_out,
-                             int num_rows, int num_cols, int iters,
-                             int warmup, std::vector<float>& times_ms) {
-    const int num_segs = num_rows;  // 90
-    const int seg_len  = num_cols;  // 81920
-
-    int* d_offsets;
-    make_offsets(num_segs, seg_len, &d_offsets);
-
-    // Direct pointer — rows are already contiguous
-    void*  d_temp = nullptr;
-    size_t temp_bytes = 0;
-    CHECK_CUDA(cub::DeviceSegmentedReduce::Max(
-        d_temp, temp_bytes, d_data, d_out,
-        num_segs, d_offsets, d_offsets + 1));
-    CHECK_CUDA(cudaMalloc(&d_temp, temp_bytes));
-
-    cudaEvent_t t0, t1;
-    CHECK_CUDA(cudaEventCreate(&t0));
-    CHECK_CUDA(cudaEventCreate(&t1));
-
-    for (int i = 0; i < warmup + iters; ++i) {
-        CHECK_CUDA(cudaEventRecord(t0));
-        CHECK_CUDA(cub::DeviceSegmentedReduce::Max(
-            d_temp, temp_bytes, d_data, d_out,
-            num_segs, d_offsets, d_offsets + 1));
-        CHECK_CUDA(cudaEventRecord(t1));
-        CHECK_CUDA(cudaEventSynchronize(t1));
-        if (i >= warmup) {
-            float ms;
-            CHECK_CUDA(cudaEventElapsedTime(&ms, t0, t1));
-            times_ms.push_back(ms);
-        }
-    }
-
-    CHECK_CUDA(cudaEventDestroy(t0));
-    CHECK_CUDA(cudaEventDestroy(t1));
-    CHECK_CUDA(cudaFree(d_temp));
-    CHECK_CUDA(cudaFree(d_offsets));
-}
-
-// ---------------------------------------------------------------------------
-// Statistics helper
-// ---------------------------------------------------------------------------
-struct Stats {
-    float mean, median, stddev, min, max;
-};
+struct Stats { float mean, median, stddev, mn, mx; };
 
 static Stats compute_stats(std::vector<float>& v) {
-    Stats s{};
     std::sort(v.begin(), v.end());
-    s.min = v.front();
-    s.max = v.back();
-    s.median = v[v.size() / 2];
+    Stats s;
+    s.mn = v.front(); s.mx = v.back(); s.median = v[v.size()/2];
     double sum = std::accumulate(v.begin(), v.end(), 0.0);
-    s.mean = static_cast<float>(sum / v.size());
+    s.mean = (float)(sum / v.size());
     double sq = 0;
     for (auto x : v) sq += (x - s.mean) * (x - s.mean);
-    s.stddev = static_cast<float>(std::sqrt(sq / v.size()));
+    s.stddev = (float)std::sqrt(sq / v.size());
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// Correctness check: compare both reductions against each other
-// ---------------------------------------------------------------------------
-static void verify(const float* d_data_col, const float* d_data_row,
-                   int N, int S) {
-    // Both arrays contain the same logical data (N total elements, S segments
-    // of length N/S).  Reduce on host and compare GPU outputs.
-    std::vector<float> h(N);
+static float bw_gbs(float ms) {
+    return ((size_t)N * sizeof(float) / 1e9) / (ms / 1e3);
+}
 
-    // Verify column-reduce (81920×90)
-    CHECK_CUDA(cudaMemcpy(h.data(), d_data_col, N * sizeof(float),
-                           cudaMemcpyDeviceToHost));
-    std::vector<float> ref_col(S, -FLT_MAX);
-    for (int r = 0; r < 81920; ++r)
-        for (int c = 0; c < 90; ++c)
-            ref_col[c] = fmaxf(ref_col[c], h[r * 90 + c]);
-
-    // Verify row-reduce (90×81920)
-    CHECK_CUDA(cudaMemcpy(h.data(), d_data_row, N * sizeof(float),
-                           cudaMemcpyDeviceToHost));
-    std::vector<float> ref_row(S, -FLT_MAX);
-    for (int r = 0; r < 90; ++r)
-        for (int c = 0; c < 81920; ++c)
-            ref_row[r] = fmaxf(ref_row[r], h[r * 81920 + c]);
-
-    // Check GPU results
-    float* d_out_col;
-    float* d_out_row;
-    CHECK_CUDA(cudaMalloc(&d_out_col, S * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_out_row, S * sizeof(float)));
-
-    // Run once each
-    int* d_off_col; make_offsets(90, 81920, &d_off_col);
-    int* d_off_row; make_offsets(90, 81920, &d_off_row);
-
-    { // column reduce
-        cub::CountingInputIterator<int> cnt(0);
-        ColumnAccessOp op{d_data_col, 90, 81920};
-        cub::TransformInputIterator<float, ColumnAccessOp,
-                                    cub::CountingInputIterator<int>> it(cnt, op);
-        void* tmp = nullptr; size_t nb = 0;
-        cub::DeviceSegmentedReduce::Max(tmp, nb, it, d_out_col, 90,
-                                        d_off_col, d_off_col + 1);
-        cudaMalloc(&tmp, nb);
-        cub::DeviceSegmentedReduce::Max(tmp, nb, it, d_out_col, 90,
-                                        d_off_col, d_off_col + 1);
-        cudaDeviceSynchronize();
-        cudaFree(tmp);
-    }
-    { // row reduce
-        void* tmp = nullptr; size_t nb = 0;
-        cub::DeviceSegmentedReduce::Max(tmp, nb, d_data_row, d_out_row, 90,
-                                        d_off_row, d_off_row + 1);
-        cudaMalloc(&tmp, nb);
-        cub::DeviceSegmentedReduce::Max(tmp, nb, d_data_row, d_out_row, 90,
-                                        d_off_row, d_off_row + 1);
-        cudaDeviceSynchronize();
-        cudaFree(tmp);
-    }
-
-    std::vector<float> gpu_col(S), gpu_row(S);
-    cudaMemcpy(gpu_col.data(), d_out_col, S * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(gpu_row.data(), d_out_row, S * sizeof(float), cudaMemcpyDeviceToHost);
-
-    int errs = 0;
-    for (int i = 0; i < S; ++i) {
-        if (gpu_col[i] != ref_col[i]) { errs++; if (errs <= 3) printf("  col[%d]: gpu=%.6f ref=%.6f\n", i, gpu_col[i], ref_col[i]); }
-        if (gpu_row[i] != ref_row[i]) { errs++; if (errs <= 3) printf("  row[%d]: gpu=%.6f ref=%.6f\n", i, gpu_row[i], ref_row[i]); }
-    }
-    printf("Verification: %s (%d mismatches)\n\n", errs == 0 ? "PASS" : "FAIL", errs);
-
-    cudaFree(d_out_col); cudaFree(d_out_row);
-    cudaFree(d_off_col); cudaFree(d_off_row);
+static void print_stats(const char* label, Stats& s) {
+    printf("  %-50s\n", label);
+    printf("  %-8s: %8.4f ms   (%7.2f GB/s)\n", "Mean",   s.mean,   bw_gbs(s.mean));
+    printf("  %-8s: %8.4f ms   (%7.2f GB/s)\n", "Median", s.median, bw_gbs(s.median));
+    printf("  %-8s: %8.4f ms\n",                 "Stddev", s.stddev);
+    printf("  %-8s: %8.4f ms   (%7.2f GB/s)\n", "Min",    s.mn,     bw_gbs(s.mn));
+    printf("  %-8s: %8.4f ms   (%7.2f GB/s)\n", "Max",    s.mx,     bw_gbs(s.mx));
 }
 
 // ---------------------------------------------------------------------------
 int main() {
-    constexpr int ROWS_A = 81920, COLS_A = 90;   // Case A: column reduce
-    constexpr int ROWS_B = 90,    COLS_B = 81920; // Case B: row reduce
-    constexpr int N = ROWS_A * COLS_A;            // same total elements
-    constexpr int NUM_SEGMENTS = 90;
-    constexpr int TOTAL_ITERS = 100;
-    constexpr int WARMUP      = 5;
-    constexpr int MEASURED     = TOTAL_ITERS - WARMUP;
+    constexpr int TOTAL = 100, WARMUP = 5, MEASURED = TOTAL - WARMUP;
 
-    // Print GPU info
     cudaDeviceProp prop;
     CHECK_CUDA(cudaGetDeviceProperties(&prop, 0));
-    printf("GPU: %s  (SM %d.%d, %d SMs)\n\n", prop.name, prop.major,
+    printf("GPU: %s  (SM %d.%d, %d SMs)\n", prop.name, prop.major,
            prop.minor, prop.multiProcessorCount);
+    printf("Array: %d × %d = %d elements (%.2f MB)\n",
+           NROWS, NCOLS, N, N * sizeof(float) / (1024.0 * 1024.0));
+    printf("Custom kernel: %d threads/block, %d rows/block, %d blocks\n\n",
+           BLOCK_THREADS, ROWS_PER_BLOCK, NUM_BLOCKS);
 
-    // Allocate and init with random data
+    // ---- Allocate & init ----
     std::vector<float> h_data(N);
     srand(42);
-    for (auto& v : h_data) v = static_cast<float>(rand()) / RAND_MAX;
+    for (auto& v : h_data) v = (float)rand() / RAND_MAX;
 
-    float *d_data_A, *d_data_B;
-    CHECK_CUDA(cudaMalloc(&d_data_A, N * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_data_B, N * sizeof(float)));
-    CHECK_CUDA(cudaMemcpy(d_data_A, h_data.data(), N * sizeof(float),
-                           cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_data_B, h_data.data(), N * sizeof(float),
+    float *d_data;
+    CHECK_CUDA(cudaMalloc(&d_data, N * sizeof(float)));
+    CHECK_CUDA(cudaMemcpy(d_data, h_data.data(), N * sizeof(float),
                            cudaMemcpyHostToDevice));
 
-    float *d_out_A, *d_out_B;
-    CHECK_CUDA(cudaMalloc(&d_out_A, NUM_SEGMENTS * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_out_B, NUM_SEGMENTS * sizeof(float)));
+    float *d_out;
+    CHECK_CUDA(cudaMalloc(&d_out, NCOLS * sizeof(float)));
 
-    // Verify correctness first
-    printf("--- Correctness ---\n");
-    verify(d_data_A, d_data_B, N, NUM_SEGMENTS);
+    float *d_partial;
+    CHECK_CUDA(cudaMalloc(&d_partial, NUM_BLOCKS * NCOLS * sizeof(float)));
 
-    // Benchmark
-    size_t total_bytes = (size_t)N * sizeof(float);
-    printf("Array size      : %d × %d = %d elements (%.2f MB)\n",
-           ROWS_A, COLS_A, N, total_bytes / (1024.0 * 1024.0));
-    printf("Segments        : %d  (each %d elements)\n", NUM_SEGMENTS,
-           N / NUM_SEGMENTS);
-    printf("Iterations      : %d total, %d warmup, %d measured\n\n",
-           TOTAL_ITERS, WARMUP, MEASURED);
+    // ---- Verify custom kernel ----
+    column_max_partial<<<NUM_BLOCKS, BLOCK_THREADS>>>(d_data, d_partial, NROWS, NCOLS);
+    column_max_final<<<1, BLOCK_THREADS>>>(d_partial, d_out, NUM_BLOCKS, NCOLS);
+    CHECK_CUDA(cudaDeviceSynchronize());
 
-    std::vector<float> times_A, times_B;
+    std::vector<float> gpu_custom(NCOLS);
+    CHECK_CUDA(cudaMemcpy(gpu_custom.data(), d_out, NCOLS * sizeof(float),
+                           cudaMemcpyDeviceToHost));
 
-    printf("Running Case A: 81920×90 column-reduce (strided via TransformIterator)...\n");
-    bench_column_reduce(d_data_A, d_out_A, ROWS_A, COLS_A,
-                        MEASURED, WARMUP, times_A);
+    std::vector<float> ref(NCOLS, -FLT_MAX);
+    for (int r = 0; r < NROWS; ++r)
+        for (int c = 0; c < NCOLS; ++c)
+            ref[c] = fmaxf(ref[c], h_data[r * NCOLS + c]);
 
-    printf("Running Case B: 90×81920 row-reduce (contiguous segments)...\n");
-    bench_row_reduce(d_data_B, d_out_B, ROWS_B, COLS_B,
-                     MEASURED, WARMUP, times_B);
+    int errs = 0;
+    for (int i = 0; i < NCOLS; ++i)
+        if (gpu_custom[i] != ref[i]) errs++;
+    printf("Custom kernel verification: %s (%d mismatches)\n\n",
+           errs ? "FAIL" : "PASS", errs);
 
-    // Report
-    auto sA = compute_stats(times_A);
-    auto sB = compute_stats(times_B);
+    // ==================================================================
+    //  Benchmark 1: CUB strided (TransformIterator)
+    // ==================================================================
+    {
+        int* d_off; make_offsets(NCOLS, NROWS, &d_off);
+        cub::CountingInputIterator<int> cnt(0);
+        ColumnAccessOp op{d_data, NCOLS, NROWS};
+        cub::TransformInputIterator<float, ColumnAccessOp,
+                                    cub::CountingInputIterator<int>> it(cnt, op);
+        void* tmp = nullptr; size_t nb = 0;
+        cub::DeviceSegmentedReduce::Max(tmp, nb, it, d_out, NCOLS,
+                                        d_off, d_off + 1);
+        cudaMalloc(&tmp, nb);
 
-    auto bw = [&](float ms) {
-        return (total_bytes / 1e9) / (ms / 1e3);  // GB/s
-    };
+        cudaEvent_t t0, t1;
+        cudaEventCreate(&t0); cudaEventCreate(&t1);
+        std::vector<float> times;
 
-    printf("\n========================================================\n");
-    printf("  Case A — 81920×90  column-reduce  (strided access)\n");
-    printf("--------------------------------------------------------\n");
-    printf("  Mean   : %8.4f ms   (%6.2f GB/s)\n", sA.mean, bw(sA.mean));
-    printf("  Median : %8.4f ms   (%6.2f GB/s)\n", sA.median, bw(sA.median));
-    printf("  Stddev : %8.4f ms\n", sA.stddev);
-    printf("  Min    : %8.4f ms   (%6.2f GB/s)\n", sA.min, bw(sA.min));
-    printf("  Max    : %8.4f ms   (%6.2f GB/s)\n", sA.max, bw(sA.max));
-    printf("========================================================\n");
-    printf("  Case B — 90×81920  row-reduce     (contiguous access)\n");
-    printf("--------------------------------------------------------\n");
-    printf("  Mean   : %8.4f ms   (%6.2f GB/s)\n", sB.mean, bw(sB.mean));
-    printf("  Median : %8.4f ms   (%6.2f GB/s)\n", sB.median, bw(sB.median));
-    printf("  Stddev : %8.4f ms\n", sB.stddev);
-    printf("  Min    : %8.4f ms   (%6.2f GB/s)\n", sB.min, bw(sB.min));
-    printf("  Max    : %8.4f ms   (%6.2f GB/s)\n", sB.max, bw(sB.max));
-    printf("========================================================\n");
-    printf("\n  Speedup (contiguous / strided) : %.2fx\n\n",
-           sA.median / sB.median);
+        for (int i = 0; i < TOTAL; ++i) {
+            cudaEventRecord(t0);
+            cub::DeviceSegmentedReduce::Max(tmp, nb, it, d_out, NCOLS,
+                                            d_off, d_off + 1);
+            cudaEventRecord(t1);
+            cudaEventSynchronize(t1);
+            if (i >= WARMUP) { float ms; cudaEventElapsedTime(&ms, t0, t1); times.push_back(ms); }
+        }
+        auto s = compute_stats(times);
+        printf("========================================================\n");
+        print_stats("CUB DeviceSegmentedReduce (strided TransformIter)", s);
+        printf("========================================================\n");
 
-    CHECK_CUDA(cudaFree(d_data_A));
-    CHECK_CUDA(cudaFree(d_data_B));
-    CHECK_CUDA(cudaFree(d_out_A));
-    CHECK_CUDA(cudaFree(d_out_B));
+        cudaFree(tmp); cudaFree(d_off);
+        cudaEventDestroy(t0); cudaEventDestroy(t1);
+    }
+
+    // ==================================================================
+    //  Benchmark 2: CUB contiguous (90×81920 row-reduce, as reference)
+    // ==================================================================
+    {
+        // Lay out same data as 90×81920 row-major for a fair comparison
+        float* d_data_row;
+        CHECK_CUDA(cudaMalloc(&d_data_row, N * sizeof(float)));
+
+        // Transpose on host: row-major 81920×90 → 90×81920
+        std::vector<float> h_row(N);
+        for (int r = 0; r < NROWS; ++r)
+            for (int c = 0; c < NCOLS; ++c)
+                h_row[c * NROWS + r] = h_data[r * NCOLS + c];
+        CHECK_CUDA(cudaMemcpy(d_data_row, h_row.data(), N * sizeof(float),
+                               cudaMemcpyHostToDevice));
+
+        float* d_out_row;
+        CHECK_CUDA(cudaMalloc(&d_out_row, NCOLS * sizeof(float)));
+
+        int* d_off; make_offsets(NCOLS, NROWS, &d_off);
+        void* tmp = nullptr; size_t nb = 0;
+        cub::DeviceSegmentedReduce::Max(tmp, nb, d_data_row, d_out_row, NCOLS,
+                                        d_off, d_off + 1);
+        cudaMalloc(&tmp, nb);
+
+        cudaEvent_t t0, t1;
+        cudaEventCreate(&t0); cudaEventCreate(&t1);
+        std::vector<float> times;
+
+        for (int i = 0; i < TOTAL; ++i) {
+            cudaEventRecord(t0);
+            cub::DeviceSegmentedReduce::Max(tmp, nb, d_data_row, d_out_row, NCOLS,
+                                            d_off, d_off + 1);
+            cudaEventRecord(t1);
+            cudaEventSynchronize(t1);
+            if (i >= WARMUP) { float ms; cudaEventElapsedTime(&ms, t0, t1); times.push_back(ms); }
+        }
+        auto s = compute_stats(times);
+        printf("========================================================\n");
+        print_stats("CUB DeviceSegmentedReduce (contiguous, 90×81920)", s);
+        printf("========================================================\n");
+
+        cudaFree(tmp); cudaFree(d_off); cudaFree(d_data_row); cudaFree(d_out_row);
+        cudaEventDestroy(t0); cudaEventDestroy(t1);
+    }
+
+    // ==================================================================
+    //  Benchmark 3: Custom coalesced column-reduce (two-pass)
+    // ==================================================================
+    {
+        cudaEvent_t t0, t1;
+        cudaEventCreate(&t0); cudaEventCreate(&t1);
+        std::vector<float> times;
+
+        for (int i = 0; i < TOTAL; ++i) {
+            cudaEventRecord(t0);
+            column_max_partial<<<NUM_BLOCKS, BLOCK_THREADS>>>(
+                d_data, d_partial, NROWS, NCOLS);
+            column_max_final<<<1, BLOCK_THREADS>>>(
+                d_partial, d_out, NUM_BLOCKS, NCOLS);
+            cudaEventRecord(t1);
+            cudaEventSynchronize(t1);
+            if (i >= WARMUP) { float ms; cudaEventElapsedTime(&ms, t0, t1); times.push_back(ms); }
+        }
+        auto s = compute_stats(times);
+        printf("========================================================\n");
+        print_stats("Custom 3-warp coalesced column-reduce (two-pass)", s);
+        printf("========================================================\n");
+
+        cudaEventDestroy(t0); cudaEventDestroy(t1);
+    }
+
+    // ==================================================================
+    //  Summary
+    // ==================================================================
+    printf("\n");
+
+    CHECK_CUDA(cudaFree(d_data));
+    CHECK_CUDA(cudaFree(d_out));
+    CHECK_CUDA(cudaFree(d_partial));
 
     return 0;
 }

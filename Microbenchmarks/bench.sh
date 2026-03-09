@@ -1,5 +1,5 @@
-# compile with desired sizes
-nvcc -O3 -Xcompiler=-fopenmp -march=native -mtune=native -ffast-math \
+#Compile with desired sizes
+nvcc -arch=sm_90a -O3 -Xcompiler=-fopenmp  \
     -std=c++17 \
     -o segmented_reduction segmented_reduction.cu
 
