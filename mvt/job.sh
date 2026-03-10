@@ -33,7 +33,7 @@ spack load openblas
 spack load cuda   # for hwloc / numactl if needed
 
 # ── parameters (override via positional args) ────────────────────────────
-N=${1:-8192}
+N=${1:-16384}
 CSV=${2:-results_mvt.csv}
 NRUNS=${3:-50}
 NWARM=${4:-5}
@@ -45,7 +45,7 @@ LIB="-L${OPENBLAS_ROOT}/lib"
 CXX="g++ ${CXX_FLAGS} ${INC} ${LIB}"
 LINK="-lopenblas -llapack"
 
-BLOCK_SIZES=(32 64 128 256)
+BLOCK_SIZES=(16 32 64 128 256)
 
 echo "============================================================"
 echo "  MVT benchmark sweep"

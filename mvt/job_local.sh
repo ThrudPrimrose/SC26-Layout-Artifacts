@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --partition=normal
 #SBATCH --exclusive
-#SBATCH --time=06:00:00
+#SBATCH --time=03:00:00
 #SBATCH --output=job_output_mvt.txt
 #SBATCH --error=job_error_mvt.txt
 

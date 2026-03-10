@@ -10,7 +10,7 @@
 //  2 = loop orderings (4 combined y1+y2 orderings)         — 4 variants
 //  3 = blocked A (4 outer×inner layout combos) + blocked   — 4 variants
 //  4 = tiled loops, row-major A                            — 1 variant
-//  5 = OpenBLAS (2× cblas_dgemv)                           — 1 variant
+//  5 = OpenBLAS (2× cblas_dgemv), A row-major and col-major — 2 variants
 //  6 = FUSED: single pass over A, two variants                — 5 variants
 //      fused_tiled             : row-major A, SZ_T×SZ_T tiling, heap-private y2
 //      fused_blk_{RR,RC,CR,CC} : blocked A (4 outer×inner combos),
@@ -439,37 +439,65 @@ static void run_tiled(const double *A,
     delete[] y1w; delete[] y2w;
 }
 
-// ── MODE 5: OpenBLAS (2× dgemv) ─────────────────────────────────────────
-// OpenBLAS has no dedicated MVT; use dgemv twice (row-major A)
+// ── MODE 5: OpenBLAS (2× dgemv), all A layout variants ──────────────────
+// cblas_dgemv accepts an `order` parameter that describes A's storage, so
+// we can feed it row-major or col-major A directly without any transpose
+// tricks — the library handles the memory traversal internally.
+//
+// For a given storage order `ord`:
+//   y1 += alpha * A   * x1   →  NoTrans
+//   y2 += alpha * A^T * x2   →  Trans
+// lda is always N (leading dimension in the declared storage order).
+//
+// Variants:
+//   cblas_rm  : A stored row-major  (CblasRowMajor)
+//   cblas_cm  : A stored col-major  (CblasColMajor)
+
+static void run_openblas_variant(const double *A_rm,
+                                 CBLAS_ORDER ord, const char *tag,
+                                 const double *x1, const double *x2,
+                                 const double *y10, const double *y20,
+                                 const double *y1ref, const double *y2ref,
+                                 FILE *fp)
+{
+    // Pack A into the requested storage order once, outside the timing loop.
+    double *Ap = new double[(long)N * N];
+    to_lay(A_rm, Ap, N, N, ord == CblasColMajor ? C : R);
+
+    double *y1w = new double[N];
+    double *y2w = new double[N];
+
+    for (int r = 0; r < NRUNS; r++) {
+        memcpy(y1w, y10, N * sizeof(double));
+        memcpy(y2w, y20, N * sizeof(double));
+        auto t0 = Clock::now();
+        cblas_dgemv(ord, CblasNoTrans, N, N,
+                    alpha, Ap, N, x1, 1, 1.0, y1w, 1);
+        cblas_dgemv(ord, CblasTrans,   N, N,
+                    alpha, Ap, N, x2, 1, 1.0, y2w, 1);
+        auto t1 = Clock::now();
+        if (r >= NWARM)
+            fprintf(fp, "%d,5,%s,0,0,%d,%.2f\n",
+                    N, tag, r - NWARM,
+                    std::chrono::duration<double, std::micro>(t1 - t0).count());
+    }
+    double e1 = max_relerr(y1w, y1ref, N);
+    double e2 = max_relerr(y2w, y2ref, N);
+    fprintf(stderr, "%s %s: y1_err=%.2e y2_err=%.2e\n",
+            (e1 > 1e-9 || e2 > 1e-9) ? "FAIL" : "OK", tag, e1, e2);
+    delete[] Ap; delete[] y1w; delete[] y2w;
+}
+
 static void run_openblas(const double *A,
                          const double *x1, const double *x2,
                          const double *y10, const double *y20,
                          const double *y1ref, const double *y2ref,
                          FILE *fp)
 {
-    double *y1w = new double[N];
-    double *y2w = new double[N];
-    for (int r = 0; r < NRUNS; r++) {
-        memcpy(y1w, y10, N * sizeof(double));
-        memcpy(y2w, y20, N * sizeof(double));
-        auto t0 = Clock::now();
-        // y1 += alpha * A * x1
-        cblas_dgemv(CblasRowMajor, CblasNoTrans, N, N,
-                    alpha, A, N, x1, 1, 1.0, y1w, 1);
-        // y2 += alpha * A^T * x2
-        cblas_dgemv(CblasRowMajor, CblasTrans, N, N,
-                    alpha, A, N, x2, 1, 1.0, y2w, 1);
-        auto t1 = Clock::now();
-        if (r >= NWARM)
-            fprintf(fp, "%d,5,openblas,0,0,%d,%.2f\n",
-                    N, r - NWARM,
-                    std::chrono::duration<double, std::micro>(t1 - t0).count());
-    }
-    double e1 = max_relerr(y1w, y1ref, N);
-    double e2 = max_relerr(y2w, y2ref, N);
-    fprintf(stderr, "%s openblas: y1_err=%.2e y2_err=%.2e\n",
-            (e1 > 1e-9 || e2 > 1e-9) ? "FAIL" : "OK", e1, e2);
-    delete[] y1w; delete[] y2w;
+    run_openblas_variant(A, CblasRowMajor, "cblas_rm",
+                         x1, x2, y10, y20, y1ref, y2ref, fp);
+    run_openblas_variant(A, CblasColMajor, "cblas_cm",
+                         x1, x2, y10, y20, y1ref, y2ref, fp);
 }
 
 // ── MODE 6: fused kernels — single pass over A ──────────────────────────
@@ -653,7 +681,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  2 = loop orderings\n");
         fprintf(stderr, "  3 = blocked A, SZ_B=%d, variants RR/RC/CR/CC\n", SZ_B);
         fprintf(stderr, "  4 = tiled loops, SZ_T=%d\n", SZ_T);
-        fprintf(stderr, "  5 = OpenBLAS 2x dgemv\n");
+        fprintf(stderr, "  5 = OpenBLAS 2x dgemv: cblas_rm, cblas_cm\n");
         fprintf(stderr, "  6 = fused single-pass: tiled (SZ_T=%d) + blk_{RR,RC,CR,CC} (SZ_B=%d)\n", SZ_T, SZ_B);
         return 1;
     }
