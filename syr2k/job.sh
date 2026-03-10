@@ -16,7 +16,7 @@ spack load cuda
 
 N=${1:-8192}; M=${2:-8192}; CSV=${3:-results.csv}; NRUNS=${4:-50}
 SRC=syr2k_bench.cpp
-CXX="g++ -O3 -fopenmp -std=c++17 -march=native -mtune=native -ffast-math -I$(spack location -i openblas)/include -L$(spack location -i openblas)/lib -lopenblas "
+CXX="g++ -O3 -fopenmp -std=c++17 -march=native -mtune=native -ffast-math -I$(spack location -i openblas)/include -L$(spack location -i openblas)/lib "
 SIZES=(32 64 128 256)
 
 echo "N=$N M=$M NRUNS=$NRUNS -> $CSV"
@@ -24,7 +24,7 @@ echo "N=$N M=$M NRUNS=$NRUNS -> $CSV"
 # Fixed modes (1,2,5) – compile once
 FIXED_BIN=".syr2k_fixed"
 echo "Compiling fixed binary for modes 1,2,5..."
-$CXX -DSZ_N=$N -DSZ_M=$M -DTI=32 -DTJ=32 -DTK=32 -DNRUNS=$NRUNS -o "$FIXED_BIN" "$SRC" || {
+$CXX -DSZ_N=$N -DSZ_M=$M -DTI=32 -DTJ=32 -DTK=32 -DNRUNS=$NRUNS -o "$FIXED_BIN" "$SRC" -lopenblas  || {
     echo "ERROR: compilation failed for fixed binary"
     exit 1
 }
@@ -44,7 +44,7 @@ for BI in "${SIZES[@]}"; do
     echo "Compiling for BI=$BI BJ=$BJ BK=$BK ..."
     $CXX -DSZ_N=$N -DSZ_M=$M -DBI=$BI -DBJ=$BJ -DBK=$BK \
           -DTI=$BI -DTJ=$BJ -DTK=$BK -DNRUNS=$NRUNS \
-          -o "$BIN" "$SRC" 2>/dev/null || {
+          -o "$BIN" "$SRC" -lopenblas  2>/dev/null || {
               echo "SKIP $BI $BJ $BK (compilation failed)"
               continue
           }
