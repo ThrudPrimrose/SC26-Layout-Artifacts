@@ -13,39 +13,37 @@
 # Modes:
 #   1 — A layout variants   (row-major, col-major)
 #   2 — loop orderings      (ij_ji, ji_ji, ij_ij, ji_ij)
-#   3 — blocked A SZ_B×SZ_B (RR/RC/CR/CC inner×outer), swept over BLOCK_SIZES
-#   4 — tiled loops SZ_T×SZ_T (row-major A), swept over BLOCK_SIZES
+#   3 — blocked A B×B       (RR/RC/CR/CC inner×outer), swept over BLOCK_SIZES
+#   4 — tiled loops T×T     (row-major A), swept over BLOCK_SIZES
 #   5 — OpenBLAS 2× dgemv
 #   6 — fused single-pass:
-#         fused_tiled              (row-major A, SZ_T×SZ_T, heap-private y2)
-#         fused_blk_{RR,RC,CR,CC}  (blocked A,  heap-private y2)
-#       Both swept over BLOCK_SIZES (SZ_B=SZ_T per binary).
+#         fused_tiled            (row-major A, T×T, heap-private y2)
+#         fused_blk_{RR,RC,CR,CC}(blocked A, heap-private y2)
+#       Both swept over BLOCK_SIZES (B=T per binary).
 
 set -euo pipefail
 
-# ── script location — SRC is always next to this script ─────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC="${SCRIPT_DIR}/mvt_bench.cpp"
-
-# ── environment ──────────────────────────────────────────────────────────
-spack load gcc@14
-spack load openblas
-spack load cuda   # for hwloc / numactl if needed
+# ── environment ─────────────────────────────────────────────────────────
+#spack load gcc@14
+#spack load openblas
+#spack load cuda   # for hwloc / numactl if needed
 
 # ── parameters (override via positional args) ────────────────────────────
 N=${1:-8192}
 CSV=${2:-results_mvt.csv}
-NRUNS=${3:-50}
-NWARM=${4:-5}
+NRUNS=${3:-20}
+NWARM=${4:-2}
+SRC=mvt_bench.cpp
 
-OPENBLAS_ROOT=$(spack location -i openblas)
+#OPENBLAS_ROOT=$(spack location -i openblas)
 CXX_FLAGS="-O3 -fopenmp -std=c++17 -march=native -mtune=native -ffast-math"
-INC="-I${OPENBLAS_ROOT}/include"
-LIB="-L${OPENBLAS_ROOT}/lib"
+INC="-I/usr/include/x86_64-linux-gnu"
+LIB="-Wl,-rpath,/usr/lib/x86_64-linux-gnu/ -L/usr/lib/x86_64-linux-gnu/"
 CXX="g++ ${CXX_FLAGS} ${INC} ${LIB}"
 LINK="-lopenblas -llapack"
 
 BLOCK_SIZES=(32 64 128 256)
+export SCRIPT_DIR="."
 
 echo "============================================================"
 echo "  MVT benchmark sweep"
