@@ -56,7 +56,7 @@ static void init_rand(double *a, long n) {
     #pragma omp parallel
     {
         uint32_t s = 12345u + (uint32_t)omp_get_thread_num() * 2654435761u;
-        #pragma omp for schedule(static)
+        #pragma omp for 
         for (long i = 0; i < n; i++) {
             s ^= s << 13; s ^= s >> 17; s ^= s << 5;
             a[i] = (s & 0xFFFFu) * (1.0 / 65536.0);
@@ -143,7 +143,7 @@ static void kern_lay(const double *Ad,
                      double *y1, double *y2)
 {
     // y1 = A * x1  — parallel on i, inner j is read-only on y1
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for 
     for (int i = 0; i < N; i++) {
         double acc = 0.0;
         for (int j = 0; j < N; j++)
@@ -151,7 +151,7 @@ static void kern_lay(const double *Ad,
         y1[i] += acc;
     }
     // y2 = A^T * x2 — parallel on j (= column of A), inner i read-only on y2
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for 
     for (int j = 0; j < N; j++) {
         double acc = 0.0;
         for (int i = 0; i < N; i++)
@@ -204,13 +204,13 @@ static void kern_ij_ji(const double *A,
                        const double *x1, const double *x2,
                        double *y1, double *y2)
 {
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for 
     for (int i = 0; i < N; i++) {
         double acc = 0.0;
         for (int j = 0; j < N; j++) acc += alpha * RM(A,i,j) * x1[j];
         y1[i] += acc;
     }
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for 
     for (int j = 0; j < N; j++) {
         double acc = 0.0;
         for (int i = 0; i < N; i++) acc += alpha * RM(A,i,j) * x2[i];
@@ -224,12 +224,12 @@ static void kern_ji_ij(const double *A,
 {
     // y1: outer j serial (write to multiple y1[i] inside)
     for (int j = 0; j < N; j++)
-        #pragma omp parallel for schedule(static)
+        #pragma omp parallel for 
         for (int i = 0; i < N; i++)
             y1[i] += alpha * RM(A,i,j) * x1[j];
     // y2: outer i serial (write to multiple y2[j] inside)
     for (int i = 0; i < N; i++)
-        #pragma omp parallel for schedule(static)
+        #pragma omp parallel for 
         for (int j = 0; j < N; j++)
             y2[j] += alpha * RM(A,i,j) * x2[i];
 }
@@ -238,16 +238,21 @@ static void kern_ij_ij(const double *A,
                        const double *x1, const double *x2,
                        double *y1, double *y2)
 {
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for 
     for (int i = 0; i < N; i++) {
         double acc = 0.0;
-        for (int j = 0; j < N; j++) acc += alpha * RM(A,i,j) * x1[j];
+        #pragma omp simd
+        for (int j = 0; j < N; j++) {
+            acc += alpha * RM(A,i,j) * x1[j];
+        }
         y1[i] += acc;
     }
-    for (int i = 0; i < N; i++)
-        #pragma omp parallel for schedule(static)
-        for (int j = 0; j < N; j++)
+    for (int i = 0; i < N; i++) {
+        #pragma omp parallel for 
+        for (int j = 0; j < N; j++) {
             y2[j] += alpha * RM(A,i,j) * x2[i];
+        }
+    }
 }
 
 static void kern_ji_ji(const double *A,
@@ -255,13 +260,16 @@ static void kern_ji_ji(const double *A,
                        double *y1, double *y2)
 {
     for (int j = 0; j < N; j++)
-        #pragma omp parallel for schedule(static)
+        #pragma omp parallel for 
         for (int i = 0; i < N; i++)
             y1[i] += alpha * RM(A,i,j) * x1[j];
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for 
     for (int j = 0; j < N; j++) {
         double acc = 0.0;
-        for (int i = 0; i < N; i++) acc += alpha * RM(A,i,j) * x2[i];
+        #pragma omp simd
+        for (int i = 0; i < N; i++) {
+            acc += alpha * RM(A,i,j) * x2[i];
+        }
         y2[j] += acc;
     }
 }
@@ -306,13 +314,15 @@ static void kern_blocked(const double *Ab,
                          double *y1, double *y2)
 {
     // y1 = A * x1
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for collapse(2)
     for (int bi = 0; bi < NB; bi++) {
-        const int ie = std::min(bi * SZ_B + SZ_B, N);
         for (int bj = 0; bj < NB; bj++) {
+            const int ie = std::min(bi * SZ_B + SZ_B, N);
             const int je = std::min(bj * SZ_B + SZ_B, N);
+            #pragma omp unroll
             for (int i = bi * SZ_B; i < ie; i++) {
                 double acc = 0.0;
+                #pragma omp simd
                 for (int j = bj * SZ_B; j < je; j++)
                     acc += alpha * Ab[blkidx<outer_col, inner_col>(i, j)] * x1[j];
                 y1[i] += acc;
@@ -320,13 +330,15 @@ static void kern_blocked(const double *Ab,
         }
     }
     // y2 = A^T * x2
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for collapse(2)
     for (int bj = 0; bj < NB; bj++) {
-        const int je = std::min(bj * SZ_B + SZ_B, N);
         for (int bi = 0; bi < NB; bi++) {
+            const int je = std::min(bj * SZ_B + SZ_B, N);
             const int ie = std::min(bi * SZ_B + SZ_B, N);
+            #pragma omp unroll
             for (int j = bj * SZ_B; j < je; j++) {
                 double acc = 0.0;
+                #pragma omp simd
                 for (int i = bi * SZ_B; i < ie; i++)
                     acc += alpha * Ab[blkidx<outer_col, inner_col>(i, j)] * x2[i];
                 y2[j] += acc;
@@ -384,13 +396,15 @@ static void kern_tiled(const double *A,
                        double *y1, double *y2)
 {
     // y1 = A * x1  — parallel on tile-rows
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for collapse(2)
     for (int ii = 0; ii < N; ii += SZ_T) {
         const int ie = std::min(ii + SZ_T, N);
         for (int jj = 0; jj < N; jj += SZ_T) {
             const int je = std::min(jj + SZ_T, N);
+            #pragma omp unroll
             for (int i = ii; i < ie; i++) {
                 double acc = 0.0;
+                #pragma omp simd
                 for (int j = jj; j < je; j++)
                     acc += alpha * RM(A,i,j) * x1[j];
                 y1[i] += acc;
@@ -398,13 +412,15 @@ static void kern_tiled(const double *A,
         }
     }
     // y2 = A^T * x2 — parallel on tile-cols
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for collapse(2)
     for (int jj = 0; jj < N; jj += SZ_T) {
         const int je = std::min(jj + SZ_T, N);
         for (int ii = 0; ii < N; ii += SZ_T) {
             const int ie = std::min(ii + SZ_T, N);
+            #pragma omp unroll
             for (int j = jj; j < je; j++) {
                 double acc = 0.0;
+                #pragma omp simd
                 for (int i = ii; i < ie; i++)
                     acc += alpha * RM(A,i,j) * x2[i];
                 y2[j] += acc;
@@ -512,7 +528,7 @@ static void run_openblas(const double *A,
 // or probing inside the hot path.  After each kernel call a parallel reduce
 // accumulates the per-thread copies into y2[].
 //
-// Parallelism: collapse(2) schedule(static) over the two outer tile/block
+// Parallelism: collapse(2)  over the two outer tile/block
 // loops.  ie/je (or ie/je for blocks) are computed inside the loop body so
 // that the collapsed loop nest remains canonical.  y2p is looked up by
 // thread id inside each iteration.
@@ -537,7 +553,7 @@ static void y2_priv_zero(double **priv, int nt) {
         memset(priv[t], 0, N * sizeof(double));
 }
 static void y2_priv_reduce(double **priv, int nt, double *y2) {
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for 
     for (int j = 0; j < N; j++) {
         double s = 0.0;
         for (int t = 0; t < nt; t++) s += priv[t][j];
@@ -556,7 +572,7 @@ static void kern_fused_tiled(const double *A,
                               const double *x1, const double *x2,
                               double *y1, double **y2_priv)
 {
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for collapse(2) 
     for (int ii = 0; ii < N; ii += SZ_T) {
         for (int jj = 0; jj < N; jj += SZ_T) {
             const int ie = std::min(ii + SZ_T, N);
@@ -585,7 +601,7 @@ static void kern_fused_blk(const double *Ab,
                             const double *x1, const double *x2,
                             double *y1, double **y2_priv)
 {
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for collapse(2) 
     for (int bi = 0; bi < NB; bi++) {
         for (int bj = 0; bj < NB; bj++) {
             const int ie = std::min(bi * SZ_B + SZ_B, N);

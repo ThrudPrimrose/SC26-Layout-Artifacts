@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --partition=normal
 #SBATCH --exclusive
-#SBATCH --time=04:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=job_output_syr2k.txt
 #SBATCH --error=job_error_syr2k.txt
 
@@ -14,7 +14,7 @@ spack load gcc@14
 spack load openblas
 spack load cuda
 
-N=${1:-8192}; M=${2:-8192}; CSV=${3:-results.csv}; NRUNS=${4:-50}
+N=${1:-4096}; M=${2:-4096}; CSV=${3:-results.csv}; NRUNS=${4:-10}
 SRC=syr2k_bench.cpp
 CXX="g++ -O3 -fopenmp -std=c++17 -march=native -mtune=native -ffast-math -I$(spack location -i openblas)/include -L$(spack location -i openblas)/lib "
 SIZES=(32 64 128 256)

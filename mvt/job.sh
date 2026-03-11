@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --partition=normal
 #SBATCH --exclusive
-#SBATCH --time=06:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=job_output_mvt.txt
 #SBATCH --error=job_error_mvt.txt
 
@@ -24,8 +24,8 @@
 set -euo pipefail
 
 # ── script location — SRC is always next to this script ─────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC="${SCRIPT_DIR}/mvt_bench.cpp"
+SCRIPT_DIR="."
+SRC="mvt_bench.cpp"
 
 # ── environment ──────────────────────────────────────────────────────────
 spack load gcc@14
@@ -43,9 +43,9 @@ CXX_FLAGS="-O3 -fopenmp -std=c++17 -march=native -mtune=native -ffast-math"
 INC="-I${OPENBLAS_ROOT}/include"
 LIB="-L${OPENBLAS_ROOT}/lib"
 CXX="g++ ${CXX_FLAGS} ${INC} ${LIB}"
-LINK="-lopenblas -llapack"
+LINK="-lopenblas"
 
-BLOCK_SIZES=(16 32 64 128 256)
+BLOCK_SIZES=(16 32 64 128 256 512)
 
 echo "============================================================"
 echo "  MVT benchmark sweep"
@@ -93,8 +93,6 @@ for BS in "${BLOCK_SIZES[@]}"; do
     "${BIN}" 3 "${CSV}"
     echo "  [run] mode 4 — tiled loops SZ_T=${BS} ..."
     "${BIN}" 4 "${CSV}"
-    echo "  [run] mode 6 — fused tiled SZ_T=${BS} + fused_blk_* SZ_B=${BS} ..."
-    "${BIN}" 6 "${CSV}"
     rm -f "${BIN}"
 done
 

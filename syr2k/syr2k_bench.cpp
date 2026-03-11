@@ -41,10 +41,10 @@
 #define BK 32
 #endif
 #ifndef NRUNS
-#define NRUNS 20
+#define NRUNS 10
 #endif
 #ifndef NWARM
-#define NWARM 5
+#define NWARM 2
 #endif
 
 static constexpr int N = SZ_N, M = SZ_M;
