@@ -1,0 +1,1 @@
+#define __HASH_cloudsc_py "523dc56433ad62b7df8a43da638883df5bce5b5aea5be17130fb24344246e150"

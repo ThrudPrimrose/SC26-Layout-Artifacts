@@ -9,6 +9,8 @@ from dace.transformation.interstate.loop_unroll import LoopUnroll
 from dace.transformation.passes import ScalarToSymbolPromotion
 from dace.transformation.layout.split_array import LoopRegion, SplitArray
 from dace.transformation.passes.analysis import loop_analysis
+from dace.transformation.passes.clean_access_node_to_scalar_slice_to_tasklet_pattern import CleanAccessNodeToScalarSliceToTaskletPattern
+from dace.transformation.passes.ssa_loop_iterators import SSALoopIterators
 
 klon = dace.symbol('klon', dtype=dace.int32)
 klev = dace.symbol('klev', dtype=dace.int32)
@@ -1240,35 +1242,22 @@ if __name__ == '__main__':
     }
     name_map = {"nclv": NAME_ORDER}
 
-    load_if_existing = False
-
-    if load_if_existing and Path('./cloudsc_pydace_unsimplified.sdfgz').exists():
-        print('SDFG already exists, skipping generation')
-        sdfg = dace.SDFG.from_file('cloudsc_pydace_unsimplified.sdfgz')
-        sdfg.validate()
-    else:
-        sdfg = cloudsc_py.to_sdfg(simplify=False)
-        sdfg.save('cloudsc_pydace_unsimplified.sdfgz', compress=True)
-        sdfg.validate()
-
-
-    if load_if_existing and Path('./cloudsc_pydace_simplified_symbolic.sdfgz').exists():
-        sdfg = dace.SDFG.from_file('cloudsc_pydace_simplified_symbolic.sdfgz')
-        sdfg.validate()
-    else:
-        sdfg.simplify(skip={'ScalarToSymbolPromotion'})
-        sdfg.save('cloudsc_pydace_simplified.sdfgz', compress=True)
-        sdfg.validate()
-        ScalarToSymbolPromotion().apply_pass(sdfg, {})
-        sdfg.save('cloudsc_pydace_simplified_symbolic.sdfgz', compress=True)
-
+    sdfg = cloudsc_py.to_sdfg()
     pre_split_sdfg = copy.deepcopy(sdfg)
     sdfg.validate()
     #SplitArray(symbol_map=symbol_map, name_map=name_map).apply_pass(sdfg, {})
     #sdfg.name += "_split"
     #sdfg.save("cloudsc_split.sdfgz", compress=True)
 
-    unroll(pre_split_sdfg, symbol_map=symbol_map)
-    pre_split_sdfg.name += "_unrolled"
-    pre_split_sdfg.validate()
-    pre_split_sdfg.save("cloudsc_unrolled.sdfgz", compress=True)
+    #CleanAccessNodeToScalarSliceToTaskletPattern(permissive=False).apply_pass(sdfg, None)
+    #SSALoopIterators().apply_pass(sdfg, None)
+    sdfg.validate()
+    sdfg.save("cloudsc_cleaned.sdfgz", compress=True)
+
+    sdfg.replace_dict(symbol_map)
+    sdfg.save("cloudsc_simplified.sdfgz", compress=True)
+
+    #unroll(pre_split_sdfg, symbol_map=symbol_map)
+    #pre_split_sdfg.name += "_unrolled"
+    #pre_split_sdfg.validate()
+    #pre_split_sdfg.save("cloudsc_unrolled.sdfgz", compress=True)

@@ -124,10 +124,6 @@ def main():
     # Flatten: move files up to codegen/ and clean up build subfolder
     _, header = flatten_build_folder(build_loc, sdfg.name)
 
-    # Text-level patches on generated C++ (after codegen, before compile)
-    from text_patches import apply_text_patches
-    apply_text_patches(codegen_dir, args.lowprec)
-
     # cloudsc_main.cpp is maintained manually (includes sensitivity mode etc.)
 
     dace_runtime = Path(dace.__file__).parent / "runtime" / "include"
