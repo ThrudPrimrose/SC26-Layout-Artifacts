@@ -2666,16 +2666,3 @@ def cloudsc_py(
   #===============================================================================
   #IF (LHOOK) CALL DR_HOOK('CLOUDSC',1,ZHOOK_HANDLE)
   return 
-
-if __name__ == "__main__":
-  if Path("./cloudsc_pydace_unsimplified.sdfgz").exists():
-    print("SDFG already exists, skipping generation")
-    sdfg = dace.SDFG.from_file("cloudsc_pydace_unsimplified.sdfgz")
-    sdfg.validate()
-  else:
-    sdfg = cloudsc_py.to_sdfg(simplify=False)
-    sdfg.save("cloudsc_pydace_unsimplified.sdfgz", compress=True)
-    sdfg.validate()
-
-  sdfg.simplify(skip={"ScalarToSymbolPromotion"})
-  sdfg.save("cloudsc_pydace_simplified.sdfgz", compress=True)

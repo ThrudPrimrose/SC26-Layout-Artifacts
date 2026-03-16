@@ -29,7 +29,10 @@ for name, sdfg in [("cloudsc_unrolled", sdfg2),]: #[("cloudsc_split", sdfg1), ("
                 sdfg.add_edge(e.src, e.src_conn, s, None, copy.deepcopy(e.data))
             for e in oes:
                 sdfg.add_edge(s, None, e.dst, e.dst_conn, copy.deepcopy(e.data))
-    
+
+    CleanAccessNodeToScalarSliceToTaskletPattern(permissive=True).apply_pass(sdfg, None)
+    sdfg.validate()
+
     # Breaks
     #pipeline_results = dict()
     #pipeline_results[ap.ControlFlowBlockReachability.__name__] = ap.ControlFlowBlockReachability().apply_pass(sdfg, pipeline_results)
@@ -41,8 +44,7 @@ for name, sdfg in [("cloudsc_unrolled", sdfg2),]: #[("cloudsc_split", sdfg1), ("
 
     #SSALoopIterators().apply_pass(sdfg, None)
     #sdfg.validate()
-    #CleanAccessNodeToScalarSliceToTaskletPattern(permissive=True).apply_pass(sdfg, None)
-    #sdfg.validate()
+
 
     sdfg.simplify()
     sdfg.name += "_simplified"
