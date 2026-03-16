@@ -1245,12 +1245,14 @@ if __name__ == '__main__':
     sdfg = cloudsc_py.to_sdfg()
     pre_split_sdfg = copy.deepcopy(sdfg)
     sdfg.validate()
+
     #SplitArray(symbol_map=symbol_map, name_map=name_map).apply_pass(sdfg, {})
     #sdfg.name += "_split"
     #sdfg.save("cloudsc_split.sdfgz", compress=True)
 
     #CleanAccessNodeToScalarSliceToTaskletPattern(permissive=False).apply_pass(sdfg, None)
     #SSALoopIterators().apply_pass(sdfg, None)
+    
     sdfg.validate()
     sdfg.save("cloudsc_cleaned.sdfgz", compress=True)
 

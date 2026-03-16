@@ -143,9 +143,9 @@ def main():
             pass
 
     if args.release:
-        cpp_flags = "-O3 -std=c++20 -DNDEBUG -Wno-parentheses-equality"
+        cpp_flags = "-O3 -std=c++20 -DNDEBUG "
     else:
-        cpp_flags = "-O0 -g -std=c++20 -Wall -Wextra -Wno-parentheses-equality"
+        cpp_flags = "-O0 -g -std=c++20 -Wall -Wextra "
 
     cmd = f"c++ {cpp_flags} -Icodegen -Iinclude -I{dace_runtime} {h5_cflags} cloudsc_main.cpp codegen/*.cpp -o cloudsc_cpu_bin -lpthread {h5_libs}"
 
