@@ -93,7 +93,7 @@ def inject_copy_cast(file_path: Path):
             f.write(new_content)
 
 
-def apply_text_patches(codegen_dir: Path, lowprec: str):
+def apply_text_patches(codegen_dir: Path):
     """Apply all text-level patches to generated source files.
 
     Args:

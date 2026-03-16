@@ -97,8 +97,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sdfg", type=str, default="cloudsc_simplified.sdfgz")
     parser.add_argument("--release", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--lowprec", type=str, default="fp64",
-                        choices=["fp64"])
     args = parser.parse_args()
     print(f"Loading SDFG from {args.sdfg}...")
 
@@ -112,15 +110,7 @@ def main():
     codegen_dir.mkdir()
     sdfg.build_folder = str(codegen_dir / sdfg.name)
 
-    print(f"Generating code ({'Release' if args.release else 'Debug'}, lowprec={args.lowprec})...")
-
-    # SDFG-level precision lowering (before codegen)
-    from lowprec import apply_lowprec
-    #apply_lowprec(sdfg, args.lowprec)
-
-    # Save the lowered SDFG for inspection before codegen
-    sdfg.save("cloudsc_lowered.sdfgz", compress=True)
-    print("Saved lowered SDFG to cloudsc_lowered.sdfgz")
+    print(f"Generating code ({'Release' if args.release else 'Debug'})...")
 
     # Use velocity's lower-level codegen path
     sdfg.fill_scope_connectors()
@@ -138,10 +128,6 @@ def main():
 
     # Flatten: move files up to codegen/ and clean up build subfolder
     _, header = flatten_build_folder(build_loc, sdfg.name)
-
-    # Text-level patches on generated C++ (after codegen, before compile)
-    from text_patches import apply_text_patches
-    apply_text_patches(codegen_dir, args.lowprec)
 
     # cloudsc_main.cpp is maintained manually (includes sensitivity mode etc.)
 
