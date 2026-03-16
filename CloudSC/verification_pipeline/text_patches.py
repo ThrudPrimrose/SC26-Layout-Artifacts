@@ -92,3 +92,23 @@ def inject_copy_cast(file_path: Path):
         with open(file_path, "w") as f:
             f.write(new_content)
 
+
+def apply_text_patches(codegen_dir: Path, lowprec: str):
+    """Apply all text-level patches to generated source files.
+
+    Args:
+        codegen_dir: Path to the codegen/ directory with generated .cpp/.h files.
+        lowprec: Precision mode string.
+    """
+    if lowprec in ("fp64", "f64"):
+        return  # nothing to patch
+
+    source_files = list(codegen_dir.glob("*.cpp")) + list(codegen_dir.glob("*.h"))
+
+    for f in source_files:
+        if lowprec in ("fp16", "f16"):
+            fix_mixed_precision_ambiguity(f)
+        inject_copy_cast(f)
+        floatify_generated_code(f)
+
+    print(f"Applied text patches to {len(source_files)} files in {codegen_dir}")

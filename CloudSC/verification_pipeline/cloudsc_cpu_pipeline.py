@@ -6,7 +6,11 @@ from pathlib import Path
 
 from dace.codegen import codegen, compiler
 from dace.sdfg import infer_types
-from dace.transformation.interstate import LoopToMap
+
+dace.config.Config.set("compiler", "default_data_types", value="C")
+
+
+# --- Source Management (matches velocity/utils/compile_if_propagated_sdfgs.py) ---
 
 
 def repl_in_file(file_path: str, src: str, dst: str):
@@ -91,9 +95,12 @@ def main():
     import argparse
     import subprocess
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sdfg", type=str, default="../cloudsc_py_unrolled_simplified.sdfgz")
+    parser.add_argument("--sdfg", type=str, default="cloudsc_simplified.sdfgz")
     parser.add_argument("--release", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--lowprec", type=str, default="fp64",
+                        choices=["fp64"])
     args = parser.parse_args()
+    print(f"Loading SDFG from {args.sdfg}...")
 
     sdfg = dace.SDFG.from_file(args.sdfg)
     sdfg.name = "cloudsc_py"
@@ -105,7 +112,15 @@ def main():
     codegen_dir.mkdir()
     sdfg.build_folder = str(codegen_dir / sdfg.name)
 
-    print(f"Generating code ({'Release' if args.release else 'Debug'})...")
+    print(f"Generating code ({'Release' if args.release else 'Debug'}, lowprec={args.lowprec})...")
+
+    # SDFG-level precision lowering (before codegen)
+    from lowprec import apply_lowprec
+    #apply_lowprec(sdfg, args.lowprec)
+
+    # Save the lowered SDFG for inspection before codegen
+    sdfg.save("cloudsc_lowered.sdfgz", compress=True)
+    print("Saved lowered SDFG to cloudsc_lowered.sdfgz")
 
     # Use velocity's lower-level codegen path
     sdfg.fill_scope_connectors()
@@ -123,6 +138,10 @@ def main():
 
     # Flatten: move files up to codegen/ and clean up build subfolder
     _, header = flatten_build_folder(build_loc, sdfg.name)
+
+    # Text-level patches on generated C++ (after codegen, before compile)
+    from text_patches import apply_text_patches
+    apply_text_patches(codegen_dir, args.lowprec)
 
     # cloudsc_main.cpp is maintained manually (includes sensitivity mode etc.)
 
@@ -143,14 +162,14 @@ def main():
             pass
 
     if args.release:
-        cpp_flags = "-O3 -std=c++20 -DNDEBUG "
+        cpp_flags = "-O3 -g -std=c++20 -DNDEBUG  -Wall -Wextra -Wno-parentheses-equality -Wno-unused-variable -Wno-unused-label"
     else:
-        cpp_flags = "-O0 -g -std=c++20 -Wall -Wextra "
+        cpp_flags = "-O0 -g -std=c++20 -Wall -Wextra -Wno-parentheses-equality -Wno-unused-variable -Wno-unused-label"
 
     cmd = f"c++ {cpp_flags} -Icodegen -Iinclude -I{dace_runtime} {h5_cflags} cloudsc_main.cpp codegen/*.cpp -o cloudsc_cpu_bin -lpthread {h5_libs}"
 
     with open("recompile.sh", "w") as f:
-        f.write(f"#!/bin/bash\nset -e\n{cmd}\n")
+        f.write(f"#!/bin/bash\nset -ex\n{cmd} || exit 1\n")
     os.chmod("recompile.sh", 0o755)
     print(f"Pipeline ready. Build command updated in recompile.sh (Release={args.release}, HDF5 support included)")
 
