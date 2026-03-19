@@ -91,8 +91,8 @@ int main() {
     csv = fopen("results_cpu.csv", "w");
     fprintf(csv, "device,layout,run,ms,gbps\n");
 
-    printf("conj: N=%dM  block=%d  runs=%d  omp_threads=%d  dtype=double\n\n",
-           N >> 20, BLK, RUNS, omp_get_max_threads());
+    printf("conj: N=%lldM  block=%ld  runs=%d  omp_threads=%d  dtype=double\n\n",
+           (long long)(N >> 20), (long)BLK, (int)RUNS, omp_get_max_threads());
 
     /* --- CPU --- */
     printf("\n[CPU]\n");

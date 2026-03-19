@@ -81,8 +81,8 @@ int main() {
     csv = fopen("results_gpu_oop.csv", "w");
     fprintf(csv, "device,layout,ms,gbps\n");
 
-    printf("conj: N=%lldM  block=%lld  runs=%lld  dtype=double\n\n",
-           N >> 20, BLK, RUNS);
+    printf("conj: N=%lldM  block=%ld  runs=%d dtype=double\n\n",
+           (long long)(N >> 20), (long)BLK, (int)RUNS);
 
     /* --- GPU --- */
     int devcount = 0;

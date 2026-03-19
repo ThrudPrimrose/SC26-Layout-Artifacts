@@ -51,7 +51,7 @@ __global__ void g_aosoa(C2V<VL>* __restrict__ in, C2V<VL>* __restrict__ out, int
 static FILE *csv;
 static double bw(double ms) { return 4.0 * N * sizeof(double) / (ms * 1e6); }
 
-static void emit(char *dev, char *layout, double ms) {
+static void emit(const char *dev, const char *layout, double ms) {
     double g = bw(ms);
     printf("  %-4s %-14s %8.4f ms  %7.1f GB/s\n", dev, layout, ms, g);
     fprintf(csv, "%s,%s,%.6f,%.2f\n", dev, layout, ms, g);
@@ -81,8 +81,8 @@ int main() {
     csv = fopen("results_gpu_inplace.csv", "w");
     fprintf(csv, "device,layout,ms,gbps\n");
 
-    printf("conj(inplace): N=%lldM  block=%lld  runs=%lld  omp_threads=%d  dtype=double\n\n",
-           N >> 20, BLK, RUNS, omp_get_max_threads());
+    printf("conj: N=%lldM  block=%ld  runs=%d dtype=double\n\n",
+           (long long)(N >> 20), (long)BLK, (int)RUNS);
 
     /* --- GPU --- */
     int devcount = 0;

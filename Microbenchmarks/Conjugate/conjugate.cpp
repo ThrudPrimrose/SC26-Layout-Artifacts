@@ -95,8 +95,8 @@ int main() {
     csv = fopen("results_cpu_oop.csv", "w");
     emit_header();
 
-    printf("conj(oop): N=%lldM  runs=%d  omp_threads=%d  dtype=double\n\n",
-           (long long)(N >> 20), (int)RUNS, omp_get_max_threads());
+    printf("conj: N=%lldM  block=%ld  runs=%d  omp_threads=%d  dtype=double\n\n",
+           (long long)(N >> 20), (long)BLK, (int)RUNS, omp_get_max_threads());
 
     printf("[CPU]\n");
     CPU_BENCH("AoS",      (c_aos((C2*)hi, (C2*)ho, N)));
