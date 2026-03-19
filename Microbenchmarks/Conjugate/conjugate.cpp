@@ -92,7 +92,7 @@ int main() {
     double *hi = (double*)malloc(bytes), *ho = (double*)malloc(bytes);
     for (int64_t i = 0; i < 2 * N; i++) hi[i] = (double)(i % 997) * 0.001;
 
-    csv = fopen("results_cpu.csv", "w");
+    csv = fopen("results_cpu_oop.csv", "w");
     emit_header();
 
     printf("conj(oop): N=%lldM  runs=%d  omp_threads=%d  dtype=double\n\n",
@@ -110,5 +110,5 @@ int main() {
 
     fclose(csv);
     free(hi); free(ho);
-    printf("\nwrote results_cpu.csv\n");
+    printf("\nwrote results_cpu_oop.csv\n");
 }

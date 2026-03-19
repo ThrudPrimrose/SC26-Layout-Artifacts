@@ -1,10 +1,11 @@
-#include <omp.h>
+#include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
 #include <type_traits>
 
-constexpr int64_t N    = 1 << 27;   // 128M elements
+constexpr int64_t N    = 1 << 24;
+constexpr int64_t BLK  = 256;
+constexpr int64_t GRID = (N + BLK - 1) / BLK;
 constexpr int64_t RUNS = 100;
 
 struct C2 { double re, im; };
@@ -22,80 +23,94 @@ CHECK_C2V(2) CHECK_C2V(4) CHECK_C2V(8)
 CHECK_C2V(16) CHECK_C2V(32) CHECK_C2V(64)
 #undef CHECK_C2V
 
-/* ═══ CPU Kernels (in-place) ═══ */
+/* ═══ GPU Kernels ═══ */
 
-static void c_aos(C2* __restrict__ d, int64_t n) {
-    #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < n; i++) d[i].im = -d[i].im;
+__global__ void g_aos(const C2* __restrict__ in, C2* __restrict__ out, int n) {
+    int i = blockIdx.x * BLK + threadIdx.x;
+    if (i < n) out[i] = {in[i].re, -in[i].im};
 }
 
-static void c_soa(double* __restrict__ im, int64_t n) {
-    #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < n; i++) im[i] = -im[i];
+__global__ void g_soa(const double* __restrict__ ri, const double* __restrict__ ii,
+                      double* __restrict__ ro, double* __restrict__ io, int n) {
+    int i = blockIdx.x * BLK + threadIdx.x;
+    if (i < n) { ro[i] = ri[i]; io[i] = -ii[i]; }
 }
 
 template<int VL>
-static void c_aosoa(C2V<VL>* __restrict__ d, int64_t n) {
-    int64_t nblks = n / VL;
-    #pragma omp parallel for schedule(static)
-    for (int64_t b = 0; b < nblks; b++)
-        #pragma omp simd
-        for (int l = 0; l < VL; l++)
-            d[b].im[l] = -d[b].im[l];
+__global__ void g_aosoa(const C2V<VL>* __restrict__ in, C2V<VL>* __restrict__ out, int n) {
+    int i = blockIdx.x * BLK + threadIdx.x;
+    if (i < n) {
+        int blk = i / VL, lane = i % VL;
+        out[blk].re[lane] =  in[blk].re[lane];
+        out[blk].im[lane] = -in[blk].im[lane];
+    }
 }
+
 
 /* ═══ Reporting ═══ */
 
 static FILE *csv;
-static double bw_ip(double ms) { return 2.0 * N * sizeof(double) / (ms * 1e6); }
+static double bw(double ms) { return 4.0 * N * sizeof(double) / (ms * 1e6); }
 
-static void emit_run(const char *dev, const char *layout, int run, double ms) {
-    fprintf(csv, "%s,%s,%d,%.6f,%.2f\n", dev, layout, run, ms, bw_ip(ms));
+static void emit(const char *dev, const char *layout, double ms) {
+    double g = bw(ms);
+    printf("  %-4s %-14s %8.4f ms  %7.1f GB/s\n", dev, layout, ms, g);
+    fprintf(csv, "%s,%s,%.6f,%.2f\n", dev, layout, ms, g);
 }
 
-#define CPU_BENCH(label, call) do { \
-    call; \
-    call; \
-    call; \
-    call; \
-    call; \
-    double times[RUNS]; \
-    for (int r = 0; r < RUNS; r++) { \
-        double t0 = omp_get_wtime(); \
-        call; \
-        times[r] = (omp_get_wtime() - t0) * 1e3; \
-    } \
-    double sum = 0; \
-    for (int r = 0; r < RUNS; r++) { \
-        emit_run("CPU", label, r, times[r]); \
-        sum += times[r]; \
-    } \
-    double avg = sum / RUNS; \
-    printf("  %-14s %8.4f ms  %7.1f GB/s\n", label, avg, bw_ip(avg)); \
+/* ═══ GPU bench (CUDA events) ═══ */
+
+#define GPU_BENCH(label, call) do { \
+    call; cudaDeviceSynchronize(); \
+    cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b); \
+    cudaEventRecord(a); \
+    for (int r = 0; r < RUNS; r++) { call; } \
+    cudaEventRecord(b); cudaEventSynchronize(b); \
+    float ms; cudaEventElapsedTime(&ms, a, b); \
+    emit("GPU", label, ms / RUNS); \
+    cudaEventDestroy(a); cudaEventDestroy(b); \
 } while (0)
+
 
 int main() {
     size_t bytes = 2ULL * N * sizeof(double);
-    double *hi = (double*)malloc(bytes);
-    for (int64_t i = 0; i < 2 * N; i++) hi[i] = (double)(i % 997) * 0.001;
 
-    csv = fopen("results_cpu_ip.csv", "w");
-    fprintf(csv, "device,layout,run,ms,gbps\n");
+    double *hi = (double*)malloc(bytes), *ho = (double*)malloc(bytes);
+    for (int i = 0; i < 2 * N; i++) hi[i] = (double)(i % 997) * 0.001;
 
-    printf("conj(ip/cpu): N=%lldM  runs=%d  omp_threads=%d  dtype=double\n\n",
-           (long long)(N >> 20), (int)RUNS, omp_get_max_threads());
+    csv = fopen("results_gpu_oop.csv", "w");
+    fprintf(csv, "device,layout,ms,gbps\n");
 
-    printf("[CPU in-place]\n");
-    CPU_BENCH("AoS",      c_aos((C2*)hi, N));
-    CPU_BENCH("SoA",      c_soa(hi + N, N));
-    CPU_BENCH("AoSoA-2",  (c_aosoa< 2>((C2V< 2>*)hi, N)));
-    CPU_BENCH("AoSoA-4",  (c_aosoa< 4>((C2V< 4>*)hi, N)));
-    CPU_BENCH("AoSoA-8",  (c_aosoa< 8>((C2V< 8>*)hi, N)));
-    CPU_BENCH("AoSoA-16", (c_aosoa<16>((C2V<16>*)hi, N)));
-    CPU_BENCH("AoSoA-32", (c_aosoa<32>((C2V<32>*)hi, N)));
-    CPU_BENCH("AoSoA-64", (c_aosoa<64>((C2V<64>*)hi, N)));
+    printf("conj: N=%lldM  block=%lld  runs=%lld  dtype=double\n\n",
+           N >> 20, BLK, RUNS);
+
+    /* --- GPU --- */
+    int devcount = 0;
+    cudaGetDeviceCount(&devcount);
+    if (devcount > 0 && cudaSetDevice(0) == cudaSuccess) {
+        double *di, *dout;
+        if (cudaMalloc(&di, bytes) != cudaSuccess ||
+            cudaMalloc(&dout, bytes) != cudaSuccess) {
+            printf("[GPU] cudaMalloc failed, skipping\n\n");
+        } else {
+            cudaMemcpy(di, hi, bytes, cudaMemcpyHostToDevice);
+            printf("[GPU]\n");
+            GPU_BENCH("AoS",      (g_aos<<<GRID,BLK>>>((C2*)di, (C2*)dout, N)));
+            GPU_BENCH("SoA",      (g_soa<<<GRID,BLK>>>(di, di+N, dout, dout+N, N)));
+            GPU_BENCH("AoSoA-2",  (g_aosoa< 2><<<GRID,BLK>>>((C2V< 2>*)di, (C2V< 2>*)dout, N)));
+            GPU_BENCH("AoSoA-4",  (g_aosoa< 4><<<GRID,BLK>>>((C2V< 4>*)di, (C2V< 4>*)dout, N)));
+            GPU_BENCH("AoSoA-8",  (g_aosoa< 8><<<GRID,BLK>>>((C2V< 8>*)di, (C2V< 8>*)dout, N)));
+            GPU_BENCH("AoSoA-16", (g_aosoa<16><<<GRID,BLK>>>((C2V<16>*)di, (C2V<16>*)dout, N)));
+            GPU_BENCH("AoSoA-32", (g_aosoa<32><<<GRID,BLK>>>((C2V<32>*)di, (C2V<32>*)dout, N)));
+            GPU_BENCH("AoSoA-64", (g_aosoa<64><<<GRID,BLK>>>((C2V<64>*)di, (C2V<64>*)dout, N)));
+            cudaFree(di); cudaFree(dout);
+        }
+    } else {
+        printf("[GPU] no device available, skipping\n\n");
+    }
+
 
     fclose(csv);
-    free(hi);
-    printf("\nwrote results_cpu_ip.csv\n");
+    free(hi); free(ho);
+    printf("\nwrote results_gpu_oop.csv\n");
 }

@@ -107,5 +107,5 @@ int main() {
 
     fclose(csv);
     free(hi); free(ho);
-    printf("\nwrote results.csv\n");
+    printf("\nwrote results_cpu_inplace.csv\n");
 }
