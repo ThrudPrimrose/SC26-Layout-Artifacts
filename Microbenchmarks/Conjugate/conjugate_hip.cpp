@@ -53,23 +53,27 @@ __global__ void g_aosoa(const C2V<VL>* __restrict__ in, C2V<VL>* __restrict__ ou
 static FILE *csv;
 static double bw(double ms) { return 4.0 * N * sizeof(double) / (ms * 1e6); }
 
-static void emit(const char *dev, const char *layout, double ms) {
-    double g = bw(ms);
-    printf("  %-4s %-14s %8.4f ms  %7.1f GB/s\n", dev, layout, ms, g);
-    fprintf(csv, "%s,%s,%.6f,%.2f\n", dev, layout, ms, g);
+static void emit_header() {
+    fprintf(csv, "device,layout,run,ms,gbps\n");
+}
+
+static void emit_run(const char *dev, const char *layout, int run, double ms) {
+    fprintf(csv, "%s,%s,%d,%.6f,%.2f\n", dev, layout, run, ms, bw(ms));
 }
 
 /* ═══ GPU bench (CUDA events) ═══ */
 
 #define GPU_BENCH(label, call) do { \
-    call; hipDeviceSynchronize(); \
-    hipEvent_t a, b; hipEventCreate(&a); hipEventCreate(&b); \
-    hipEventRecord(a); \
-    for (int r = 0; r < RUNS; r++) { call; } \
-    hipEventRecord(b); hipEventSynchronize(b); \
-    float ms; hipEventElapsedTime(&ms, a, b); \
-    emit("GPU", label, ms / RUNS); \
-    hipEventDestroy(a); hipEventDestroy(b); \
+    call; call; call; call; call; hipDeviceSynchronize(); \
+    for (int r = 0; r < RUNS; r++) { \
+        hipEvent_t a, b; hipEventCreate(&a); hipEventCreate(&b); \
+        hipEventRecord(a); \
+        call; \
+        hipEventRecord(b); hipEventSynchronize(b); \
+        float ms; hipEventElapsedTime(&ms, a, b); \
+        emit_run("GPU", label, r, ms); \
+        hipEventDestroy(a); hipEventDestroy(b); \
+    } \
 } while (0)
 
 
@@ -80,7 +84,7 @@ int main() {
     for (int i = 0; i < 2 * N; i++) hi[i] = (double)(i % 997) * 0.001;
 
     csv = fopen("results_gpu_oop.csv", "w");
-    fprintf(csv, "device,layout,ms,gbps\n");
+    emit_header();
 
     printf("conj: N=%lldM  block=%ld  runs=%d dtype=double\n\n",
            (long long)(N >> 20), (long)BLK, (int)RUNS);
