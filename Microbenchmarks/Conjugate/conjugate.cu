@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <type_traits>
 
-constexpr int64_t N    = 1 << 24;
+constexpr int64_t N    = 1 << 27;   // 128M elements
 constexpr int64_t BLK  = 256;
 constexpr int64_t GRID = (N + BLK - 1) / BLK;
 constexpr int64_t RUNS = 100;
