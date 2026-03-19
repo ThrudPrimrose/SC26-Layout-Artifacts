@@ -51,23 +51,27 @@ __global__ void g_aosoa(C2V<VL>* __restrict__ in, C2V<VL>* __restrict__ out, int
 static FILE *csv;
 static double bw(double ms) { return 4.0 * N * sizeof(double) / (ms * 1e6); }
 
-static void emit(const char *dev, const char *layout, double ms) {
-    double g = bw(ms);
-    printf("  %-4s %-14s %8.4f ms  %7.1f GB/s\n", dev, layout, ms, g);
-    fprintf(csv, "%s,%s,%.6f,%.2f\n", dev, layout, ms, g);
+static void emit_header() {
+    fprintf(csv, "device,layout,run,ms,gbps\n");
+}
+
+static void emit_run(const char *dev, const char *layout, int run, double ms) {
+    fprintf(csv, "%s,%s,%d,%.6f,%.2f\n", dev, layout, run, ms, bw(ms));
 }
 
 /* ═══ GPU bench (CUDA events) ═══ */
 
 #define GPU_BENCH(label, call) do { \
-    call; cudaDeviceSynchronize(); \
-    cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b); \
-    cudaEventRecord(a); \
-    for (int r = 0; r < RUNS; r++) { call; } \
-    cudaEventRecord(b); cudaEventSynchronize(b); \
-    float ms; cudaEventElapsedTime(&ms, a, b); \
-    emit("GPU", label, ms / RUNS); \
-    cudaEventDestroy(a); cudaEventDestroy(b); \
+    call; call; call; call; call; cudaDeviceSynchronize(); \
+    for (int r = 0; r < RUNS; r++) { \
+        cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b); \
+        cudaEventRecord(a); \
+        call; \
+        cudaEventRecord(b); cudaEventSynchronize(b); \
+        float ms; cudaEventElapsedTime(&ms, a, b); \
+        emit_run("GPU", label, r, ms); \
+        cudaEventDestroy(a); cudaEventDestroy(b); \
+    } \
 } while (0)
 
 /* ═══ CPU bench (omp_get_wtime) ═══ */
@@ -79,7 +83,7 @@ int main() {
     for (int i = 0; i < 2 * N; i++) hi[i] = (double)(i % 997) * 0.001;
 
     csv = fopen("results_gpu_inplace.csv", "w");
-    fprintf(csv, "device,layout,ms,gbps\n");
+    emit_header();
 
     printf("conj: N=%lldM  block=%ld  runs=%d dtype=double\n\n",
            (long long)(N >> 20), (long)BLK, (int)RUNS);
