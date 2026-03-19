@@ -21,7 +21,7 @@ export OMP_DISPLAY_ENV=TRUE
 echo "Running on $(hostname)"
 echo "Threads: $OMP_NUM_THREADS"
 
-spack load gcc/76jw6nu
+spack load gcc/76jw6nu # 14.3
 spack loadd cuda@12.9
 # -------------------------------
 # Workload parameters (BIG!)
