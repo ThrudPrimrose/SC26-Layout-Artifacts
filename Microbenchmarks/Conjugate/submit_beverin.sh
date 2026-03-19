@@ -73,3 +73,5 @@ for f in results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.c
             k, s[k]/n[k], g[k]/n[k]}' "$f" | sort
     echo ""
 done
+
+move results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.csv results/beverin
