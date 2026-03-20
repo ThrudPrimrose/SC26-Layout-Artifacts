@@ -14,6 +14,8 @@ export OMP_NUM_THREADS=288
 export OMP_PROC_BIND=true
 export OMP_PLACES=cores
 export OMP_DISPLAY_ENV=TRUE
+export __HIP_PLATFORM_AMD__=0
+export HIP_PLATFORM_AMD=0
 
 export PYENV_ROOT="$HOME/.pyenv"
 export PATH="$PYENV_ROOT/bin:$PATH"
@@ -28,21 +30,22 @@ spack load cuda@12.9
 spack load gcc/76jw6nu
 
 sleep 1
-python zsolqa_loopnest.py --variant=3d-gpu --reps=100 --csv bench_3d_gpu.csv
-sleep 1
-python zsolqa_loopnest.py --variant=split-gpu --reps=100 --csv bench_split_gpu.csv
-sleep 1
 python zsolqa_loopnest.py --variant=3d-reduce-gpu --reps=100 --csv bench_reduce_gpu.csv
 sleep 1
 python zsolqa_loopnest.py --variant=split-reduce-gpu --reps=100 --csv bench_reduce_split_gpu.csv
 sleep 1
-python zsolqa_loopnest.py --variant=3d --reps=100 --csv bench_3d.csv
+python zsolqa_loopnest.py --variant=3d-gpu --reps=100 --csv bench_3d_gpu.csv
 sleep 1
-python zsolqa_loopnest.py --variant=split --reps=100 --csv bench_split.csv
+python zsolqa_loopnest.py --variant=split-gpu --reps=100 --csv bench_split_gpu.csv
+
 sleep 1
 python zsolqa_loopnest.py --variant=3d-reduce --reps=100 --csv bench_reduce.csv
 sleep 1
 python zsolqa_loopnest.py --variant=split-reduce --reps=100 --csv bench_reduce_split.csv
+sleep 1
+python zsolqa_loopnest.py --variant=3d --reps=100 --csv bench_3d.csv
+sleep 1
+python zsolqa_loopnest.py --variant=split-3d --reps=100 --csv bench_3d_gpu.csv
 
 mv *.csv results/daint
 
