@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
-"""DaCe benchmark: 3D zsolqa[nclv,nclv,klon] vs split zsolqa_i_j[klon].
-Run with --variant=3d|split|3d-gpu|split-gpu. Logs per-iteration timings to CSV."""
+"""DaCe benchmark: 3D zsolqa[nclv,nclv,klon] vs split zsolqa_i_j[klon],
+plus jk-expanded "reduce" variants.
+
+Variants:
+  3d           - original 3D zsolqa[nclv, nclv, klon]
+  split        - split zsolqa_{src}_{dst}[klon]
+  3d-reduce    - kernel writes zsolqa_buf[nclv, nclv, klev, klon],
+                 then reduces over klev into zsolqa[nclv, nclv, klon]
+  split-reduce - kernel writes zsolqa_buf_{src}_{dst}[klev, klon],
+                 then reduces over klev into zsolqa_{src}_{dst}[klon]
+  (all with optional -gpu suffix)
+
+Run with --variant=<n>. Logs per-iteration timings to CSV.
+"""
 import argparse
 import csv
 import dace
@@ -9,20 +21,16 @@ import time
 
 from dace.sdfg.state import LoopRegion
 
-"""
-export LD_LIBRARY_PATH=$(spack location -i cuda@12.9)/lib64:$LD_LIBRARY_PATH
-spack load cuda@12.9
-pyenv activate dace_py_12
-spack load gcc/76jw6nu
-"""
-
-VALID_VARIANTS = ['3d', 'split', '3d-gpu', 'split-gpu']
+VALID_VARIANTS = [
+    '3d', 'split', '3d-reduce', 'split-reduce',
+    '3d-gpu', 'split-gpu', '3d-reduce-gpu', 'split-reduce-gpu',
+]
 
 def parse_variant(variant):
     """Return (base, is_gpu) from variant string."""
-    if variant.endswith('-gpu'):
-        return variant[:-4], True
-    return variant, False
+    is_gpu = variant.endswith('-gpu')
+    base = variant[:-4] if is_gpu else variant
+    return base, is_gpu
 
 # ---------- symbols ----------
 klev = dace.symbol('klev', dtype=dace.int32)
@@ -125,6 +133,153 @@ def condense_split(
 
 
 # ================================================================
+# Variant 3: 3D-reduce
+#   Kernel writes to expanded buffers: zsolqa_buf[nclv, nclv, klev, klon]
+#                                      zqxfg_buf[nclv, klev, klon]
+#   Caller reduces over klev into:     zsolqa[nclv, nclv, klon]
+#                                      zqxfg[nclv, klon]
+# ================================================================
+@dace.program
+def condense_3d_reduce(
+    za: dace.float64[klev, klon],
+    zdqs: dace.float64[klon],
+    zqsmix: dace.float64[klev, klon],
+    zqv: dace.float64[klev, klon],
+    ztp1: dace.float64[klev, klon],
+    zsolqa_buf: dace.float64[nclv, nclv, klev, klon],
+    zqxfg_buf: dace.float64[nclv, klev, klon],
+    zsolqa: dace.float64[nclv, nclv, klon],
+    zqxfg: dace.float64[nclv, klon],
+    retv: dace.float64, rtice: dace.float64, rtwat: dace.float64,
+    rtwat_rtice_r: dace.float64, r5alvcp: dace.float64, r4les: dace.float64,
+    r5alscp: dace.float64, r4ies: dace.float64, rthomo: dace.float64,
+    rlmin: dace.float64,
+):
+    for jk in range(klev):
+        for jl in range(klon):
+            if za[jk, jl] > 1e-14:
+                if zdqs[jl] <= -rlmin:
+                    lc = max(-zdqs[jl], 0.0)
+                    af = min(1.0, ((max(rtice, min(rtwat, ztp1[jk, jl])) - rtice) * rtwat_rtice_r) ** 2)
+                    zcor = 1.0 / (1.0 - retv * zqsmix[jk, jl])
+                    cdm_full = (zqv[jk, jl] - zqsmix[jk, jl]) / (1.0 + zcor * zqsmix[jk, jl] * (
+                        af * r5alvcp / (ztp1[jk, jl] - r4les) ** 2
+                        + (1.0 - af) * r5alscp / (ztp1[jk, jl] - r4ies) ** 2))
+                    cdm_part = (zqv[jk, jl] - za[jk, jl] * zqsmix[jk, jl]) / za[jk, jl]
+                    if za[jk, jl] > 0.99:
+                        cdm = cdm_full
+                    else:
+                        cdm = cdm_part
+                    lc = za[jk, jl] * max(min(lc, cdm), 0.0)
+                    if lc >= rlmin:
+                        if ztp1[jk, jl] > rthomo:
+                            zsolqa_buf[ncldqv - 1, ncldql - 1, jk, jl] = lc
+                            zsolqa_buf[ncldql - 1, ncldqv - 1, jk, jl] = -lc
+                            zqxfg_buf[ncldql - 1, jk, jl] = lc
+                        else:
+                            zsolqa_buf[ncldqv - 1, ncldqi - 1, jk, jl] = lc
+                            zsolqa_buf[ncldqi - 1, ncldqv - 1, jk, jl] = -lc
+                            zqxfg_buf[ncldqi - 1, jk, jl] = lc
+    for jl in range(klon):
+        sum_qv_ql = 0.0
+        sum_ql_qv = 0.0
+        sum_qv_qi = 0.0
+        sum_qi_qv = 0.0
+        sum_fgl = 0.0
+        sum_fgi = 0.0
+        for jk in range(klev):
+            sum_qv_ql += zsolqa_buf[ncldqv - 1, ncldql - 1, jk, jl]
+            sum_ql_qv += zsolqa_buf[ncldql - 1, ncldqv - 1, jk, jl]
+            sum_qv_qi += zsolqa_buf[ncldqv - 1, ncldqi - 1, jk, jl]
+            sum_qi_qv += zsolqa_buf[ncldqi - 1, ncldqv - 1, jk, jl]
+            sum_fgl += zqxfg_buf[ncldql - 1, jk, jl]
+            sum_fgi += zqxfg_buf[ncldqi - 1, jk, jl]
+        zsolqa[ncldqv - 1, ncldql - 1, jl] = sum_qv_ql
+        zsolqa[ncldql - 1, ncldqv - 1, jl] = sum_ql_qv
+        zsolqa[ncldqv - 1, ncldqi - 1, jl] = sum_qv_qi
+        zsolqa[ncldqi - 1, ncldqv - 1, jl] = sum_qi_qv
+        zqxfg[ncldql - 1, jl] = sum_fgl
+        zqxfg[ncldqi - 1, jl] = sum_fgi
+
+# ================================================================
+# Variant 4: split-reduce
+#   Kernel writes to expanded buffers: zsolqa_*_buf[klev, klon]
+#                                      zqxfg_*_buf[klev, klon]
+#   Caller reduces over klev into:     zsolqa_*[klon]
+#                                      zqxfg_*[klon]
+# ================================================================
+@dace.program
+def condense_split_reduce(
+    za: dace.float64[klev, klon],
+    zdqs: dace.float64[klon],
+    zqsmix: dace.float64[klev, klon],
+    zqv: dace.float64[klev, klon],
+    ztp1: dace.float64[klev, klon],
+    zsolqa_ncldqv_ncldql_buf: dace.float64[klev, klon],
+    zsolqa_ncldql_ncldqv_buf: dace.float64[klev, klon],
+    zsolqa_ncldqv_ncldqi_buf: dace.float64[klev, klon],
+    zsolqa_ncldqi_ncldqv_buf: dace.float64[klev, klon],
+    zqxfg_ncldql_buf: dace.float64[klev, klon],
+    zqxfg_ncldqi_buf: dace.float64[klev, klon],
+    zsolqa_ncldqv_ncldql: dace.float64[klon],
+    zsolqa_ncldql_ncldqv: dace.float64[klon],
+    zsolqa_ncldqv_ncldqi: dace.float64[klon],
+    zsolqa_ncldqi_ncldqv: dace.float64[klon],
+    zqxfg_ncldql: dace.float64[klon],
+    zqxfg_ncldqi: dace.float64[klon],
+    retv: dace.float64, rtice: dace.float64, rtwat: dace.float64,
+    rtwat_rtice_r: dace.float64, r5alvcp: dace.float64, r4les: dace.float64,
+    r5alscp: dace.float64, r4ies: dace.float64, rthomo: dace.float64,
+    rlmin: dace.float64,
+):
+    for jk in range(klev):
+        for jl in range(klon):
+            if za[jk, jl] > 1e-14:
+                if zdqs[jl] <= -rlmin:
+                    lc = max(-zdqs[jl], 0.0)
+                    af = min(1.0, ((max(rtice, min(rtwat, ztp1[jk, jl])) - rtice) * rtwat_rtice_r) ** 2)
+                    zcor = 1.0 / (1.0 - retv * zqsmix[jk, jl])
+                    cdm_full = (zqv[jk, jl] - zqsmix[jk, jl]) / (1.0 + zcor * zqsmix[jk, jl] * (
+                        af * r5alvcp / (ztp1[jk, jl] - r4les) ** 2
+                        + (1.0 - af) * r5alscp / (ztp1[jk, jl] - r4ies) ** 2))
+                    cdm_part = (zqv[jk, jl] - za[jk, jl] * zqsmix[jk, jl]) / za[jk, jl]
+                    if za[jk, jl] > 0.99:
+                        cdm = cdm_full
+                    else:
+                        cdm = cdm_part
+                    lc = za[jk, jl] * max(min(lc, cdm), 0.0)
+                    if lc >= rlmin:
+                        if ztp1[jk, jl] > rthomo:
+                            zsolqa_ncldqv_ncldql_buf[jk, jl] = lc
+                            zsolqa_ncldql_ncldqv_buf[jk, jl] = - lc
+                            zqxfg_ncldql_buf[jk, jl] = lc
+                        else:
+                            zsolqa_ncldqv_ncldqi_buf[jk, jl] = lc
+                            zsolqa_ncldqi_ncldqv_buf[jk, jl] = - lc
+                            zqxfg_ncldqi_buf[jk, jl] = lc
+
+    for jl in range(klon):
+        sum_ncldqv_ncldql = 0.0
+        sum_ncldql_ncldqv = 0.0
+        sum_ncldqv_ncldqi = 0.0
+        sum_ncldqi_ncldqv = 0.0
+        sum_qxfg_ncldql = 0.0
+        sum_qxfg_ncldqi = 0.0
+        for jk in range(klev):
+            sum_ncldqv_ncldql += zsolqa_ncldqv_ncldql_buf[jk, jl]
+            sum_ncldql_ncldqv += zsolqa_ncldql_ncldqv_buf[jk, jl]
+            sum_ncldqv_ncldqi += zsolqa_ncldqv_ncldqi_buf[jk, jl]
+            sum_ncldqi_ncldqv += zsolqa_ncldqi_ncldqv_buf[jk, jl]
+            sum_qxfg_ncldql += zqxfg_ncldql_buf[jk, jl]
+            sum_qxfg_ncldqi += zqxfg_ncldqi_buf[jk, jl]
+        zsolqa_ncldqv_ncldql[jl] = sum_ncldqv_ncldql
+        zsolqa_ncldql_ncldqv[jl] = sum_ncldql_ncldqv
+        zsolqa_ncldqv_ncldqi[jl] = sum_ncldqv_ncldqi
+        zsolqa_ncldqi_ncldqv[jl] = sum_ncldqi_ncldqv
+        zqxfg_ncldql[jl] = sum_qxfg_ncldql
+        zqxfg_ncldqi[jl] = sum_qxfg_ncldqi
+
+# ================================================================
 # Helpers
 # ================================================================
 def xfill(shape, lo=0.0, hi=1.0):
@@ -138,23 +293,59 @@ def xfill(shape, lo=0.0, hi=1.0):
     return a
 
 
-_TRASH = np.empty(128 * 1024 * 1024, dtype=np.float64)
+FLUSH_SIZE = 128 * 1024 * 1024  # 128M doubles = 1 GiB
 
-def flush_cache():
-    n = _TRASH.shape[0]
-    _TRASH[1:n-1] = 0.5 * (_TRASH[0:n-2] + _TRASH[2:n])
-    return _TRASH[n >> 1]
+_TRASH_CPU = None
+_TRASH_GPU = None
+
+def _ensure_trash_cpu():
+    global _TRASH_CPU
+    if _TRASH_CPU is None:
+        _TRASH_CPU = np.empty(FLUSH_SIZE, dtype=np.float64)
+        _TRASH_CPU[:] = np.arange(FLUSH_SIZE, dtype=np.float64) * 1e-15
+    return _TRASH_CPU
+
+def _ensure_trash_gpu():
+    global _TRASH_GPU
+    if _TRASH_GPU is None:
+        import cupy
+        _TRASH_GPU = cupy.empty(FLUSH_SIZE, dtype=cupy.float64)
+        _TRASH_GPU[:] = cupy.arange(FLUSH_SIZE, dtype=cupy.float64) * 1e-15
+    return _TRASH_GPU
+
+def flush_cache_cpu():
+    t = _ensure_trash_cpu()
+    n = t.shape[0]
+    t[1:n-1] = 0.5 * (t[0:n-2] + t[2:n])
+    h = float(np.sum(t[::4096]))
+    return h
+
+def flush_cache_gpu():
+    import cupy
+    t = _ensure_trash_gpu()
+    n = t.shape[0]
+    t[1:n-1] = 0.5 * (t[0:n-2] + t[2:n])
+    cupy.cuda.Device().synchronize()
+    h = float(cupy.sum(t[::4096]))
+    return h
 
 
-def build_sdfg(variant, gpu=False):
+def build_sdfg(base, gpu=False):
     """Build and optimize the SDFG for the given variant."""
-    base, _ = parse_variant(variant) if not gpu else (variant, True)
     if base == '3d':
         sdfg = condense_3d.to_sdfg()
-    else:
+    elif base == 'split':
         sdfg = condense_split.to_sdfg()
+    elif base == '3d-reduce':
+        sdfg = condense_3d_reduce.to_sdfg()
+    elif base == 'split-reduce':
+        sdfg = condense_split_reduce.to_sdfg()
+    else:
+        raise ValueError(f"Unknown base variant: {base}")
 
-    from dace.transformation.passes.clean_access_node_to_scalar_slice_to_tasklet_pattern import CleanAccessNodeToScalarSliceToTaskletPattern
+    from dace.transformation.passes.clean_access_node_to_scalar_slice_to_tasklet_pattern import (
+        CleanAccessNodeToScalarSliceToTaskletPattern,
+    )
     CleanAccessNodeToScalarSliceToTaskletPattern(permissive=True).apply_pass(sdfg, {})
 
     symbol_map = {
@@ -173,14 +364,12 @@ def build_sdfg(variant, gpu=False):
     sdfg.apply_transformations_repeated(MapCollapse)
 
     if gpu:
-        from dace.transformation.auto.auto_optimize import auto_optimize, apply_gpu_storage
-        #Interchanges klev (loop) and klon (map), in original klev is above
+        from dace.transformation.auto.auto_optimize import auto_optimize
         auto_optimize(sdfg, device=dace.dtypes.DeviceType.GPU, use_gpu_storage=True)
-        #apply_gpu_storage(sdfg)
-        #sdfg.apply_gpu_transformations()
         dace.config.Config.set('compiler', 'cuda', 'default_block_size', value="256,1,1")
 
-    sdfg.save(f"condense_{variant}{'_gpu' if gpu else ''}.sdfg")
+    tag = f"{base}{'_gpu' if gpu else ''}"
+    sdfg.save(f"condense_{tag}.sdfg")
     return sdfg
 
 
@@ -198,14 +387,21 @@ def run_variant(variant, reps, csv_path):
     )
     sym = dict(klev=KLEV, klon=KLON, nclv=NCLV, ncldql=1, ncldqi=2, ncldqv=5)
 
-    # Choose array library: cupy for GPU, numpy for CPU
+    # Choose array library
     if is_gpu:
         import cupy as xp
         print("Using cupy for GPU array allocation", flush=True)
     else:
         xp = np
 
-    # Generate data on CPU then transfer (xfill uses numpy internals)
+    # Choose flush function
+    flush_fn = flush_cache_gpu if is_gpu else flush_cache_cpu
+
+    # Allocate flush-cache buffer and print hash
+    h = flush_fn()
+    print(f"Flush-cache hash: {h:.10e}", flush=True)
+
+    # Generate data on CPU then transfer
     za_cpu     = xfill((KLEV, KLON), 0.0, 1.0)
     zdqs_cpu   = xfill((KLON,), -0.01, 0.01)
     zqsmix_cpu = xfill((KLEV, KLON), 0.001, 0.02)
@@ -218,51 +414,111 @@ def run_variant(variant, reps, csv_path):
     zqv    = xp.asarray(zqv_cpu)
     ztp1   = xp.asarray(ztp1_cpu)
 
-    print(f"Building {variant} SDFG...", flush=True)
-    sdfg = build_sdfg(base, gpu=is_gpu)
-    if not is_gpu:
-        sdfg.instrument = dace.dtypes.InstrumentationType.Timer
-    else:
-        sdfg.instrument = dace.dtypes.InstrumentationType.Timer
-        #for state in sdfg.all_states():
-        #    for node in state.nodes():
-        #        if isinstance(node, dace.nodes.MapEntry) and node.map.schedule == dace.ScheduleType.GPU_Device:
-        #            node.map.instrument = dace.dtypes.InstrumentationType.GPU_Events
-
-    print(f"Compiling {variant}...", flush=True)
-    csdfg = sdfg.compile()
-    print("Done.\n", flush=True)
+    # ---- Allocate ALL buffers up front (passed from outside the kernel) ----
 
     if base == '3d':
-        sq3 = xp.zeros((NCLV, NCLV, KLON), dtype=xp.float64)
-        fg3 = xp.zeros((NCLV, KLON), dtype=xp.float64)
+        zsolqa = xp.zeros((NCLV, NCLV, KLON), dtype=xp.float64)
+        zqxfg  = xp.zeros((NCLV, KLON), dtype=xp.float64)
+
         def call():
-            sq3[:] = 0; fg3[:] = 0
+            zsolqa[:] = 0; zqxfg[:] = 0
             csdfg(za=za, zdqs=zdqs, zqsmix=zqsmix, zqv=zqv, ztp1=ztp1,
-                  zsolqa=sq3, zqxfg=fg3, **cst, **sym)
-    else:
-        svl = xp.zeros(KLON, dtype=xp.float64); slv = xp.zeros(KLON, dtype=xp.float64)
-        svi = xp.zeros(KLON, dtype=xp.float64); siv = xp.zeros(KLON, dtype=xp.float64)
-        fl  = xp.zeros(KLON, dtype=xp.float64); fi  = xp.zeros(KLON, dtype=xp.float64)
+                  zsolqa=zsolqa, zqxfg=zqxfg, **cst, **sym)
+
+    elif base == 'split':
+        svl = xp.zeros(KLON, dtype=xp.float64)
+        slv = xp.zeros(KLON, dtype=xp.float64)
+        svi = xp.zeros(KLON, dtype=xp.float64)
+        siv = xp.zeros(KLON, dtype=xp.float64)
+        fl  = xp.zeros(KLON, dtype=xp.float64)
+        fi  = xp.zeros(KLON, dtype=xp.float64)
+
         def call():
-            svl[:] = 0; slv[:] = 0; svi[:] = 0; siv[:] = 0; fl[:] = 0; fi[:] = 0
+            svl[:] = 0; slv[:] = 0; svi[:] = 0; siv[:] = 0
+            fl[:] = 0; fi[:] = 0
             csdfg(za=za, zdqs=zdqs, zqsmix=zqsmix, zqv=zqv, ztp1=ztp1,
                   zsolqa_ncldqv_ncldql=svl, zsolqa_ncldql_ncldqv=slv,
                   zsolqa_ncldqv_ncldqi=svi, zsolqa_ncldqi_ncldqv=siv,
                   zqxfg_ncldql=fl, zqxfg_ncldqi=fi, **cst, **sym)
 
-    # Warmup
+    elif base == '3d-reduce':
+        # Intermediate jk-expanded buffers (kernel writes here)
+        zsolqa_buf = xp.zeros((NCLV, NCLV, KLEV, KLON), dtype=xp.float64)
+        zqxfg_buf  = xp.zeros((NCLV, KLEV, KLON), dtype=xp.float64)
+        # Final reduced outputs (same shape as '3d')
+        zsolqa = xp.zeros((NCLV, NCLV, KLON), dtype=xp.float64)
+        zqxfg  = xp.zeros((NCLV, KLON), dtype=xp.float64)
+
+        def call():
+            zsolqa_buf[:] = 0; zqxfg_buf[:] = 0
+            zsolqa[:] = 0; zqxfg[:] = 0
+            csdfg(za=za, zdqs=zdqs, zqsmix=zqsmix, zqv=zqv, ztp1=ztp1,
+                  zsolqa_buf=zsolqa_buf, zqxfg_buf=zqxfg_buf,
+                  zsolqa=zsolqa, zqxfg=zqxfg, **cst, **sym)
+
+    elif base == 'split-reduce':
+        # Intermediate jk-expanded buffers (kernel writes here)
+        svl_buf = xp.zeros((KLEV, KLON), dtype=xp.float64)
+        slv_buf = xp.zeros((KLEV, KLON), dtype=xp.float64)
+        svi_buf = xp.zeros((KLEV, KLON), dtype=xp.float64)
+        siv_buf = xp.zeros((KLEV, KLON), dtype=xp.float64)
+        fl_buf  = xp.zeros((KLEV, KLON), dtype=xp.float64)
+        fi_buf  = xp.zeros((KLEV, KLON), dtype=xp.float64)
+        # Final reduced outputs (same shape as 'split')
+        svl = xp.zeros(KLON, dtype=xp.float64)
+        slv = xp.zeros(KLON, dtype=xp.float64)
+        svi = xp.zeros(KLON, dtype=xp.float64)
+        siv = xp.zeros(KLON, dtype=xp.float64)
+        fl  = xp.zeros(KLON, dtype=xp.float64)
+        fi  = xp.zeros(KLON, dtype=xp.float64)
+
+        def call():
+            svl_buf[:] = 0; slv_buf[:] = 0; svi_buf[:] = 0; siv_buf[:] = 0
+            fl_buf[:] = 0; fi_buf[:] = 0
+            svl[:] = 0; slv[:] = 0; svi[:] = 0; siv[:] = 0
+            fl[:] = 0; fi[:] = 0
+            csdfg(za=za, zdqs=zdqs, zqsmix=zqsmix, zqv=zqv, ztp1=ztp1,
+                  zsolqa_ncldqv_ncldql_buf=svl_buf,
+                  zsolqa_ncldql_ncldqv_buf=slv_buf,
+                  zsolqa_ncldqv_ncldqi_buf=svi_buf,
+                  zsolqa_ncldqi_ncldqv_buf=siv_buf,
+                  zqxfg_ncldql_buf=fl_buf,
+                  zqxfg_ncldqi_buf=fi_buf,
+                  zsolqa_ncldqv_ncldql=svl,
+                  zsolqa_ncldql_ncldqv=slv,
+                  zsolqa_ncldqv_ncldqi=svi,
+                  zsolqa_ncldqi_ncldqv=siv,
+                  zqxfg_ncldql=fl,
+                  zqxfg_ncldqi=fi, **cst, **sym)
+
+    else:
+        raise ValueError(f"Unknown base variant: {base}")
+
+    # ---- Build & compile ----
+    print(f"Building {variant} SDFG...", flush=True)
+    sdfg = build_sdfg(base, gpu=is_gpu)
+    states = {s for s in sdfg.all_states()}
+    assert len(states) == 1, "Expected exactly one state in the SDFG"
+    state = next(iter(states))
+    if is_gpu:
+        state.instrument = dace.dtypes.InstrumentationType.Timer
+    else:
+        state.instrument = dace.dtypes.InstrumentationType.GPU_Events
+
+    print(f"Compiling {variant}...", flush=True)
+    csdfg = sdfg.compile()
+    print("Done.\n", flush=True)
+
+    # ---- Warmup ----
     print("Warmup (3 reps)...", flush=True)
     for _ in range(3):
-        if not is_gpu:
-            flush_cache()
+        flush_fn()
         call()
     if is_gpu:
         import cupy
         cupy.cuda.Device().synchronize()
 
-
-    # Timed reps
+    # ---- Timed reps ----
     print(f"\n{'':=<60}")
     print(f"  {variant.upper()} variant  ({reps} iterations)")
     print(f"{'':=<60}")
@@ -274,10 +530,9 @@ def run_variant(variant, reps, csv_path):
         writer = csv.writer(f)
         writer.writerow(['variant', 'rep', 'time_ms'])
         for rep in range(reps):
-            if not is_gpu:
-                flush_cache()
-                flush_cache()
+            flush_fn()
             call()
+            flush_fn()
             report = sdfg.get_latest_report()
             elapsed_ms = report.events[-1].duration * 1e-3
             times.append(elapsed_ms)
@@ -294,7 +549,7 @@ def run_variant(variant, reps, csv_path):
 def main():
     parser = argparse.ArgumentParser(description="Condensation kernel benchmark")
     parser.add_argument('--variant', required=True, choices=VALID_VARIANTS,
-                        help="Which variant to run: '3d', 'split', '3d-gpu', or 'split-gpu'")
+                        help="Which variant to run: " + ", ".join(VALID_VARIANTS))
     parser.add_argument('--reps', type=int, default=100,
                         help="Number of timed repetitions (default: 100)")
     parser.add_argument('--csv', type=str, default=None,
