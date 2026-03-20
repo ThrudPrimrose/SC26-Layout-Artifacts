@@ -376,7 +376,7 @@ def build_sdfg(base, gpu=False):
 def run_variant(variant, reps, csv_path):
     """Run a single variant for `reps` iterations, log to CSV."""
     base, is_gpu = parse_variant(variant)
-    KLEV, KLON, NCLV = 96, 20480, 5
+    KLEV, KLON, NCLV = 96, 20480*4, 5
 
     cst = dict(
         retv=0.6077, rtice=250.16, rtwat=273.16,
