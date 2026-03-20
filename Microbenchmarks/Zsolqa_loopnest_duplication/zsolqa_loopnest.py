@@ -374,6 +374,7 @@ def build_sdfg(base, gpu=False):
     sdfg.simplify()
 
     from dace.transformation.passes.fusion_inline import InlineSDFGs
+    from dace.transformation.dataflow.map_collapse import MapCollapse
     InlineSDFGs().apply_pass(sdfg, {})
     sdfg.apply_transformations_repeated(MapCollapse)
 
