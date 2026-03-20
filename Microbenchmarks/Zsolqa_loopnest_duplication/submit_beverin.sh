@@ -21,21 +21,21 @@ echo "Running on $(hostname)"
 echo "Threads: $OMP_NUM_THREADS"
 
 sleep 1
-python zsolqa_loopnest.py --variant=3d-gpu --reps=100 --csv bench_3d_gpu.csv
+python3.13 zsolqa_loopnest.py --variant=3d-gpu --reps=100 --csv bench_3d_gpu.csv
 sleep 1
-python zsolqa_loopnest.py --variant=split-gpu --reps=100 --csv bench_split_gpu.csv
+python3.13 zsolqa_loopnest.py --variant=split-gpu --reps=100 --csv bench_split_gpu.csv
 sleep 1
-python zsolqa_loopnest.py --variant=3d-reduce-gpu --reps=100 --csv bench_reduce_gpu.csv
+python3.13 zsolqa_loopnest.py --variant=3d-reduce-gpu --reps=100 --csv bench_reduce_gpu.csv
 sleep 1
-python zsolqa_loopnest.py --variant=split-reduce-gpu --reps=100 --csv bench_reduce_split_gpu.csv
+python3.13 zsolqa_loopnest.py --variant=split-reduce-gpu --reps=100 --csv bench_reduce_split_gpu.csv
 sleep 1
-python zsolqa_loopnest.py --variant=3d --reps=100 --csv bench_3d.csv
+python3.13 zsolqa_loopnest.py --variant=3d --reps=100 --csv bench_3d.csv
 sleep 1
-python zsolqa_loopnest.py --variant=split --reps=100 --csv bench_split.csv
+python3.13 zsolqa_loopnest.py --variant=split --reps=100 --csv bench_split.csv
 sleep 1
-python zsolqa_loopnest.py --variant=3d-reduce --reps=100 --csv bench_reduce.csv
+python3.13 zsolqa_loopnest.py --variant=3d-reduce --reps=100 --csv bench_reduce.csv
 sleep 1
-python zsolqa_loopnest.py --variant=split-reduce --reps=100 --csv bench_reduce_split.csv
+python3.13 zsolqa_loopnest.py --variant=split-reduce --reps=100 --csv bench_reduce_split.csv
 
 mv *.csv results/beverin
 
