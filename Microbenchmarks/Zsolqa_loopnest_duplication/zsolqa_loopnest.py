@@ -20,6 +20,16 @@ import numpy as np
 import time
 
 from dace.sdfg.state import LoopRegion
+import os
+
+AMD = os.getenv("__HIP_PLATFORM_AMD__", "0") == "1" or os.getenv("HIP_PLATFORM_AMD", "0") == "1"
+if AMD is True:
+    dace.config.Config.set('compiler', 'cuda', 'type', value='hip')
+    dace.config.Config.set('compiler', 'cuda', 'path', value='/opt/rocm')
+    dace.config.Config.set('compiler', 'cuda', 'hip_arch', value='gfx942')
+    dace.config.Config.set('compiler', 'cuda', 'default_block_size', value='64,8,1')
+    dace.config.Config.set('compiler', 'cuda', 'hip_args', value='--offload-arch=gfx942 -fno-hip-fp32-correctly-rounded-div-sqrt -mllvm -amdgpu-early-inline-all=true -ffp-contract=fast -fPIC -O3 -ffast-math -Wno-unused-parameter')
+
 
 VALID_VARIANTS = [
     '3d', 'split', '3d-reduce', 'split-reduce',
