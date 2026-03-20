@@ -343,6 +343,11 @@ def build_sdfg(base, gpu=False):
     else:
         raise ValueError(f"Unknown base variant: {base}")
 
+    if gpu is True:
+        sdfg.name += "_gpu"
+    else:
+        sdfg.name += "_cpu"
+
     from dace.transformation.passes.clean_access_node_to_scalar_slice_to_tasklet_pattern import (
         CleanAccessNodeToScalarSliceToTaskletPattern,
     )
@@ -359,7 +364,6 @@ def build_sdfg(base, gpu=False):
     sdfg.simplify()
 
     from dace.transformation.passes.fusion_inline import InlineSDFGs
-    from dace.transformation.dataflow.map_collapse import MapCollapse
     InlineSDFGs().apply_pass(sdfg, {})
     sdfg.apply_transformations_repeated(MapCollapse)
 
@@ -376,7 +380,7 @@ def build_sdfg(base, gpu=False):
 def run_variant(variant, reps, csv_path):
     """Run a single variant for `reps` iterations, log to CSV."""
     base, is_gpu = parse_variant(variant)
-    KLEV, KLON, NCLV = 96, 20480*4, 5
+    KLEV, KLON, NCLV = 96, 20480*16, 5
 
     cst = dict(
         retv=0.6077, rtice=250.16, rtwat=273.16,
@@ -500,6 +504,7 @@ def run_variant(variant, reps, csv_path):
     states = {s for s in sdfg.all_states()}
     assert len(states) == 1, "Expected exactly one state in the SDFG"
     state = next(iter(states))
+    
     if is_gpu:
         state.instrument = dace.dtypes.InstrumentationType.Timer
     else:
