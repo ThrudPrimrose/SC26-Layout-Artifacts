@@ -516,10 +516,11 @@ def run_variant(variant, reps, csv_path):
     assert len(states) == 1, "Expected exactly one state in the SDFG"
     state = next(iter(states))
     
-    if is_gpu:
-        state.instrument = dace.dtypes.InstrumentationType.Timer
-    else:
+    if is_gpu is True:
         state.instrument = dace.dtypes.InstrumentationType.GPU_Events
+    else:
+        state.instrument = dace.dtypes.InstrumentationType.Timer
+
 
     print(f"Compiling {variant}...", flush=True)
     csdfg = sdfg.compile()
