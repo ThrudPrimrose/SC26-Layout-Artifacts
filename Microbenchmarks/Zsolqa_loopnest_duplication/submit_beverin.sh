@@ -14,6 +14,8 @@ export OMP_NUM_THREADS=96
 export OMP_PROC_BIND=true
 export OMP_PLACES=cores
 export OMP_DISPLAY_ENV=TRUE
+export __HIP_PLATFORM_AMD__=1
+export HIP_PLATFORM_AMD=1
 
 echo "Running on $(hostname)"
 echo "Threads: $OMP_NUM_THREADS"
