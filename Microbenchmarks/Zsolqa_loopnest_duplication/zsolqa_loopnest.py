@@ -29,7 +29,8 @@ if AMD is True:
     dace.config.Config.set('compiler', 'cuda', 'hip_arch', value='gfx942')
     dace.config.Config.set('compiler', 'cuda', 'default_block_size', value='64,8,1')
     dace.config.Config.set('compiler', 'cuda', 'hip_args', value='--offload-arch=gfx942 -fno-hip-fp32-correctly-rounded-div-sqrt -mllvm -amdgpu-early-inline-all=true -ffp-contract=fast -fPIC -O3 -ffast-math -Wno-unused-parameter')
-
+else:
+    dace.config.Config.set('compiler', 'cuda', 'default_block_size', value="32,16,1")
 
 VALID_VARIANTS = [
     '3d', 'split', '3d-reduce', 'split-reduce',
@@ -343,13 +344,13 @@ def flush_cache_gpu():
 def build_sdfg(base, gpu=False):
     """Build and optimize the SDFG for the given variant."""
     if base == '3d':
-        sdfg = condense_3d.to_sdfg()
+        sdfg = condense_3d.to_sdfg(cache=False)
     elif base == 'split':
-        sdfg = condense_split.to_sdfg()
+        sdfg = condense_split.to_sdfg(cache=False)
     elif base == '3d-reduce':
-        sdfg = condense_3d_reduce.to_sdfg()
+        sdfg = condense_3d_reduce.to_sdfg(cache=False)
     elif base == 'split-reduce':
-        sdfg = condense_split_reduce.to_sdfg()
+        sdfg = condense_split_reduce.to_sdfg(cache=False)
     else:
         raise ValueError(f"Unknown base variant: {base}")
 
@@ -381,7 +382,6 @@ def build_sdfg(base, gpu=False):
     if gpu:
         from dace.transformation.auto.auto_optimize import auto_optimize
         auto_optimize(sdfg, device=dace.dtypes.DeviceType.GPU, use_gpu_storage=True)
-        dace.config.Config.set('compiler', 'cuda', 'default_block_size', value="256,1,1")
 
     tag = f"{base}{'_gpu' if gpu else ''}"
     sdfg.save(f"condense_{tag}.sdfg")
