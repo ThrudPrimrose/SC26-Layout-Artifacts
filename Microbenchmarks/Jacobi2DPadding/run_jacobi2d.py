@@ -4,12 +4,25 @@ import subprocess, sys, os, csv
 import numpy as np
 import os
 # export LD_LIBRARY_PATH=$(spack location -i cuda@12.9)/lib64:$LD_LIBRARY_PATH
+import subprocess
 
+# get spack install location for cuda@12.9
+cuda_path = subprocess.check_output(
+    ["spack", "location", "-i", "cuda@12.9"],
+    text=True
+).strip()
+
+# prepend to LD_LIBRARY_PATH
+lib_path = f"{cuda_path}/lib64"
+os.environ["LD_LIBRARY_PATH"] = f"{lib_path}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+
+# (optional) print to verify
+print(os.environ["LD_LIBRARY_PATH"])
 
 # ── Config ──
 BINARY = "./jacobi2d_gpu"
 CSV_FILE = "jacobi2d_results.csv"
-N = 8192
+N = 8192*2
 TSTEPS = 100
 
 CONFIGS = [
@@ -50,13 +63,13 @@ def get_roofline():
     peak_bw   = 2 * mem_mhz * (bus_w / 8) / 1000            # GB/s
 
     # Empirical BW via copy + daxpy
-    SZ = 128 * 1024 * 1024  # 128M doubles = 1GB
-    a_gpu = cuda.mem_alloc(SZ * 8)
-    b_gpu = cuda.mem_alloc(SZ * 8)
+    SZ = 128 * 1024 * 1024  # 128M floats = 1GB
+    a_gpu = cuda.mem_alloc(SZ * 4)
+    b_gpu = cuda.mem_alloc(SZ * 4)
     mod = SourceModule("""
-    __global__ void kcopy(const double* s, double* d, long long n) {
+    __global__ void kcopy(const float* s, float* d, long long n) {
         long long i = blockIdx.x*(long long)blockDim.x+threadIdx.x; if(i<n) d[i]=s[i]; }
-    __global__ void kdaxpy(double a, const double* x, double* y, long long n) {
+    __global__ void kdaxpy(float a, const float* x, float* y, long long n) {
         long long i = blockIdx.x*(long long)blockDim.x+threadIdx.x; if(i<n) y[i]=a*x[i]+y[i]; }
     """)
     kcopy = mod.get_function("kcopy")
@@ -71,8 +84,8 @@ def get_roofline():
         e.record(); e.synchronize()
         return s.time_till(e) / reps / 1000
 
-    copy_bw  = 2*SZ*8 / bench(lambda: kcopy(a_gpu,b_gpu,np.int64(SZ),block=(bl,1,1),grid=(gr,1))) / 1e9
-    daxpy_bw = 3*SZ*8 / bench(lambda: kdaxpy(np.float64(2.0),a_gpu,b_gpu,np.int64(SZ),block=(bl,1,1),grid=(gr,1))) / 1e9
+    copy_bw  = 2*SZ*4 / bench(lambda: kcopy(a_gpu,b_gpu,np.int64(SZ),block=(bl,1,1),grid=(gr,1))) / 1e9
+    daxpy_bw = 3*SZ*4 / bench(lambda: kdaxpy(np.float32(2.0),a_gpu,b_gpu,np.int64(SZ),block=(bl,1,1),grid=(gr,1))) / 1e9
     emp_bw = max(copy_bw, daxpy_bw)
     a_gpu.free(); b_gpu.free()
 
