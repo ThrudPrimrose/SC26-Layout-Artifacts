@@ -2,6 +2,9 @@
 """Jacobi2D GPU sweep with integrated FP64 roofline analysis."""
 import subprocess, sys, os, csv
 import numpy as np
+import os
+# export LD_LIBRARY_PATH=$(spack location -i cuda@12.9)/lib64:$LD_LIBRARY_PATH
+
 
 # ── Config ──
 BINARY = "./jacobi2d_gpu"
