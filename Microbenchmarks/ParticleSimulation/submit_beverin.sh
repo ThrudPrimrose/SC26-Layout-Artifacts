@@ -2,7 +2,7 @@
 #SBATCH --job-name=nbody_cpu
 #SBATCH --nodes=1
 #SBATCH --partition=mi300
-#SBATCH --time=03:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=nbody_%j.out
 #SBATCH --error=nbody_%j.err
 
@@ -25,6 +25,10 @@ export OMP_DISPLAY_ENV=TRUE
 echo "Running on $(hostname)"
 echo "Threads: $OMP_NUM_THREADS"
 
+export _DACE_NO_SYNC=1
+export __HIP_PLATFORM_AMD__=1
+export HIP_PLATFORM_AMD=1
+
 # -------------------------------
 # Workload parameters (BIG!)
 # -------------------------------
@@ -38,5 +42,12 @@ python3.11 particle_simulation.py \
         --steps $STEPS \
         --vl $VL \
         --ic random
-	--dace
+        --dace
+        --gpu
 
+python3.11 particle_simulation.py \
+        --N $N \
+        --steps $STEPS \
+        --vl $VL \
+        --ic random
+        --dace
