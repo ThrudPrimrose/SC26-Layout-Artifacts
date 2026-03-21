@@ -16,6 +16,8 @@ Usage:
   python nbody_layouts.py [--N 128] [--steps 5] [--vl 8] [--dace]
 """
 
+import os
+
 import numpy as np
 import time
 import argparse
@@ -348,7 +350,7 @@ def aosoa_run(N, VL, m, r, v, a, dt, nsteps, rsoft2, accel_fn, **kw):
 #     Symbolic n (and nb, vl for AoSoA).  All scalars as plain 1.0 / 0.0.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_dace_kernels():
+def build_dace_kernels(gpu: bool = False):
     import dace
 
     n  = dace.symbol('n',  dtype=dace.int64)
@@ -661,20 +663,41 @@ def build_dace_kernels():
     }
     compiled = {}
     for k, v in locals.items():
-        sdfg = v.to_sdfg()
-        try:
-            copy_sdfg = copy.deepcopy(sdfg)
-            copy_sdfg.auto_optimize(dace.dtypes.DeviceType.CPU)
-        except Exception as e:
-            copy_sdfg = copy.deepcopy(sdfg)
-            copy_sdfg.apply_transformations_repeated([LoopToMap])
-            copy_sdfg.apply_transformations_repeated([MapCollapse])
-            copy_sdfg.simplify()
-        sdfg = copy_sdfg
-        sdfg.instrument = dace.dtypes.InstrumentationType.Timer
-        sdfg.compile()
-        sdfg.save(f"{k}.sdfg")
-        compiled[k] = sdfg
+        if gpu:
+            sdfg = v.to_sdfg()
+            try:
+                copy_sdfg = copy.deepcopy(sdfg)
+                copy_sdfg.auto_optimize(dace.dtypes.DeviceType.GPU)
+            except Exception as e:
+                copy_sdfg = copy.deepcopy(sdfg)
+                copy_sdfg.apply_transformations_repeated([LoopToMap])
+                copy_sdfg.apply_transformations_repeated([MapCollapse])
+                copy_sdfg.simplify()
+                copy_sdfg.apply_gpu_transformations()
+            sdfg = copy_sdfg
+            states = sdfg.all_states()
+            os.environ["_DACE_NO_SYNC"] = "1"
+            assert len(states) == 1
+            state = states[0]
+            state.instrument = dace.dtypes.InstrumentationType.GPU_Events
+            sdfg.compile()
+            sdfg.save(f"{k}_gpu.sdfg")
+            compiled[k] = sdfg
+        else:
+            sdfg = v.to_sdfg()
+            try:
+                copy_sdfg = copy.deepcopy(sdfg)
+                copy_sdfg.auto_optimize(dace.dtypes.DeviceType.CPU)
+            except Exception as e:
+                copy_sdfg = copy.deepcopy(sdfg)
+                copy_sdfg.apply_transformations_repeated([LoopToMap])
+                copy_sdfg.apply_transformations_repeated([MapCollapse])
+                copy_sdfg.simplify()
+            sdfg = copy_sdfg
+            sdfg.instrument = dace.dtypes.InstrumentationType.Timer
+            sdfg.compile()
+            sdfg.save(f"{k}.sdfg")
+            compiled[k] = sdfg
     return compiled
 
 
@@ -691,7 +714,10 @@ def main():
     ap.add_argument("--seed",  type=int,   default=42)
     ap.add_argument("--ic",    choices=["circular", "random"], default="circular")
     ap.add_argument("--dace",  action="store_true")
+    ap.add_argument("--gpu",   action="store_true")
     args = ap.parse_args()
+
+    gpu_suffix = "_gpu" if args.gpu else ""
 
     N = args.N
     nsteps = args.steps
@@ -798,7 +824,7 @@ def main():
     # ── DaCe ───────────────────────────────────────────────────────────────
     if args.dace:
         print("\n  DaCe: compiling 12 kernels...", end=" ", flush=True)
-        progs = build_dace_kernels()
+        progs = build_dace_kernels(args.gpu)
         compiled = progs
         print("done\n")
 
@@ -862,7 +888,7 @@ def main():
         print(f"  D:SoA   buf  : {timings['D:SoA buf']:7.4f}s  max|Δr|={err:.2e}")
 
         # Write SoA CSV
-        with open('soa_timings.csv', 'w', newline='') as f:
+        with open(f'soa_timings{gpu_suffix}.csv', 'w', newline='') as f:
             w = csv.writer(f)
             w.writerow(['step', 'variant', 'kick1_us', 'drift_us', 'accel_us', 'kick2_us'])
             w.writerows(soa_rows)
@@ -908,7 +934,7 @@ def main():
         err = np.max(np.abs(r_ref - r))
         print(f"  D:AoS   buf  : {timings['D:AoS buf']:7.4f}s  max|Δr|={err:.2e}")
 
-        with open('aos_timings.csv', 'w', newline='') as f:
+        with open(f'aos_timings{gpu_suffix}.csv', 'w', newline='') as f:
             w = csv.writer(f)
             w.writerow(['step', 'variant', 'kick1_us', 'drift_us', 'accel_us', 'kick2_us'])
             w.writerows(aos_rows)
@@ -962,12 +988,12 @@ def main():
         err = np.max(np.abs(r_ref - aosoa_to_aos(r_a, N, VL)))
         print(f"  D:AoSoA buf  : {timings['D:AoSoA buf']:7.4f}s  max|Δr|={err:.2e}")
 
-        with open('aosoa_timings.csv', 'w', newline='') as f:
+        with open(f'aosoa_timings{gpu_suffix}.csv', 'w', newline='') as f:
             w = csv.writer(f)
             w.writerow(['step', 'variant', 'kick1_us', 'drift_us', 'accel_us', 'kick2_us'])
             w.writerows(aosoa_rows)
 
-        print("  Wrote soa_timings.csv, aos_timings.csv, aosoa_timings.csv")
+        print(f"  Wrote soa_timings{gpu_suffix}.csv, aos_timings{gpu_suffix}.csv, aosoa_timings{gpu_suffix}.csv")
 
 
 
