@@ -7,7 +7,7 @@
 
 // V0: Global memory only, each thread computes TX x TY points
 template<int TX, int TY>
-__global__ void jacobi_global(const double* __restrict__ in, double* __restrict__ out, int N) {
+__global__ void jacobi_global(const float* __restrict__ in, float* __restrict__ out, int N) {
     int j0 = blockIdx.x * (blockDim.x * TX) + threadIdx.x * TX + 1;
     int i0 = blockIdx.y * (blockDim.y * TY) + threadIdx.y * TY + 1;
     int stride = N + 2;
@@ -27,10 +27,10 @@ __global__ void jacobi_global(const double* __restrict__ in, double* __restrict_
 
 // V1: Shared memory, naive
 template<int TX, int TY>
-__global__ void jacobi_smem(const double* __restrict__ in, double* __restrict__ out, int N) {
+__global__ void jacobi_smem(const float* __restrict__ in, float* __restrict__ out, int N) {
     const int BW = blockDim.x * TX;
     const int BH = blockDim.y * TY;
-    extern __shared__ double smem[];  // (BH+2) x (BW+2)
+    extern __shared__ float smem[];  // (BH+2) x (BW+2)
     int SW = BW + 2;
     int gj0 = blockIdx.x * BW;  // global col start (0-indexed in padded grid)
     int gi0 = blockIdx.y * BH;
@@ -63,10 +63,10 @@ __global__ void jacobi_smem(const double* __restrict__ in, double* __restrict__ 
 
 // V2: Shared memory with padding to reduce bank conflicts
 template<int TX, int TY, int PAD>
-__global__ void jacobi_smem_pad(const double* __restrict__ in, double* __restrict__ out, int N) {
+__global__ void jacobi_smem_pad(const float* __restrict__ in, float* __restrict__ out, int N) {
     const int BW = blockDim.x * TX;
     const int BH = blockDim.y * TY;
-    extern __shared__ double smem[];  // (BH+2) x (BW+2+PAD)
+    extern __shared__ float smem[];  // (BH+2) x (BW+2+PAD)
     int SW = BW + 2 + PAD;
     int gj0 = blockIdx.x * BW;
     int gi0 = blockIdx.y * BH;
@@ -99,10 +99,10 @@ __global__ void jacobi_smem_pad(const double* __restrict__ in, double* __restric
 
 // V3: Shared memory, swapped compute loop order (iterate j in outer, i in inner)
 template<int TX, int TY>
-__global__ void jacobi_smem_swap(const double* __restrict__ in, double* __restrict__ out, int N) {
+__global__ void jacobi_smem_swap(const float* __restrict__ in, float* __restrict__ out, int N) {
     const int BW = blockDim.x * TX;
     const int BH = blockDim.y * TY;
-    extern __shared__ double smem[];
+    extern __shared__ float smem[];
     int SW = BW + 2;
     int gj0 = blockIdx.x * BW;
     int gi0 = blockIdx.y * BH;
@@ -134,8 +134,8 @@ __global__ void jacobi_smem_swap(const double* __restrict__ in, double* __restri
 }
 
 // Dispatch helpers — instantiate for all TX,TY combos we care about
-typedef void (*kernel_fn)(const double*, double*, int);
-typedef void (*kernel_pad_fn)(const double*, double*, int);
+typedef void (*kernel_fn)(const float*, float*, int);
+typedef void (*kernel_pad_fn)(const float*, float*, int);
 
 // We use a macro to stamp out the switch. TX,TY in {1,2,4}.
 #define DISPATCH_TXTY(KERN, tx, ty, grid, block, smem_bytes, in, out, N) \
@@ -192,15 +192,15 @@ int main(int argc, char** argv) {
     const char* csv = (argc > 9) ? argv[9] : nullptr;
 
     size_t S = N + 2;
-    size_t bytes = S * S * sizeof(double);
+    size_t bytes = S * S * sizeof(float);
 
     // Init host
-    double* h = (double*)malloc(bytes);
+    float* h = (float*)malloc(bytes);
     for (size_t i = 0; i < S; i++)
         for (size_t j = 0; j < S; j++)
-            h[i * S + j] = (double)(i * (j + 2)) / N;
+            h[i * S + j] = (float)(i * (j + 2)) / N;
 
-    double *d_A, *d_B;
+    float *d_A, *d_B;
     CHECK(cudaMalloc(&d_A, bytes));
     CHECK(cudaMalloc(&d_B, bytes));
     CHECK(cudaMemcpy(d_A, h, bytes, cudaMemcpyHostToDevice));
@@ -211,12 +211,12 @@ int main(int argc, char** argv) {
 
     int tile_w = BX * TX + 2;
     int tile_h = BY * TY + 2;
-    size_t smem_nopad = tile_h * tile_w * sizeof(double);
-    size_t smem_pad   = tile_h * (tile_w + PAD) * sizeof(double);
+    size_t smem_nopad = tile_h * tile_w * sizeof(float);
+    size_t smem_pad   = tile_h * (tile_w + PAD) * sizeof(float);
 
     // Warmup
     for (int t = 0; t < 3; t++) {
-        double *in = (t&1) ? d_B : d_A, *out = (t&1) ? d_A : d_B;
+        float *in = (t&1) ? d_B : d_A, *out = (t&1) ? d_A : d_B;
         switch(variant) {
             case 0: DISPATCH_TXTY(jacobi_global, TX, TY, grid, block, 0, in, out, N); break;
             case 1: DISPATCH_TXTY(jacobi_smem, TX, TY, grid, block, smem_nopad, in, out, N); break;
@@ -236,7 +236,7 @@ int main(int argc, char** argv) {
     CHECK(cudaEventRecord(t0));
 
     for (int t = 0; t < tsteps; t++) {
-        double *in = (t&1) ? d_B : d_A, *out = (t&1) ? d_A : d_B;
+        float *in = (t&1) ? d_B : d_A, *out = (t&1) ? d_A : d_B;
         switch(variant) {
             case 0: DISPATCH_TXTY(jacobi_global, TX, TY, grid, block, 0, in, out, N); break;
             case 1: DISPATCH_TXTY(jacobi_smem, TX, TY, grid, block, smem_nopad, in, out, N); break;
@@ -248,17 +248,17 @@ int main(int argc, char** argv) {
     CHECK(cudaEventSynchronize(t1));
     float ms;
     CHECK(cudaEventElapsedTime(&ms, t0, t1));
-    double secs = ms / 1000.0;
+    float secs = ms / 1000.0;
 
     // Checksum
-    double* res = (tsteps & 1) ? d_B : d_A;
+    float* res = (tsteps & 1) ? d_B : d_A;
     CHECK(cudaMemcpy(h, res, bytes, cudaMemcpyDeviceToHost));
-    double cksum = 0;
+    float cksum = 0;
     for (size_t i = 1; i <= (size_t)N; i++)
         for (size_t j = 1; j <= (size_t)N; j++)
             cksum += h[i * S + j];
 
-    double gflops = (double)N * N * tsteps * 5.0 / secs / 1e9;
+    float gflops = (float)N * N * tsteps * 5.0 / secs / 1e9;
     const char* vnames[] = {"global","smem","smem_pad","smem_swap"};
 
     printf("%s BX=%d BY=%d TX=%d TY=%d PAD=%d | %.4f s  %.2f GFLOP/s  cksum=%.6e\n",
