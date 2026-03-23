@@ -6,12 +6,12 @@
 #SBATCH --output=beverin_cpu_transpose_%j.out
 #SBATCH --error=beverin_cpu_transpose_%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=128
-
+#SBATCH --gpus-per-task=0
+#SBATCH --cpus-per-task=192
 # -------------------------------
 # OpenMP configuration
 # -------------------------------
-export OMP_NUM_THREADS=64
+export OMP_NUM_THREADS=96
 export OMP_PROC_BIND=close
 export OMP_PLACES=threads
 
@@ -69,5 +69,6 @@ export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LD_LIBRARY_PATH
 export PATH=$SCRATCH/bin:$PATH
 export BEVERIN=1
 
+echo $(lscpu)
 
-python run_cpu_transpose.py
+python run_cpu_transpose.py --compile

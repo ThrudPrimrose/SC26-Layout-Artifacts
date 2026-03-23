@@ -11,11 +11,11 @@ BINARY_BLAS = "./transpose_openblas"
 CSV_RAW     = "transpose_cpu_raw.csv"
 CSV_AGG     = "transpose_cpu_results.csv"
 
-# ── Defaults (overridable via env) ──
-N       = int(os.environ.get("CPU_TR_N", 256))
+
+N       = int(os.environ.get("CPU_TR_N", 8192*2))
 REPS    = int(os.environ.get("CPU_TR_REPS", 100))
 WARMUP  = int(os.environ.get("CPU_TR_WARMUP", 5))
-THREADS = int(os.environ.get("OMP_NUM_THREADS", 64))
+THREADS = int(os.environ.get("OMP_NUM_THREADS", 96))
 
 # ── Variant metadata ──
 KERN_NAMES = {
@@ -41,8 +41,8 @@ TB_VALS     = [16, 32, 64, 128]
 
 # Blocked variants (no locbuf): sweep SB
 BLK_VARIANTS = [4, 5, 6, 7, 8, 9, 10, 11]
-SB_VALS      = [8, 16, 32, 64]
-MT_VALS      = [4, 8, 16]
+SB_VALS      = [8, 16, 32, 64, 128, 256, 512]
+MT_VALS      = [4, 8, 16, 32]
 
 # Locbuf row-major: sweep TB
 LOCBUF_RM_VARIANTS = [12, 13, 18, 19]
