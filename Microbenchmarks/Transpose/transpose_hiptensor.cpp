@@ -20,21 +20,21 @@ int main(int argc, char** argv) {
     const char* csv=argv[3];
     int SB=(argc>4)?atoi(argv[4]):32, WU=(argc>5)?atoi(argv[5]):5, REPS=(argc>6)?atoi(argv[6]):100;
 
-    size_t elems=(size_t)N*N, bytes=elems*sizeof(double);
-    double*hA=(double*)malloc(bytes);
-    for(size_t i=0;i<elems;i++) hA[i]=(double)i/N;
+    size_t elems=(size_t)N*N, bytes=elems*sizeof(float);
+    float*hA=(float*)malloc(bytes);
+    for(size_t i=0;i<elems;i++) hA[i]=(float)i/N;
 
     // Blocked: reorder host data
-    double*hB=nullptr;
+    float*hB=nullptr;
     if(VAR==1){
         if(N%SB){fprintf(stderr,"N%%SB!=0\n");return 1;}
-        hB=(double*)malloc(bytes);
+        hB=(float*)malloc(bytes);
         int NB=N/SB;
         for(int r=0;r<N;r++) for(int c=0;c<N;c++)
             hB[(r/SB*NB+c/SB)*SB*SB+(r%SB)*SB+c%SB]=hA[r*N+c];
     }
 
-    double*dA,*dB;
+    float*dA,*dB;
     HC(hipMalloc(&dA,bytes)); HC(hipMalloc(&dB,bytes));
     HC(hipMemcpy(dA,VAR==1?hB:hA,bytes,hipMemcpyHostToDevice));
 
@@ -56,8 +56,8 @@ int main(int argc, char** argv) {
         mA=mA2; mB=mB2;
         // hipTensor 1.x: hiptensorInitTensorDescriptor takes (handle, &desc, ...)
         // desc is passed by pointer to stack struct, not pointer-to-pointer
-        HT(hiptensorInitTensorDescriptor(handle,&dscA,2,ext,sA,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
-        HT(hiptensorInitTensorDescriptor(handle,&dscB,2,ext,sB,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
+        HT(hiptensorInitTensorDescriptor(handle,&dscA,2,ext,sA,HIP_R_32F,HIPTENSOR_OP_IDENTITY));
+        HT(hiptensorInitTensorDescriptor(handle,&dscB,2,ext,sB,HIP_R_32F,HIPTENSOR_OP_IDENTITY));
     } else {
         vname="hiptensor_blk";
         int NB=N/SB;
@@ -65,22 +65,22 @@ int main(int argc, char** argv) {
         int64_t sA4[]={(int64_t)NB*SB*SB,(int64_t)SB*SB,(int64_t)SB,1};
         int64_t sB4[]={(int64_t)SB*SB,(int64_t)NB*SB*SB,1,(int64_t)SB};
         mA=mA4; mB=mB4;
-        HT(hiptensorInitTensorDescriptor(handle,&dscA,4,ext4,sA4,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
-        HT(hiptensorInitTensorDescriptor(handle,&dscB,4,ext4,sB4,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
+        HT(hiptensorInitTensorDescriptor(handle,&dscA,4,ext4,sA4,HIP_R_32F,HIPTENSOR_OP_IDENTITY));
+        HT(hiptensorInitTensorDescriptor(handle,&dscB,4,ext4,sB4,HIP_R_32F,HIPTENSOR_OP_IDENTITY));
     }
 
     // hipTensor 1.x: hiptensorPermutation is a direct call, no plan needed
     // hiptensorPermutation(handle, alpha, A, &descA, modeA, B, &descB, modeB, typeCompute, stream)
-    double alpha=1.0;
+    float alpha=1.0;
     for(int i=0;i<WU;i++)
-        HT(hiptensorPermutation(handle,&alpha,dA,&dscA,mA,dB,&dscB,mB,HIP_R_64F,0));
+        HT(hiptensorPermutation(handle,&alpha,dA,&dscA,mA,dB,&dscB,mB,HIP_R_32F,0));
     HC(hipDeviceSynchronize());
 
     hipEvent_t*ev=(hipEvent_t*)malloc((REPS+1)*sizeof(hipEvent_t));
     for(int i=0;i<=REPS;i++) HC(hipEventCreate(&ev[i]));
     for(int i=0;i<REPS;i++){
         HC(hipEventRecord(ev[i]));
-        HT(hiptensorPermutation(handle,&alpha,dA,&dscA,mA,dB,&dscB,mB,HIP_R_64F,0));
+        HT(hiptensorPermutation(handle,&alpha,dA,&dscA,mA,dB,&dscB,mB,HIP_R_32F,0));
     }
     HC(hipEventRecord(ev[REPS])); HC(hipEventSynchronize(ev[REPS]));
 
@@ -88,14 +88,14 @@ int main(int argc, char** argv) {
     for(int i=0;i<REPS;i++){HC(hipEventElapsedTime(&ims[i],ev[i],ev[i+1]));tot+=ims[i];}
 
     HC(hipMemcpy(hA,dB,bytes,hipMemcpyDeviceToHost));
-    double cksum=0; for(size_t i=0;i<elems;i++) cksum+=hA[i];
-    double bpi=2.0*elems*8, avg_ms=tot/REPS;
+    float cksum=0; for(size_t i=0;i<elems;i++) cksum+=hA[i];
+    float bpi=2.0*elems*4, avg_ms=tot/REPS;
     printf("%s N=%d SB=%d | %.4f ms  %.1f GB/s  cksum=%.6e\n",
            vname,N,SB,avg_ms,bpi/(avg_ms/1000.0)/1e9,cksum);
 
     FILE*f=fopen(csv,"a");
     if(f){for(int i=0;i<REPS;i++){
-        double gbs=bpi/(ims[i]/1000.0)/1e9;
+        float gbs=bpi/(ims[i]/1000.0)/1e9;
         fprintf(f,"%s,%d,0,0,0,0,%d,0,%d,%.6f,%.3f,%.6e\n",vname,N,SB,i,ims[i]/1000.0,gbs,cksum);
     }fclose(f);}
 

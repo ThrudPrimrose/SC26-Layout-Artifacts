@@ -38,13 +38,27 @@ V_NAMES = {0:"naive", 1:"blocked", 2:"smem", 3:"smem_blk", 4:"smem_pad", 5:"smem
 LIB_NAMES = {"cutensor", "cutensor_blk", "hiptensor", "hiptensor_blk"}
 
 CONFIGS = [
-    (64, 8, 1, 1), (32, 8, 1, 1), (64, 2, 1, 1),
-    (64, 8, 2, 1), (32, 8, 2, 1),
-    (64, 8, 1, 2), (32, 8, 1, 2),
-    (32, 8, 1, 4), (32, 16, 1, 2), (32, 16, 1, 1),
-    (32, 16, 1, 4), (32, 16, 2, 2), (32, 16, 2, 1),
-    (32, 4, 2, 2), (64, 2, 2, 2),
-    (64, 2, 4, 1), (32, 4, 4, 1),
+    # existing ...
+
+    # Higher TY coarsening (TY=4 was best, try TY=8)
+    (32,  8, 1, 8), (32, 16, 1, 8), (32,  8, 2, 4), (32, 16, 2, 4),
+
+    # TX=4 with BY=8,16 (TX=4 mostly tested with small BY)
+    (32,  8, 4, 1), (32, 16, 4, 1), (32,  8, 4, 2), (32, 16, 4, 2),
+
+    # TX=TY symmetry (you have few of these)
+    (32,  8, 2, 2), (32, 16, 4, 4), (32,  8, 4, 4),
+
+    # BY=32 (untested entirely)
+    (32, 32, 1, 1), (32, 32, 1, 2), (32, 32, 2, 1), (32, 32, 1, 4), (32, 32, 2, 2),
+
+    # BX=16 (untested — smaller blocks, more occupancy)
+    (16,  8, 1, 1), (16, 16, 1, 1), (16,  8, 1, 2), (16, 16, 1, 2),
+    (16,  8, 2, 1), (16, 16, 2, 2), (16,  8, 1, 4), (16, 16, 1, 4),
+
+    # BX=64 with higher TY (mostly tested with TY=1,2)
+    (64,  8, 1, 4), (64, 16, 1, 2), (64, 16, 1, 4), (64, 16, 2, 1),
+    (64, 16, 2, 2),
 ]
 VARIANTS    = [0, 1, 2, 3, 4, 5, 6]
 SB_VALS     = [8, 64] if AMD else [16, 32]
@@ -55,6 +69,10 @@ LIB_SB_VALS = [8, 32, 64] if AMD else [16, 32]
 AMD_ROOFLINE_SRC = r'''
 #include <hip/hip_runtime.h>
 #include <cstdio>
+#include <cstdlib>
+#define CK(x) do { hipError_t _e=(x); if(_e){ \
+    fprintf(stderr,"HIP error %s:%d: %s\n",__FILE__,__LINE__,hipGetErrorString(_e)); \
+    exit(1); } } while(0)
 __global__ void kc(const double* s, double* d, long long n) {
     long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (i < n) d[i] = s[i];
@@ -63,24 +81,29 @@ int main() {
     const long long SZ = 128LL * 1024 * 1024;
     const size_t bytes = SZ * sizeof(double);
     double *a, *b;
-    hipMalloc(&a, bytes); hipMalloc(&b, bytes);
-    hipEvent_t s, e; hipEventCreate(&s); hipEventCreate(&e);
+    CK(hipMalloc(&a, bytes)); CK(hipMalloc(&b, bytes));
+    hipEvent_t s, e; CK(hipEventCreate(&s)); CK(hipEventCreate(&e));
     const int threads = 256;
     const int blocks  = (int)((SZ + threads - 1) / threads);
-    kc<<<blocks, threads>>>(a, b, SZ); hipDeviceSynchronize();
-    hipEventRecord(s);
-    for (int i = 0; i < 20; i++) kc<<<blocks, threads>>>(a, b, SZ);
-    hipEventRecord(e); hipEventSynchronize(e);
-    float ms; hipEventElapsedTime(&ms, s, e);
+    kc<<<blocks, threads>>>(a, b, SZ);
+    CK(hipGetLastError()); CK(hipDeviceSynchronize());
+    CK(hipEventRecord(s));
+    for (int i = 0; i < 20; i++) { kc<<<blocks, threads>>>(a, b, SZ); CK(hipGetLastError()); }
+    CK(hipEventRecord(e)); CK(hipEventSynchronize(e));
+    float ms; CK(hipEventElapsedTime(&ms, s, e));
     if (ms < 1e-3f) { fprintf(stderr, "timing error: ms=%.6f\n", ms); return 1; }
     printf("%.1f\n", 20.0 * 2 * SZ * sizeof(double) / (ms / 1000.0) / 1e9);
-    hipFree(a); hipFree(b);
+    CK(hipFree(a)); CK(hipFree(b));
     return 0;
 }'''
 
 CUDA_ROOFLINE_SRC = r'''
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <cstdlib>
+#define CK(x) do { cudaError_t _e=(x); if(_e){ \
+    fprintf(stderr,"CUDA error %s:%d: %s\n",__FILE__,__LINE__,cudaGetErrorString(_e)); \
+    exit(1); } } while(0)
 __global__ void kc(const double* s, double* d, long long n) {
     long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (i < n) d[i] = s[i];
@@ -89,18 +112,19 @@ int main() {
     const long long SZ = 128LL * 1024 * 1024;
     const size_t bytes = SZ * sizeof(double);
     double *a, *b;
-    cudaMalloc(&a, bytes); cudaMalloc(&b, bytes);
-    cudaEvent_t s, e; cudaEventCreate(&s); cudaEventCreate(&e);
+    CK(cudaMalloc(&a, bytes)); CK(cudaMalloc(&b, bytes));
+    cudaEvent_t s, e; CK(cudaEventCreate(&s)); CK(cudaEventCreate(&e));
     const int threads = 256;
     const int blocks  = (int)((SZ + threads - 1) / threads);
-    kc<<<blocks, threads>>>(a, b, SZ); cudaDeviceSynchronize();
-    cudaEventRecord(s);
-    for (int i = 0; i < 20; i++) kc<<<blocks, threads>>>(a, b, SZ);
-    cudaEventRecord(e); cudaEventSynchronize(e);
-    float ms; cudaEventElapsedTime(&ms, s, e);
+    kc<<<blocks, threads>>>(a, b, SZ);
+    CK(cudaGetLastError()); CK(cudaDeviceSynchronize());
+    CK(cudaEventRecord(s));
+    for (int i = 0; i < 20; i++) { kc<<<blocks, threads>>>(a, b, SZ); CK(cudaGetLastError()); }
+    CK(cudaEventRecord(e)); CK(cudaEventSynchronize(e));
+    float ms; CK(cudaEventElapsedTime(&ms, s, e));
     if (ms < 1e-3f) { fprintf(stderr, "timing error: ms=%.6f\n", ms); return 1; }
     printf("%.1f\n", 20.0 * 2 * SZ * sizeof(double) / (ms / 1000.0) / 1e9);
-    cudaFree(a); cudaFree(b);
+    CK(cudaFree(a)); CK(cudaFree(b));
     return 0;
 }'''
 
@@ -148,7 +172,8 @@ def compile_lib():
         cmd = f"nvcc -O3 -std=c++17 -arch=native -o {BINARY_LIB} transpose_cutensor.cu -lcutensor"
         lib = "cuTENSOR"
     else:
-        cmd = f"hipcc {AMD_FLAGS} -DHIP_PLATFORM_AMD=1 -D__HIP_PLATFORM_AMD__=1 -o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor"
+        cmd = (f"hipcc {AMD_FLAGS} -DHIP_PLATFORM_AMD=1 -D__HIP_PLATFORM_AMD__=1 "
+               f"-o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor")
         lib = "hipTensor"
     print(f"Compiling {lib}: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -185,26 +210,23 @@ def sweep_lib():
         return
     lib = "hipTensor" if AMD else "cuTENSOR"
     print(f"\n  ── Library: {lib} ──")
+    # variant 0: row-major
     cmd = [BINARY_LIB, str(N), "0", CSV_RAW, "32", str(WARMUP), str(REPS)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if r.returncode == 0:
-            print(f"  {r.stdout.strip()}")
-        else:
-            print(f"  FAIL {lib} row-major: {r.stderr.strip()[:100]}")
+        if r.returncode == 0: print(f"  {r.stdout.strip()}")
+        else: print(f"  FAIL {lib} row-major: {r.stderr.strip()[:100]}")
     except subprocess.TimeoutExpired:
         print(f"  TIMEOUT {lib} row-major")
-
+    # variant 1: blocked for each SB
     for sb in LIB_SB_VALS:
         if N % sb != 0:
             continue
         cmd = [BINARY_LIB, str(N), "1", CSV_RAW, str(sb), str(WARMUP), str(REPS)]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if r.returncode == 0:
-                print(f"  {r.stdout.strip()}")
-            else:
-                print(f"  FAIL {lib} blocked SB={sb}: {r.stderr.strip()[:100]}")
+            if r.returncode == 0: print(f"  {r.stdout.strip()}")
+            else: print(f"  FAIL {lib} blocked SB={sb}: {r.stderr.strip()[:100]}")
         except subprocess.TimeoutExpired:
             print(f"  TIMEOUT {lib} blocked SB={sb}")
 
@@ -253,47 +275,46 @@ def aggregate(roof):
 
 # ── Report ──
 def report(roof, rows):
-    print(f"\n{'='*88}")
+    print(f"\n{'='*96}")
     print(f" GPU: {roof['name']}   Emp BW: {roof['emp_bw']:.0f} GB/s   Theo BW: {roof['peak_bw']:.0f} GB/s")
     print(f" Transpose: N={N}  bytes/call = {2*N*N*8/1e9:.2f} GB (read+write)")
-    print(f"{'='*88}")
+    print(f"{'='*96}")
 
-    lib_rows  = [r for r in rows if r["variant"] in LIB_NAMES]
     kern_rows = [r for r in rows if r["variant"] not in LIB_NAMES]
+    lib_rows  = [r for r in rows if r["variant"] in LIB_NAMES]
 
+    # Best library row-major as speedup reference
     lib_rm  = [r for r in lib_rows if "blk" not in r["variant"]]
-    lib_bk  = [r for r in lib_rows if "blk"     in r["variant"]]
-    ref_gbs = float(lib_rm[0]["med_gbs"]) if lib_rm else None
+    ref_gbs = float(max(lib_rm, key=lambda x: float(x["med_gbs"]))["med_gbs"]) if lib_rm else None
 
-    if lib_rm:
-        lr = lib_rm[0]
-        print(f"\n >>> Library (row-major): {lr['variant']}  "
-              f"{float(lr['med_gbs']):.1f} GB/s ({lr['pct_peak_bw']}% peak) <<<")
-    if lib_bk:
-        for lr in sorted(lib_bk, key=lambda x: -float(x["med_gbs"])):
-            print(f" >>> Library (blocked SB={lr['SB']}): {lr['variant']}  "
-                  f"{float(lr['med_gbs']):.1f} GB/s ({lr['pct_peak_bw']}% peak) <<<")
+    # Header
+    print(f"\n {'var':<18} {'BX':>3} {'BY':>3} {'TX':>2} {'TY':>2} {'SB':>4} {'P':>1}"
+          f"  {'medGB/s':>8} {'minGB/s':>8} {'maxGB/s':>8} {'%pkBW':>6}  {'vs lib':>7}  {'type'}")
+    print(f" {'-'*84}")
 
-    print(f"\n {'var':<14} {'BX':>3} {'BY':>3} {'TX':>2} {'TY':>2} {'SB':>3} {'P':>1}"
-          f"  {'medGB/s':>8} {'minGB/s':>8} {'maxGB/s':>8} {'%pkBW':>6}  {'vs lib':>6}")
-    print(f" {'-'*76}")
-
+    # All rows sorted by med_gbs descending — kernels and library interleaved
     for r in sorted(rows, key=lambda x: -float(x["med_gbs"])):
-        med  = float(r["med_gbs"])
-        vs   = f"{100*med/ref_gbs:.0f}%" if ref_gbs else "—"
-        star = " ★" if r["variant"] in LIB_NAMES else ""
-        print(f" {r['variant']:<14} {r['BX']:>3} {r['BY']:>3} {r['TX']:>2} {r['TY']:>2}"
-              f" {r['SB']:>3} {r['PAD']:>1}"
+        med    = float(r["med_gbs"])
+        vs     = f"{100*med/ref_gbs:.0f}%" if ref_gbs else "—"
+        is_lib = r["variant"] in LIB_NAMES
+        tag    = " ★ lib" if is_lib else "      "
+        print(f" {r['variant']:<18} {r['BX']:>3} {r['BY']:>3} {r['TX']:>2} {r['TY']:>2}"
+              f" {r['SB']:>4} {r['PAD']:>1}"
               f"  {med:8.1f} {float(r['min_gbs']):8.1f}"
-              f" {float(r['max_gbs']):8.1f}  {r['pct_peak_bw']:>5}%  {vs:>5}{star}")
+              f" {float(r['max_gbs']):8.1f}  {r['pct_peak_bw']:>5}%  {vs:>6}  {tag}")
 
+    # Summary lines
+    if lib_rows:
+        best_lib = max(lib_rows, key=lambda x: float(x["med_gbs"]))
+        print(f"\n Best library : {best_lib['variant']} SB={best_lib['SB']}"
+              f" -> {best_lib['med_gbs']} GB/s ({best_lib['pct_peak_bw']}% peak)")
     if kern_rows:
-        best  = max(kern_rows, key=lambda x: float(x["med_gbs"]))
-        bk    = float(best["med_gbs"])
-        extra = f" ({100*bk/ref_gbs:.0f}% of library)" if ref_gbs else ""
-        print(f"\n Best kernel: {best['variant']} BX={best['BX']} BY={best['BY']}"
-              f" TX={best['TX']} TY={best['TY']} SB={best['SB']}"
-              f" -> {best['med_gbs']} GB/s ({best['pct_peak_bw']}% peak){extra}")
+        best_kern = max(kern_rows, key=lambda x: float(x["med_gbs"]))
+        bk        = float(best_kern["med_gbs"])
+        extra     = f"  ({100*bk/ref_gbs:.0f}% of best library)" if ref_gbs else ""
+        print(f" Best kernel  : {best_kern['variant']} BX={best_kern['BX']} BY={best_kern['BY']}"
+              f" TX={best_kern['TX']} TY={best_kern['TY']} SB={best_kern['SB']}"
+              f" -> {best_kern['med_gbs']} GB/s ({best_kern['pct_peak_bw']}% peak){extra}")
 
 # ── Main ──
 if __name__ == "__main__":
