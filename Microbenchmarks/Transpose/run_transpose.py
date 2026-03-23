@@ -269,9 +269,9 @@ if __name__ == "__main__":
         has_lib = os.path.exists(BINARY_LIB)
 
     print(f"\n── Sweep: N={N} reps={REPS} warmup={WARMUP} ──")
-    sweep()
-    if has_lib:
-        sweep_lib()
+    #sweep()
+    #if has_lib:
+    #    sweep_lib()
 
     rows = aggregate(roof)
     if rows:

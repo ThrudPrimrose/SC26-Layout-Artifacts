@@ -18,6 +18,7 @@ export OMP_PLACES=cores
 # Optional: better NUMA behavior
 export OMP_DISPLAY_ENV=TRUE
 
+
 echo "Running on $(hostname)"
 echo "Threads: $OMP_NUM_THREADS"
 

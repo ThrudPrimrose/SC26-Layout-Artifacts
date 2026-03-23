@@ -54,4 +54,11 @@ export C_INCLUDE_PATH="$(python3.13 -c "import sysconfig; print(sysconfig.get_pa
 export HCC_AMDGPU_TARGET=gfx942
 export CUPY_HIPCC_GENERATE_CODE=--offload-arch=gfx942
 
+
+export C_INCLUDE_PATH=$SCRATCH/include:$C_INCLUDE_PATH
+export CPLUS_INCLUDE_PATH=$SCRATCH/include:$CPLUS_INCLUDE_PATH
+export LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LIBRARY_PATH
+export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LD_LIBRARY_PATH
+export PATH=$SCRATCH/bin:$PATH
+
 python run_transpose.py
