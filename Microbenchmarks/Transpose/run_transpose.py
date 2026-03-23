@@ -120,7 +120,7 @@ def compile_lib():
         cmd = f"nvcc -O3 -std=c++17 -arch=native -o {BINARY_LIB} transpose_cutensor.cu -lcutensor"
         lib = "cuTENSOR"
     else:
-        cmd = f"hipcc {AMD_FLAGS} -o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor"
+        cmd = f"hipcc {AMD_FLAGS} -o {BINARY_LIB} transpose_gpu_hip.cpp -lhiptensor"
         lib = "hipTensor"
     print(f"Compiling {lib}: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
