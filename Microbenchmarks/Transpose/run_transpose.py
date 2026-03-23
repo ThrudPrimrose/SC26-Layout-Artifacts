@@ -14,25 +14,13 @@ AMD_FLAGS = ("-O3 -ffast-math -fPIC -Wall -Wextra  -DHIP_PLATFORM_AMD=1 -D__HIP_
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# ── Spack CUDA env ──
-def setup_cuda_env(spec="cuda@12.9"):
-    if not AMD:
-        try:
-            prefix = subprocess.check_output(["spack","location","-i",spec], text=True).strip()
-            ld = os.environ.get("LD_LIBRARY_PATH", "")
-            os.environ["LD_LIBRARY_PATH"] = f"{prefix}/lib64:{ld}"
-            print(f"  CUDA: {prefix}")
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            print("  [WARN] spack not found, using system CUDA")
-
-setup_cuda_env()
 
 BINARY      = "./transpose_gpu"
 BINARY_LIB  = "./transpose_lib"
 CSV_RAW     = "transpose_raw.csv"
 CSV_AGG     = "transpose_results.csv"
-N           = 8192*2
-REPS        = 100
+N           = 256
+REPS        = 10
 WARMUP      = 5
 
 V_NAMES = {0:"naive", 1:"blocked", 2:"smem", 3:"smem_blk", 4:"smem_pad", 5:"smem_swiz", 6:"smem_blk_swiz", 7:"smem_pad_blk"}

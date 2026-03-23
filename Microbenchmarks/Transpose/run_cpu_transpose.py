@@ -12,7 +12,7 @@ CSV_RAW     = "transpose_cpu_raw.csv"
 CSV_AGG     = "transpose_cpu_results.csv"
 
 # ── Defaults (overridable via env) ──
-N       = int(os.environ.get("CPU_TR_N", 16384))
+N       = int(os.environ.get("CPU_TR_N", 256))
 REPS    = int(os.environ.get("CPU_TR_REPS", 100))
 WARMUP  = int(os.environ.get("CPU_TR_WARMUP", 5))
 THREADS = int(os.environ.get("OMP_NUM_THREADS", 64))
