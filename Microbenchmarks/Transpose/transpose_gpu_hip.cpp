@@ -252,6 +252,7 @@ void d_blocked(int tx,int ty,int sb,dim3 g,dim3 b,size_t sm,const float*in,float
     else if(sb==32){D3_BODY(tr_blocked,32)}
     else if(sb==64){D3_BODY(tr_blocked,64)}
     else if(sb==128){D3_BODY(tr_blocked,128)}
+    else if(sb==256){D3_BODY(tr_blocked,256)}
     else{fprintf(stderr,"Bad SB=%d\n",sb);exit(1);}
 }
 void d_smem_blk(int tx,int ty,int sb,dim3 g,dim3 b,size_t sm,const float*in,float*out,int N){
@@ -260,6 +261,7 @@ void d_smem_blk(int tx,int ty,int sb,dim3 g,dim3 b,size_t sm,const float*in,floa
     else if(sb==32){D3_BODY(tr_smem_blk,32)}
     else if(sb==64){D3_BODY(tr_smem_blk,64)}
     else if(sb==128){D3_BODY(tr_smem_blk,128)}
+    else if(sb==256){D3_BODY(tr_smem_blk,256)}
     else{fprintf(stderr,"Bad SB=%d\n",sb);exit(1);}
 }
 void d_blk_swiz(int tx,int ty,int sb,dim3 g,dim3 b,size_t sm,const float*in,float*out,int N){
@@ -268,6 +270,7 @@ void d_blk_swiz(int tx,int ty,int sb,dim3 g,dim3 b,size_t sm,const float*in,floa
     else if(sb==32){D3_BODY(tr_blk_swiz,32)}
     else if(sb==64){D3_BODY(tr_blk_swiz,64)}
     else if(sb==128){D3_BODY(tr_blk_swiz,128)}
+    else if(sb==256){D3_BODY(tr_blk_swiz,256)}
     else{fprintf(stderr,"Bad SB=%d\n",sb);exit(1);}
 }
 
@@ -304,6 +307,12 @@ void d_smem_pad_blk(int tx,int ty,int sb,int pad,dim3 g,dim3 b,size_t sm,const f
         else{fprintf(stderr,"Bad PAD=%d\n",pad);exit(1);}
     } else if(sb==64){
         if(pad==1){D4_BODY(tr_smem_pad_blk,64,1)} else if(pad==2){D4_BODY(tr_smem_pad_blk,64,2)}
+        else{fprintf(stderr,"Bad PAD=%d\n",pad);exit(1);}
+    } else if(sb==128){
+        if(pad==1){D4_BODY(tr_smem_pad_blk,128,1)} else if(pad==2){D4_BODY(tr_smem_pad_blk,128,2)}
+        else{fprintf(stderr,"Bad PAD=%d\n",pad);exit(1);}
+    } else if(sb==256){
+        if(pad==1){D4_BODY(tr_smem_pad_blk,256,1)} else if(pad==2){D4_BODY(tr_smem_pad_blk,256,2)}
         else{fprintf(stderr,"Bad PAD=%d\n",pad);exit(1);}
     } else{fprintf(stderr,"Bad SB=%d\n",sb);exit(1);}
 }

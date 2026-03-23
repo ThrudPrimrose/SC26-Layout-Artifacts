@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=b_gpu_transpose
+#SBATCH --job-name=b_cpu_transpose
 #SBATCH --nodes=1
 #SBATCH --partition=mi300
 #SBATCH --time=04:00:00
-#SBATCH --output=beverin_gpu_transpose_%j.out
-#SBATCH --error=beverin_gpu_transpose_%j.err
+#SBATCH --output=beverin_cpu_transpose_%j.out
+#SBATCH --error=beverin_cpu_transpose_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 
@@ -64,7 +64,5 @@ export BEVERIN=1
 
 
 spack load openblas
-
-python run_transpose.py
 
 python run_cpu_transpose.py
