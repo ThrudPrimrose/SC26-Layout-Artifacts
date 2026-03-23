@@ -61,9 +61,9 @@ CONFIGS = [
     (64, 16, 2, 2), 
 ]
 VARIANTS    = [0, 1, 2, 3, 4, 5, 6, 7]
-SB_VALS     = [8, 32, 64, 128] if AMD else [8, 32, 64, 128]
+SB_VALS     = [32, 64, 128, 256] if AMD else [8, 32, 64, 128, 256]
 PAD_VALS    = [1]
-LIB_SB_VALS = [8, 32, 64, 128] if AMD else [8, 32, 64, 128]
+LIB_SB_VALS = [32, 64, 128, 256] if AMD else [8, 32, 64, 128]
 
 # ── Roofline ──
 AMD_ROOFLINE_SRC = r'''
