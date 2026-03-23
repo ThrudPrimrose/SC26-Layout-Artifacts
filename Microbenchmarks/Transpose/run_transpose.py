@@ -132,7 +132,7 @@ def compile():
     if not AMD:
         cmd = f"nvcc -O3 -std=c++17 -arch=native -o {BINARY} transpose_gpu.cu"
     else:
-        cmd = f"hipcc {AMD_FLAGS} -o {BINARY} transpose_gpu_hip.cpp"
+        cmd = f"hipcc {AMD_FLAGS} -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 -o {BINARY} transpose_gpu_hip.cpp"
     print(f"Compiling kernels: {cmd}")
     subprocess.run(cmd, shell=True, check=True)
 
@@ -141,7 +141,7 @@ def compile_lib():
         cmd = f"nvcc -O3 -std=c++17 -arch=native -o {BINARY_LIB} transpose_cutensor.cu -lcutensor"
         lib = "cuTENSOR"
     else:
-        cmd = f"hipcc {AMD_FLAGS} -o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor"
+        cmd = f"hipcc {AMD_FLAGS} -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 -o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor"
         lib = "hipTensor"
     print(f"Compiling {lib}: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
