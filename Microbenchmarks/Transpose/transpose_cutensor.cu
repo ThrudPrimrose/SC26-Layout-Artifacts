@@ -1,5 +1,5 @@
 // transpose_cutensor.cu — cuTENSOR 2.x permutation: row-major + blocked
-// Compile: nvcc -O3 -std=c++17 -arch=native -o transpose_cutensor transpose_cutensor.cu -lcutensor
+// Compile: nvcc -O3 -std=c++17 -o transpose_cutensor transpose_cutensor.cu -lcutensor
 // variant=0: A[N,N] {r,c} -> B[N,N] {c,r}            (row-major)
 // variant=1: A[NB,NB,SB,SB] {a,b,r,c} -> {b,a,c,r}   (blocked layout)
 #include <cstdio>
@@ -36,9 +36,13 @@ int main(int argc, char** argv) {
     CC(cudaMalloc(&dA,bytes)); CC(cudaMalloc(&dB,bytes));
     CC(cudaMemcpy(dA,VAR==1?hB:hA,bytes,cudaMemcpyHostToDevice));
 
-    cutensorHandle_t* handle; CT(cutensorCreate(&handle));
-    cutensorTensorDescriptor_t *dscA, *dscB;
-    cutensorOperationDescriptor_t* opDesc;
+    // cuTENSOR 2.x: all opaque types are value types (pointer typedefs),
+    // declare as values and pass by address to Create functions.
+    cutensorHandle_t handle;             CT(cutensorCreate(&handle));
+    cutensorTensorDescriptor_t dscA, dscB;
+    cutensorOperationDescriptor_t opDesc;
+    cutensorPlanPreference_t pref;
+    cutensorPlan_t plan;
 
     const char* vname;
     if(VAR==0){
@@ -60,9 +64,7 @@ int main(int argc, char** argv) {
         CT(cutensorCreatePermutation(handle,&opDesc,dscA,mA4,CUTENSOR_OP_IDENTITY,dscB,mB4,CUTENSOR_COMPUTE_DESC_64F));
     }
 
-    cutensorPlanPreference_t* pref;
     CT(cutensorCreatePlanPreference(handle,&pref,CUTENSOR_ALGO_DEFAULT,CUTENSOR_JIT_MODE_NONE));
-    cutensorPlan_t* plan;
     CT(cutensorCreatePlan(handle,&plan,opDesc,pref,0));
 
     double alpha=1.0;
@@ -92,9 +94,11 @@ int main(int argc, char** argv) {
         fprintf(f,"%s,%d,0,0,0,0,%d,0,%d,%.6f,%.3f,%.6e\n",vname,N,SB,i,ims[i]/1000.0,gbs,cksum);
     }fclose(f);}
 
-    cutensorDestroyPlan(plan); cutensorDestroyPlanPreference(pref);
+    cutensorDestroyPlan(plan);
+    cutensorDestroyPlanPreference(pref);
     cutensorDestroyOperationDescriptor(opDesc);
-    cutensorDestroyTensorDescriptor(dscA); cutensorDestroyTensorDescriptor(dscB);
+    cutensorDestroyTensorDescriptor(dscA);
+    cutensorDestroyTensorDescriptor(dscB);
     cutensorDestroy(handle);
     for(int i=0;i<=REPS;i++) CC(cudaEventDestroy(ev[i]));
     free(ev);free(ims);free(hA);if(hB)free(hB);

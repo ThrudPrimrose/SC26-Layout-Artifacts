@@ -10,6 +10,9 @@ AMD_FLAGS = ("-O3 -ffast-math -fPIC -Wall -Wextra "
              "-Wno-unused-parameter -munsafe-fp-atomics "
              "-ffp-contract=fast -Wno-ignored-attributes -Wno-unused-result -std=c++17")
 
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
 # ── Spack CUDA env ──
 def setup_cuda_env(spec="cuda@12.9"):
     if not AMD:
@@ -62,7 +65,6 @@ int main() {
     hipEvent_t s, e; hipEventCreate(&s); hipEventCreate(&e);
     const int threads = 256;
     const int blocks  = (int)((SZ + threads - 1) / threads);
-    // warmup
     kc<<<blocks, threads>>>(a, b, SZ); hipDeviceSynchronize();
     hipEventRecord(s);
     for (int i = 0; i < 20; i++) kc<<<blocks, threads>>>(a, b, SZ);
@@ -89,7 +91,6 @@ int main() {
     cudaEvent_t s, e; cudaEventCreate(&s); cudaEventCreate(&e);
     const int threads = 256;
     const int blocks  = (int)((SZ + threads - 1) / threads);
-    // warmup
     kc<<<blocks, threads>>>(a, b, SZ); cudaDeviceSynchronize();
     cudaEventRecord(s);
     for (int i = 0; i < 20; i++) kc<<<blocks, threads>>>(a, b, SZ);
@@ -102,29 +103,33 @@ int main() {
 }'''
 
 def get_roofline():
-    import tempfile
     if AMD:
         name, peak_fp64, peak_bw = "MI300A", 61300.0, 5300.0
         suffix, src = ".cpp", AMD_ROOFLINE_SRC
         compile_cmd = lambda obj, src: f"hipcc {AMD_FLAGS} -o {obj} {src}"
     else:
-        # GH200 Grace Hopper (HBM3) — NVIDIA DA-11356-002_10
         name, peak_fp64, peak_bw = "GH200", 34000.0, 4023.0
         suffix, src = ".cu", CUDA_ROOFLINE_SRC
         compile_cmd = lambda obj, src: f"nvcc -O3 -arch=sm_90 -o {obj} {src}"
 
-    with tempfile.NamedTemporaryFile(suffix=suffix, mode="w", delete=False) as f:
-        f.write(src); tmp = f.name
-    bw_bin = tmp.replace(suffix, "")
-    try:
-        subprocess.run(compile_cmd(bw_bin, tmp), shell=True, check=True,
-                       capture_output=True)
-        r = subprocess.run(bw_bin, capture_output=True, text=True, check=True)
-        emp_bw = float(r.stdout.strip())
-    finally:
-        if os.path.exists(tmp):    os.remove(tmp)
-        if os.path.exists(bw_bin): os.remove(bw_bin)
+    src_path = os.path.join(CACHE_DIR, f"roofline{suffix}")
+    bw_bin   = os.path.join(CACHE_DIR, "roofline")
 
+    with open(src_path, "w") as f:
+        f.write(src)
+
+    comp = subprocess.run(compile_cmd(bw_bin, src_path), shell=True,
+                          capture_output=True, text=True)
+    if comp.returncode != 0:
+        print(f"  [ERROR] Roofline compile failed:\n{comp.stderr.strip()}")
+        sys.exit(1)
+
+    r = subprocess.run(bw_bin, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  [ERROR] Roofline binary failed:\n{r.stderr.strip()}")
+        sys.exit(1)
+
+    emp_bw = float(r.stdout.strip())
     return dict(name=name, peak_fp64=peak_fp64, peak_bw=peak_bw, emp_bw=emp_bw)
 
 # ── Compile ──
@@ -132,7 +137,7 @@ def compile():
     if not AMD:
         cmd = f"nvcc -O3 -std=c++17 -arch=native -o {BINARY} transpose_gpu.cu"
     else:
-        cmd = f"hipcc {AMD_FLAGS} -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 -o {BINARY} transpose_gpu_hip.cpp"
+        cmd = f"hipcc {AMD_FLAGS} -o {BINARY} transpose_gpu_hip.cpp"
     print(f"Compiling kernels: {cmd}")
     subprocess.run(cmd, shell=True, check=True)
 
@@ -141,7 +146,7 @@ def compile_lib():
         cmd = f"nvcc -O3 -std=c++17 -arch=native -o {BINARY_LIB} transpose_cutensor.cu -lcutensor"
         lib = "cuTENSOR"
     else:
-        cmd = f"hipcc {AMD_FLAGS} -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 -o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor"
+        cmd = f"hipcc {AMD_FLAGS} -o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor"
         lib = "hipTensor"
     print(f"Compiling {lib}: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -156,8 +161,8 @@ def sweep():
     open(CSV_RAW, "w").close()
     for bx, by, tx, ty in CONFIGS:
         for v in VARIANTS:
-            sb_list  = SB_VALS   if v in (1, 3, 6) else [32]
-            pad_list = PAD_VALS  if v == 4         else [1]
+            sb_list  = SB_VALS  if v in (1, 3, 6) else [32]
+            pad_list = PAD_VALS if v == 4          else [1]
             for sb in sb_list:
                 for pad in pad_list:
                     if v in (1, 3, 6) and N % sb != 0:
@@ -178,7 +183,6 @@ def sweep_lib():
         return
     lib = "hipTensor" if AMD else "cuTENSOR"
     print(f"\n  ── Library: {lib} ──")
-    # Variant 0: row-major
     cmd = [BINARY_LIB, str(N), "0", CSV_RAW, "32", str(WARMUP), str(REPS)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -188,7 +192,7 @@ def sweep_lib():
             print(f"  FAIL {lib} row-major: {r.stderr.strip()[:100]}")
     except subprocess.TimeoutExpired:
         print(f"  TIMEOUT {lib} row-major")
-    # Variant 1: blocked for each SB
+
     for sb in LIB_SB_VALS:
         if N % sb != 0:
             continue
@@ -255,8 +259,8 @@ def report(roof, rows):
     lib_rows  = [r for r in rows if r["variant"] in LIB_NAMES]
     kern_rows = [r for r in rows if r["variant"] not in LIB_NAMES]
 
-    lib_rm = [r for r in lib_rows if "blk" not in r["variant"]]
-    lib_bk = [r for r in lib_rows if "blk"     in r["variant"]]
+    lib_rm  = [r for r in lib_rows if "blk" not in r["variant"]]
+    lib_bk  = [r for r in lib_rows if "blk"     in r["variant"]]
     ref_gbs = float(lib_rm[0]["med_gbs"]) if lib_rm else None
 
     if lib_rm:
@@ -273,8 +277,8 @@ def report(roof, rows):
     print(f" {'-'*76}")
 
     for r in sorted(rows, key=lambda x: -float(x["med_gbs"])):
-        med = float(r["med_gbs"])
-        vs  = f"{100*med/ref_gbs:.0f}%" if ref_gbs else "—"
+        med  = float(r["med_gbs"])
+        vs   = f"{100*med/ref_gbs:.0f}%" if ref_gbs else "—"
         star = " ★" if r["variant"] in LIB_NAMES else ""
         print(f" {r['variant']:<14} {r['BX']:>3} {r['BY']:>3} {r['TX']:>2} {r['TY']:>2}"
               f" {r['SB']:>3} {r['PAD']:>1}"
