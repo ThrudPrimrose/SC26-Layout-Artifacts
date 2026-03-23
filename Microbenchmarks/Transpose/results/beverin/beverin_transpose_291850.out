@@ -1,0 +1,210 @@
+Running on nid002926
+Threads: 96
+── Roofline ──
+  Emp BW: 3524 GB/s
+Compiling hipTensor: hipcc -O3 -ffast-math -fPIC -Wall -Wextra -Wno-unused-parameter -munsafe-fp-atomics -ffp-contract=fast -Wno-ignored-attributes -Wno-unused-result -std=c++17 -o ./transpose_lib transpose_hiptensor.cpp -lhiptensor
+  [WARN] hipTensor compile failed: transpose_hiptensor.cpp:6:10: fatal error: 'hiptensor/hiptensor.h' file not found
+    6 | #include <hiptensor/hiptensor.
+  Library benchmark will be skipped.
+
+── Sweep: N=16384 reps=100 warmup=5 ──
+  naive N=16384 BX=64 BY=8 TX=1 TY=1 SB=32 PAD=1 | 5.0346 ms  853.1 GB/s  cksum=2.199023e+12
+  FAIL blocked 64x8 TX=1 TY=1: Bad SB=8
+  blocked N=16384 BX=64 BY=8 TX=1 TY=1 SB=64 PAD=1 | 3.9935 ms  1075.5 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=8 TX=1 TY=1 SB=32 PAD=1 | 1.8967 ms  2264.5 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 64x8 TX=1 TY=1: Bad SB=8
+  smem_blk N=16384 BX=64 BY=8 TX=1 TY=1 SB=64 PAD=1 | 2.1371 ms  2009.7 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=8 TX=1 TY=1 SB=32 PAD=1 | 1.8680 ms  2299.2 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=8 TX=1 TY=1 SB=32 PAD=1 | 1.9007 ms  2259.6 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 64x8 TX=1 TY=1: Bad SB=8
+  blk_swiz N=16384 BX=64 BY=8 TX=1 TY=1 SB=64 PAD=1 | 2.1128 ms  2032.8 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=8 TX=1 TY=1 SB=32 PAD=1 | 3.1717 ms  1354.1 GB/s  cksum=2.199023e+12
+  FAIL blocked 32x8 TX=1 TY=1: Bad SB=8
+  blocked N=16384 BX=32 BY=8 TX=1 TY=1 SB=64 PAD=1 | 3.1889 ms  1346.8 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=8 TX=1 TY=1 SB=32 PAD=1 | 1.8923 ms  2269.7 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 32x8 TX=1 TY=1: Bad SB=8
+  smem_blk N=16384 BX=32 BY=8 TX=1 TY=1 SB=64 PAD=1 | 2.0453 ms  2099.9 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=8 TX=1 TY=1 SB=32 PAD=1 | 1.8382 ms  2336.4 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=8 TX=1 TY=1 SB=32 PAD=1 | 1.8441 ms  2329.0 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 32x8 TX=1 TY=1: Bad SB=8
+  blk_swiz N=16384 BX=32 BY=8 TX=1 TY=1 SB=64 PAD=1 | 2.0418 ms  2103.5 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=2 TX=1 TY=1 SB=32 PAD=1 | 8.5280 ms  503.6 GB/s  cksum=2.199023e+12
+  FAIL blocked 64x2 TX=1 TY=1: Bad SB=8
+  blocked N=16384 BX=64 BY=2 TX=1 TY=1 SB=64 PAD=1 | 7.7446 ms  554.6 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=2 TX=1 TY=1 SB=32 PAD=1 | 3.8627 ms  1111.9 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 64x2 TX=1 TY=1: Bad SB=8
+  smem_blk N=16384 BX=64 BY=2 TX=1 TY=1 SB=64 PAD=1 | 7.1180 ms  603.4 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=2 TX=1 TY=1 SB=32 PAD=1 | 3.9731 ms  1081.0 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=2 TX=1 TY=1 SB=32 PAD=1 | 3.8645 ms  1111.4 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 64x2 TX=1 TY=1: Bad SB=8
+  blk_swiz N=16384 BX=64 BY=2 TX=1 TY=1 SB=64 PAD=1 | 7.1025 ms  604.7 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=8 TX=2 TY=1 SB=32 PAD=1 | 5.6769 ms  756.6 GB/s  cksum=2.199023e+12
+  FAIL blocked 64x8 TX=2 TY=1: Bad SB=8
+  blocked N=16384 BX=64 BY=8 TX=2 TY=1 SB=64 PAD=1 | 4.4086 ms  974.2 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=8 TX=2 TY=1 SB=32 PAD=1 | 1.8858 ms  2277.5 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 64x8 TX=2 TY=1: Bad SB=8
+  smem_blk N=16384 BX=64 BY=8 TX=2 TY=1 SB=64 PAD=1 | 1.9734 ms  2176.4 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=8 TX=2 TY=1 SB=32 PAD=1 | 1.8746 ms  2291.2 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=8 TX=2 TY=1 SB=32 PAD=1 | 1.9244 ms  2231.9 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 64x8 TX=2 TY=1: Bad SB=8
+  blk_swiz N=16384 BX=64 BY=8 TX=2 TY=1 SB=64 PAD=1 | 1.9613 ms  2189.9 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=8 TX=2 TY=1 SB=32 PAD=1 | 3.2347 ms  1327.8 GB/s  cksum=2.199023e+12
+  FAIL blocked 32x8 TX=2 TY=1: Bad SB=8
+  blocked N=16384 BX=32 BY=8 TX=2 TY=1 SB=64 PAD=1 | 3.1634 ms  1357.7 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=8 TX=2 TY=1 SB=32 PAD=1 | 1.7731 ms  2422.2 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 32x8 TX=2 TY=1: Bad SB=8
+  smem_blk N=16384 BX=32 BY=8 TX=2 TY=1 SB=64 PAD=1 | 2.0699 ms  2075.0 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=8 TX=2 TY=1 SB=32 PAD=1 | 1.7596 ms  2440.9 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=8 TX=2 TY=1 SB=32 PAD=1 | 1.7839 ms  2407.6 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 32x8 TX=2 TY=1: Bad SB=8
+  blk_swiz N=16384 BX=32 BY=8 TX=2 TY=1 SB=64 PAD=1 | 2.0694 ms  2075.5 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=8 TX=1 TY=2 SB=32 PAD=1 | 7.2293 ms  594.1 GB/s  cksum=2.199023e+12
+  FAIL blocked 64x8 TX=1 TY=2: Bad SB=8
+  blocked N=16384 BX=64 BY=8 TX=1 TY=2 SB=64 PAD=1 | 5.0366 ms  852.8 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=8 TX=1 TY=2 SB=32 PAD=1 | 1.6523 ms  2599.3 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 64x8 TX=1 TY=2: Bad SB=8
+  smem_blk N=16384 BX=64 BY=8 TX=1 TY=2 SB=64 PAD=1 | 1.7345 ms  2476.1 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=8 TX=1 TY=2 SB=32 PAD=1 | 1.6339 ms  2628.6 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=8 TX=1 TY=2 SB=32 PAD=1 | 1.6497 ms  2603.5 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 64x8 TX=1 TY=2: Bad SB=8
+  blk_swiz N=16384 BX=64 BY=8 TX=1 TY=2 SB=64 PAD=1 | 1.7421 ms  2465.4 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=8 TX=1 TY=2 SB=32 PAD=1 | 4.3375 ms  990.2 GB/s  cksum=2.199023e+12
+  FAIL blocked 32x8 TX=1 TY=2: Bad SB=8
+  blocked N=16384 BX=32 BY=8 TX=1 TY=2 SB=64 PAD=1 | 2.9251 ms  1468.3 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=8 TX=1 TY=2 SB=32 PAD=1 | 1.6328 ms  2630.4 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 32x8 TX=1 TY=2: Bad SB=8
+  smem_blk N=16384 BX=32 BY=8 TX=1 TY=2 SB=64 PAD=1 | 1.7364 ms  2473.4 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=8 TX=1 TY=2 SB=32 PAD=1 | 1.6197 ms  2651.7 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=8 TX=1 TY=2 SB=32 PAD=1 | 1.6185 ms  2653.6 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 32x8 TX=1 TY=2: Bad SB=8
+  blk_swiz N=16384 BX=32 BY=8 TX=1 TY=2 SB=64 PAD=1 | 1.7162 ms  2502.6 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=4 TX=2 TY=2 SB=32 PAD=1 | 4.3808 ms  980.4 GB/s  cksum=2.199023e+12
+  FAIL blocked 32x4 TX=2 TY=2: Bad SB=8
+  blocked N=16384 BX=32 BY=4 TX=2 TY=2 SB=64 PAD=1 | 3.8185 ms  1124.8 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=4 TX=2 TY=2 SB=32 PAD=1 | 1.7403 ms  2467.9 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 32x4 TX=2 TY=2: Bad SB=8
+  smem_blk N=16384 BX=32 BY=4 TX=2 TY=2 SB=64 PAD=1 | 2.0386 ms  2106.8 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=4 TX=2 TY=2 SB=32 PAD=1 | 1.7440 ms  2462.7 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=4 TX=2 TY=2 SB=32 PAD=1 | 1.7451 ms  2461.1 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 32x4 TX=2 TY=2: Bad SB=8
+  blk_swiz N=16384 BX=32 BY=4 TX=2 TY=2 SB=64 PAD=1 | 2.0421 ms  2103.2 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=2 TX=2 TY=2 SB=32 PAD=1 | 9.0564 ms  474.2 GB/s  cksum=2.199023e+12
+  FAIL blocked 64x2 TX=2 TY=2: Bad SB=8
+  blocked N=16384 BX=64 BY=2 TX=2 TY=2 SB=64 PAD=1 | 7.3904 ms  581.2 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=2 TX=2 TY=2 SB=32 PAD=1 | 2.7470 ms  1563.5 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 64x2 TX=2 TY=2: Bad SB=8
+  smem_blk N=16384 BX=64 BY=2 TX=2 TY=2 SB=64 PAD=1 | 4.2608 ms  1008.0 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=2 TX=2 TY=2 SB=32 PAD=1 | 2.6995 ms  1591.0 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=2 TX=2 TY=2 SB=32 PAD=1 | 2.7056 ms  1587.4 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 64x2 TX=2 TY=2: Bad SB=8
+  blk_swiz N=16384 BX=64 BY=2 TX=2 TY=2 SB=64 PAD=1 | 4.2598 ms  1008.3 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=2 TX=4 TY=1 SB=32 PAD=1 | 12.8229 ms  334.9 GB/s  cksum=2.199023e+12
+  FAIL blocked 64x2 TX=4 TY=1: Bad SB=8
+  blocked N=16384 BX=64 BY=2 TX=4 TY=1 SB=64 PAD=1 | 6.5174 ms  659.0 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=2 TX=4 TY=1 SB=32 PAD=1 | 5.0812 ms  845.3 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 64x2 TX=4 TY=1: Bad SB=8
+  smem_blk N=16384 BX=64 BY=2 TX=4 TY=1 SB=64 PAD=1 | 4.7642 ms  901.5 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=2 TX=4 TY=1 SB=32 PAD=1 | 4.9989 ms  859.2 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=2 TX=4 TY=1 SB=32 PAD=1 | 5.0834 ms  844.9 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 64x2 TX=4 TY=1: Bad SB=8
+  blk_swiz N=16384 BX=64 BY=2 TX=4 TY=1 SB=64 PAD=1 | 4.7712 ms  900.2 GB/s  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=4 TX=4 TY=1 SB=32 PAD=1 | 6.4032 ms  670.8 GB/s  cksum=2.199023e+12
+  FAIL blocked 32x4 TX=4 TY=1: Bad SB=8
+  blocked N=16384 BX=32 BY=4 TX=4 TY=1 SB=64 PAD=1 | 4.2460 ms  1011.5 GB/s  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=4 TX=4 TY=1 SB=32 PAD=1 | 2.7026 ms  1589.2 GB/s  cksum=2.199023e+12
+  FAIL smem_blk 32x4 TX=4 TY=1: Bad SB=8
+  smem_blk N=16384 BX=32 BY=4 TX=4 TY=1 SB=64 PAD=1 | 4.2496 ms  1010.7 GB/s  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=4 TX=4 TY=1 SB=32 PAD=1 | 2.6911 ms  1596.0 GB/s  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=4 TX=4 TY=1 SB=32 PAD=1 | 2.7513 ms  1561.0 GB/s  cksum=2.199023e+12
+  FAIL blk_swiz 32x4 TX=4 TY=1: Bad SB=8
+  blk_swiz N=16384 BX=32 BY=4 TX=4 TY=1 SB=64 PAD=1 | 4.2621 ms  1007.7 GB/s  cksum=2.199023e+12
+
+========================================================================================
+ GPU: MI300A   Emp BW: 3524 GB/s   Theo BW: 5300 GB/s
+ Transpose: N=16384  bytes/call = 4.29 GB (read+write)
+========================================================================================
+
+ var             BX  BY TX TY  SB P   medGB/s  minGB/s  maxGB/s  %pkBW  vs lib
+ ----------------------------------------------------------------------------
+ smem_swiz       32   8  1  2  32 1    2666.8   2538.3   2752.3   75.7%      —
+ smem_pad        32   8  1  2  32 1    2663.3   2372.6   2724.8   75.6%      —
+ smem            32   8  1  2  32 1    2639.7   2432.1   2668.7   74.9%      —
+ smem_pad        64   8  1  2  32 1    2631.3   2411.6   2757.3   74.7%      —
+ smem_swiz       64   8  1  2  32 1    2616.2   2453.6   2654.2   74.2%      —
+ smem            64   8  1  2  32 1    2596.0   2361.5   2747.2   73.7%      —
+ blk_swiz        32   8  1  2  64 1    2499.1   2392.1   2691.3   70.9%      —
+ smem            32   4  2  2  32 1    2477.2   2263.8   2504.4   70.3%      —
+ smem_swiz       32   4  2  2  32 1    2475.4   2094.8   2499.4   70.2%      —
+ smem_blk        32   8  1  2  64 1    2468.7   2241.7   2683.6   70.0%      —
+ smem_pad        32   4  2  2  32 1    2465.8   2227.9   2490.5   70.0%      —
+ blk_swiz        64   8  1  2  64 1    2454.2   2253.4   2693.3   69.6%      —
+ smem_pad        32   8  2  1  32 1    2449.1   2364.9   2473.3   69.5%      —
+ smem_blk        64   8  1  2  64 1    2432.4   2211.8   2674.7   69.0%      —
+ smem            32   8  2  1  32 1    2428.8   2305.9   2451.1   68.9%      —
+ smem_swiz       32   8  2  1  32 1    2415.3   2327.0   2434.9   68.5%      —
+ smem_pad        32   8  1  1  32 1    2337.6   2258.0   2376.6   66.3%      —
+ smem_swiz       32   8  1  1  32 1    2329.3   2281.8   2374.3   66.1%      —
+ smem_pad        64   8  1  1  32 1    2301.3   2257.7   2319.2   65.3%      —
+ smem_pad        64   8  2  1  32 1    2291.3   2235.9   2336.3   65.0%      —
+ smem            64   8  2  1  32 1    2275.6   2223.2   2323.6   64.6%      —
+ smem            32   8  1  1  32 1    2270.8   2227.0   2289.2   64.4%      —
+ smem            64   8  1  1  32 1    2265.1   2235.8   2281.1   64.3%      —
+ smem_swiz       64   8  1  1  32 1    2262.8   2216.8   2287.0   64.2%      —
+ smem_swiz       64   8  2  1  32 1    2232.6   2184.6   2259.6   63.3%      —
+ blk_swiz        64   8  2  1  64 1    2191.8   2152.5   2212.9   62.2%      —
+ smem_blk        64   8  2  1  64 1    2177.5   2130.4   2207.2   61.8%      —
+ smem_blk        32   4  2  2  64 1    2108.4   2073.1   2130.9   59.8%      —
+ blk_swiz        32   4  2  2  64 1    2107.0   2028.6   2132.7   59.8%      —
+ blk_swiz        32   8  1  1  64 1    2104.7   2057.5   2144.3   59.7%      —
+ smem_blk        32   8  1  1  64 1    2103.1   2055.3   2130.3   59.7%      —
+ blk_swiz        32   8  2  1  64 1    2076.1   2016.1   2114.2   58.9%      —
+ smem_blk        32   8  2  1  64 1    2076.0   2030.2   2121.7   58.9%      —
+ blk_swiz        64   8  1  1  64 1    2035.1   1876.0   2127.5   57.7%      —
+ smem_blk        64   8  1  1  64 1    2005.3   1928.6   2131.3   56.9%      —
+ smem_pad        32   4  4  1  32 1    1598.2   1531.6   1621.2   45.3%      —
+ smem_pad        64   2  2  2  32 1    1596.8   1519.4   1617.9   45.3%      —
+ smem            32   4  4  1  32 1    1591.5   1539.0   1605.2   45.2%      —
+ smem            64   2  2  2  32 1    1591.3   1294.2   1604.8   45.1%      —
+ smem_swiz       64   2  2  2  32 1    1590.1   1547.1   1604.2   45.1%      —
+ smem_swiz       32   4  4  1  32 1    1587.8   1288.6   1604.8   45.1%      —
+ blocked         32   8  1  2  64 1    1469.9   1444.2   1478.7   41.7%      —
+ naive           32   8  1  1  32 1    1387.7   1163.0   1507.3   39.4%      —
+ blocked         32   8  2  1  64 1    1359.6   1322.2   1377.0   38.6%      —
+ blocked         32   8  1  1  64 1    1343.4   1301.2   1425.0   38.1%      —
+ naive           32   8  2  1  32 1    1326.7   1312.4   1365.8   37.6%      —
+ blocked         32   4  2  2  64 1    1124.0   1091.0   1153.6   31.9%      —
+ smem            64   2  1  1  32 1    1111.8   1085.8   1129.1   31.5%      —
+ smem_swiz       64   2  1  1  32 1    1111.7   1073.3   1127.2   31.5%      —
+ smem_pad        64   2  1  1  32 1    1081.8   1061.9   1096.0   30.7%      —
+ blocked         64   8  1  1  64 1    1079.0   1034.8   1095.9   30.6%      —
+ smem_blk        32   4  4  1  64 1    1014.1    978.1   1032.1   28.8%      —
+ blocked         32   4  4  1  64 1    1011.7    974.1   1051.3   28.7%      —
+ blk_swiz        64   2  2  2  64 1    1010.5    969.6   1036.5   28.7%      —
+ smem_blk        64   2  2  2  64 1    1009.1    979.2   1030.9   28.6%      —
+ blk_swiz        32   4  4  1  64 1    1007.6    973.3   1029.8   28.6%      —
+ naive           32   8  1  2  32 1     990.2    971.5   1004.5   28.1%      —
+ naive           32   4  2  2  32 1     980.5    970.9    989.7   27.8%      —
+ blocked         64   8  2  1  64 1     974.7    933.3   1012.9   27.7%      —
+ smem_blk        64   2  4  1  64 1     903.4    856.0    914.4   25.6%      —
+ blk_swiz        64   2  4  1  64 1     901.6    879.3    914.1   25.6%      —
+ smem_pad        64   2  4  1  32 1     859.3    849.7    867.2   24.4%      —
+ naive           64   8  1  1  32 1     853.1    836.3    867.9   24.2%      —
+ blocked         64   8  1  2  64 1     852.2    814.2    892.7   24.2%      —
+ smem_swiz       64   2  4  1  32 1     845.0    833.1    855.8   24.0%      —
+ smem            64   2  4  1  32 1     844.9    835.4    854.2   24.0%      —
+ naive           64   8  2  1  32 1     757.2    733.1    778.0   21.5%      —
+ naive           32   4  4  1  32 1     671.4    663.1    677.7   19.1%      —
+ blocked         64   2  4  1  64 1     659.1    640.5    671.3   18.7%      —
+ blk_swiz        64   2  1  1  64 1     604.7    562.4    669.1   17.2%      —
+ smem_blk        64   2  1  1  64 1     600.3    560.6    656.3   17.0%      —
+ naive           64   8  1  2  32 1     593.9    567.6    619.5   16.9%      —
+ blocked         64   2  2  2  64 1     581.3    567.2    602.5   16.5%      —
+ blocked         64   2  1  1  64 1     555.1    539.8    567.4   15.8%      —
+ naive           64   2  1  1  32 1     503.4    495.3    509.6   14.3%      —
+ naive           64   2  2  2  32 1     474.5    469.6    477.1   13.5%      —
+ naive           64   2  4  1  32 1     334.7    332.1    337.7    9.5%      —
+
+ Best kernel: smem_swiz BX=32 BY=8 TX=1 TY=2 SB=32 -> 2666.8 GB/s (75.7% peak)
+
+Per-iteration: transpose_raw.csv
+Aggregated:    transpose_results.csv
