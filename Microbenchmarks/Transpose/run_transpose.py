@@ -41,6 +41,8 @@ CONFIGS = [
     (64, 8, 1, 1), (32, 8, 1, 1), (64, 2, 1, 1),
     (64, 8, 2, 1), (32, 8, 2, 1),
     (64, 8, 1, 2), (32, 8, 1, 2),
+    (32, 8, 1, 4), (32, 16, 1, 2), (32, 16, 1, 1),
+    (32, 16, 1, 4), (32, 16, 2, 2), (32, 16, 2, 1),
     (32, 4, 2, 2), (64, 2, 2, 2),
     (64, 2, 4, 1), (32, 4, 4, 1),
 ]
@@ -146,7 +148,7 @@ def compile_lib():
         cmd = f"nvcc -O3 -std=c++17 -arch=native -o {BINARY_LIB} transpose_cutensor.cu -lcutensor"
         lib = "cuTENSOR"
     else:
-        cmd = f"hipcc {AMD_FLAGS} -o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor"
+        cmd = f"hipcc {AMD_FLAGS} -DHIP_PLATFORM_AMD=1 -D__HIP_PLATFORM_AMD__=1 -o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor"
         lib = "hipTensor"
     print(f"Compiling {lib}: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
