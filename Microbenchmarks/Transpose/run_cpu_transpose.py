@@ -41,8 +41,8 @@ TB_VALS     = [16, 32, 64, 128]
 
 # Blocked variants (no locbuf): sweep SB
 BLK_VARIANTS = [4, 5, 6, 7, 8, 9, 10, 11]
-SB_VALS      = [8, 16, 32, 64]
-MT_VALS      = [4, 8, 16]
+SB_VALS      = [8, 16, 32, 64, 128, 256, 512]
+MT_VALS      = [4, 8, 16, 32]
 
 # Locbuf row-major: sweep TB
 LOCBUF_RM_VARIANTS = [12, 13, 18, 19]

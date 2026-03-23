@@ -8,7 +8,6 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-task=0
 #SBATCH --cpus-per-task=192
-
 # -------------------------------
 # OpenMP configuration
 # -------------------------------
@@ -71,6 +70,5 @@ export PATH=$SCRATCH/bin:$PATH
 export BEVERIN=1
 
 echo $(lscpu)
-exit 1
 
 python run_cpu_transpose.py --compile

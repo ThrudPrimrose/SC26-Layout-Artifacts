@@ -64,5 +64,3 @@ export BEVERIN=1
 
 
 python run_transpose.py --compile
-
-python run_cpu_transpose.py --compile
