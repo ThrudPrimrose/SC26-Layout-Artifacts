@@ -11,6 +11,82 @@
 #define HC(x) do{hipError_t e=(x);if(e){fprintf(stderr,"HIP %d: %s\n",__LINE__,hipGetErrorString(e));exit(1);}}while(0)
 #define HT(x) do{hiptensorStatus_t s=(x);if(s!=HIPTENSOR_STATUS_SUCCESS){fprintf(stderr,"HT %d: %d\n",__LINE__,(int)s);exit(1);}}while(0)
 
+void verify_v1(float* t, int N) {
+    // Check row-major transpose: output[t][i][j] should equal input[j][i]
+    // Input was initialized as hA[i*N+j] = i*N + j
+    bool ok = true;
+    // Check a few elements
+    int test_cases[][2] = {{0,1},{1,0},{2,1},{1,2},{N/2, N/2+1}};
+    for (auto& rc : test_cases) {
+        int r = rc[0], c = rc[1];
+        float expected = (float)(c * N + r);
+        float actual = t[r * N + c];
+        if (actual != expected) {
+            printf("verify_v1 error: at (%d,%d) expected %.0f got %.0f\n",
+                   r, c, expected, actual);
+            ok = false;
+        }
+    }
+    if (ok)
+        printf("verify_v1 passed\n");
+    else
+        exit(1);
+}
+
+void verify_v2(float* t, int N, int SB) {
+    int NB = N / SB;
+    bool ok = true;
+
+    auto idx = [NB, SB](int b, int a, int c, int r) -> size_t {
+        return b * NB * SB * SB + a * SB * SB + c * SB + r;
+    };
+
+    auto expected = [NB, SB](int b, int a, int c, int r) -> float {
+        return a * NB * SB * SB + b * SB * SB + r * SB + c;
+    };
+
+    struct Test { int b, a, c, r; };
+    Test tests[] = {
+        {0, 0, 0, 0},                         // top‑left corner
+        {0, 1, 0, 1},                         // (b=0,a=1,c=0,r=1)
+        {1, 1, 1, 1},                         // centre of block (1,1)
+        {2, 1, 2, 1},                         // (b=2,a=1,c=2,r=1)
+        {NB-1, NB-1, SB-1, SB-1}              // bottom‑right corner
+    };
+
+    for (auto& tst : tests) {
+        float exp_val = expected(tst.b, tst.a, tst.c, tst.r);
+        float act_val = t[idx(tst.b, tst.a, tst.c, tst.r)];
+        if (act_val != exp_val) {
+            printf("verify_v2 error: at (b=%d,a=%d,c=%d,r=%d) expected %.0f got %.0f\n",
+                   tst.b, tst.a, tst.c, tst.r, exp_val, act_val);
+            ok = false;
+        }
+    }
+
+    if (ok)
+        printf("verify_v2 passed\n");
+    else
+        exit(1);
+}
+
+// Print the output as a normal N×N row‑major matrix
+void print_output_as_matrix(float* t, int N, int SB) {
+    int NB = N / SB;
+    printf("Output matrix (row‑major view):\n");
+    for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < N; ++j) {
+            int a = i / SB;          // block row index
+            int r = i % SB;          // row inside block
+            int b = j / SB;          // block column index
+            int c = j % SB;          // column inside block
+            size_t idx = b * NB * SB * SB + a * SB * SB + c * SB + r;
+            printf("%6.0f ", t[idx]);
+        }
+        printf("\n");
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr,"Usage: %s <N> <variant> <csv> [SB=32] [WARMUP=5] [REPS=100]\n",argv[0]);
@@ -22,21 +98,17 @@ int main(int argc, char** argv) {
 
     size_t elems=(size_t)N*N, bytes=elems*sizeof(float);
     float*hA=(float*)malloc(bytes);
-    for(size_t i=0;i<elems;i++) hA[i]=(float)i/N;
-
-    // Blocked: reorder host data
-    float*hB=nullptr;
-    if(VAR==1){
-        if(N%SB){fprintf(stderr,"N%%SB!=0\n");return 1;}
-        hB=(float*)malloc(bytes);
-        int NB=N/SB;
-        for(int r=0;r<N;r++) for(int c=0;c<N;c++)
-            hB[(r/SB*NB+c/SB)*SB*SB+(r%SB)*SB+c%SB]=hA[r*N+c];
+    for(int i=0;i<N;i++) {
+        for (int j=0; j<N; j++){
+            hA[i*N + j] = (float)(i*N + j);
+        }
     }
-
+    //for (int i = 0; i < N*N; i++){
+    //    printf("%8.0f ", hA[i]);
+    //}
     float*dA,*dB;
     HC(hipMalloc(&dA,bytes)); HC(hipMalloc(&dB,bytes));
-    HC(hipMemcpy(dA,VAR==1?hB:hA,bytes,hipMemcpyHostToDevice));
+    HC(hipMemcpy(dA,hA,bytes,hipMemcpyHostToDevice));
 
     // hipTensor 1.x: handle is pointer-to-pointer
     hiptensorHandle_t* handle;
@@ -52,7 +124,7 @@ int main(int argc, char** argv) {
 
     if(VAR==0){
         vname="hiptensor";
-        int64_t ext[]={N,N}, sA[]={N,1}, sB[]={1,N};
+        int64_t ext[]={N,N}, sA[]={N,1}, sB[]={N,1};
         mA=mA2; mB=mB2;
         // hipTensor 1.x: hiptensorInitTensorDescriptor takes (handle, &desc, ...)
         // desc is passed by pointer to stack struct, not pointer-to-pointer
@@ -63,7 +135,7 @@ int main(int argc, char** argv) {
         int NB=N/SB;
         int64_t ext4[]={NB,NB,SB,SB};
         int64_t sA4[]={(int64_t)NB*SB*SB,(int64_t)SB*SB,(int64_t)SB,1};
-        int64_t sB4[]={(int64_t)SB*SB,(int64_t)NB*SB*SB,1,(int64_t)SB};
+        int64_t sB4[]={(int64_t)NB*SB*SB,(int64_t)SB*SB,(int64_t)SB,1};
         mA=mA4; mB=mB4;
         HT(hiptensorInitTensorDescriptor(handle,&dscA,4,ext4,sA4,HIP_R_32F,HIPTENSOR_OP_IDENTITY));
         HT(hiptensorInitTensorDescriptor(handle,&dscB,4,ext4,sB4,HIP_R_32F,HIPTENSOR_OP_IDENTITY));
@@ -93,6 +165,17 @@ int main(int argc, char** argv) {
     printf("%s N=%d SB=%d | %.4f ms  %.1f GB/s  cksum=%.6e\n",
            vname,N,SB,avg_ms,bpi/(avg_ms/1000.0)/1e9,cksum);
 
+    //for (int i = 0; i < N*N; i++){
+    //    printf("%8.0f ", hA[i]);
+    //}
+    //printf("\n");
+
+    //if (VAR==0){
+    //    verify_v1(hA, N);
+    //} else {
+    //    verify_v2(hA, N, SB);
+    //}
+
     FILE*f=fopen(csv,"a");
     if(f){for(int i=0;i<REPS;i++){
         float gbs=bpi/(ims[i]/1000.0)/1e9;
@@ -102,7 +185,7 @@ int main(int argc, char** argv) {
     // hipTensor 1.x: only need to destroy the handle (descriptors are stack-allocated)
     hiptensorDestroy(handle);
     for(int i=0;i<=REPS;i++) HC(hipEventDestroy(ev[i]));
-    free(ev);free(ims);free(hA);if(hB)free(hB);
+    free(ev);free(ims);free(hA);
     HC(hipFree(dA));HC(hipFree(dB));
     return 0;
 }

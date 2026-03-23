@@ -3,11 +3,12 @@
 import subprocess, sys, os, csv
 from collections import defaultdict
 import numpy as np
+from pathlib import Path
 
 AMD = os.environ.get("BEVERIN", "0") == "1"
 
-AMD_FLAGS = ("-O3 -ffast-math -fPIC -Wall -Wextra "
-             "-Wno-unused-parameter -munsafe-fp-atomics "
+AMD_FLAGS = ("-O3 -ffast-math -fPIC -Wall -Wextra  -DHIP_PLATFORM_AMD=1 -D__HIP_PLATFORM_AMD__=1  "
+             "-Wno-unused-parameter -munsafe-fp-atomics  --offload-arch=gfx942 "
              "-ffp-contract=fast -Wno-ignored-attributes -Wno-unused-result -std=c++17")
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
@@ -34,7 +35,7 @@ N           = 8192*2
 REPS        = 100
 WARMUP      = 5
 
-V_NAMES = {0:"naive", 1:"blocked", 2:"smem", 3:"smem_blk", 4:"smem_pad", 5:"smem_swiz", 6:"blk_swiz"}
+V_NAMES = {0:"naive", 1:"blocked", 2:"smem", 3:"smem_blk", 4:"smem_pad", 5:"smem_swiz", 6:"smem_blk_swiz", 7:"smem_pad_blk"}
 LIB_NAMES = {"cutensor", "cutensor_blk", "hiptensor", "hiptensor_blk"}
 
 CONFIGS = [
@@ -46,8 +47,7 @@ CONFIGS = [
     # TX=4 with BY=8,16 (TX=4 mostly tested with small BY)
     (32,  8, 4, 1), (32, 16, 4, 1), (32,  8, 4, 2), (32, 16, 4, 2),
 
-    # TX=TY symmetry (you have few of these)
-    (32,  8, 2, 2), (32, 16, 4, 4), (32,  8, 4, 4),
+    (32,  8, 2, 2), (32,  8, 4, 4),
 
     # BY=32 (untested entirely)
     (32, 32, 1, 1), (32, 32, 1, 2), (32, 32, 2, 1), (32, 32, 1, 4), (32, 32, 2, 2),
@@ -58,12 +58,12 @@ CONFIGS = [
 
     # BX=64 with higher TY (mostly tested with TY=1,2)
     (64,  8, 1, 4), (64, 16, 1, 2), (64, 16, 1, 4), (64, 16, 2, 1),
-    (64, 16, 2, 2),
+    (64, 16, 2, 2), 
 ]
-VARIANTS    = [0, 1, 2, 3, 4, 5, 6]
-SB_VALS     = [8, 64] if AMD else [16, 32]
+VARIANTS    = [0, 1, 2, 3, 4, 5, 6, 7]
+SB_VALS     = [8, 32, 64, 128] if AMD else [8, 32, 64, 128]
 PAD_VALS    = [1]
-LIB_SB_VALS = [8, 32, 64] if AMD else [16, 32]
+LIB_SB_VALS = [8, 32, 64, 128] if AMD else [8, 32, 64, 128]
 
 # ── Roofline ──
 AMD_ROOFLINE_SRC = r'''
@@ -168,19 +168,27 @@ def compile():
     subprocess.run(cmd, shell=True, check=True)
 
 def compile_lib():
+    # Skip if already compiled
+    if Path(BINARY_LIB).exists():
+        print(f"[INFO] {BINARY_LIB} already exists, skipping compilation.")
+        return True
+
     if not AMD:
         cmd = f"nvcc -O3 -std=c++17 -arch=native -o {BINARY_LIB} transpose_cutensor.cu -lcutensor"
         lib = "cuTENSOR"
     else:
-        cmd = (f"hipcc {AMD_FLAGS} -DHIP_PLATFORM_AMD=1 -D__HIP_PLATFORM_AMD__=1 "
+        cmd = (f"hipcc {AMD_FLAGS} "
                f"-o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor")
         lib = "hipTensor"
+
     print(f"Compiling {lib}: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
     if r.returncode != 0:
         print(f"  [WARN] {lib} compile failed: {r.stderr.strip()[:120]}")
         print(f"  Library benchmark will be skipped.")
         return False
+
     return True
 
 # ── Sweep ──

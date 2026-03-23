@@ -4,11 +4,66 @@
 // variant=1: A[NB,NB,SB,SB] {a,b,r,c} -> {b,a,c,r}   (blocked layout)
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cuda_runtime.h>
 #include <cutensor.h>
 
 #define CC(x) do{cudaError_t e=(x);if(e){fprintf(stderr,"CUDA %d: %s\n",__LINE__,cudaGetErrorString(e));exit(1);}}while(0)
 #define CT(x) do{cutensorStatus_t s=(x);if(s){fprintf(stderr,"CT %d: %s\n",__LINE__,cutensorGetErrorString(s));exit(1);}}while(0)
+
+// ---------- verification helpers ----------
+
+// Original row-major value at (row, col): (row*N + col) / N
+static inline float orig_val(int row, int col, int N) {
+    return (float)((size_t)row * N + col) / N;
+}
+
+// Variant 0: output B is row-major with B[j][i] = A[i][j]
+// So B_linear[j*N + i] should equal orig_val(i, j, N).
+static int verify_var0(const float* hB, int N, int num_checks) {
+    int errs = 0;
+    for (int k = 0; k < num_checks; k++) {
+        int i = (int)((long)k * 997 % N);   // pseudo-random row
+        int j = (int)((long)k * 1013 % N);  // pseudo-random col
+        float expected = orig_val(i, j, N);
+        float got      = hB[(size_t)j * N + i];
+        if (fabsf(got - expected) > 1e-4f) {
+            if (errs < 5)
+                fprintf(stderr, "  MISMATCH var0: B[%d*%d+%d]=%.6f  expected=%.6f\n",
+                        j, N, i, got, expected);
+            errs++;
+        }
+    }
+    return errs;
+}
+
+// Variant 1: blocked layout.  After {a,b,r,c}->{b,a,c,r} permutation,
+// B at block (b_idx, a_idx) intra (c_idx, r_idx) should equal
+// the original value at row = a_idx*SB + r_idx, col = b_idx*SB + c_idx.
+//
+// B linear index: b_idx*NB*SB*SB + a_idx*SB*SB + c_idx*SB + r_idx
+static int verify_var1(const float* hB, int N, int SB, int num_checks) {
+    int NB = N / SB;
+    int errs = 0;
+    for (int k = 0; k < num_checks; k++) {
+        int a = (int)((long)k * 997 % NB);
+        int b = (int)((long)k * 1013 % NB);
+        int r = (int)((long)k * 1021 % SB);
+        int c = (int)((long)k * 1031 % SB);
+        float expected = orig_val(a * SB + r, b * SB + c, N);
+        size_t idx = (size_t)b * NB * SB * SB + a * SB * SB + c * SB + r;
+        float got = hB[idx];
+        if (fabsf(got - expected) > 1e-4f) {
+            if (errs < 5)
+                fprintf(stderr, "  MISMATCH var1: B[b=%d,a=%d,c=%d,r=%d]=%.6f  expected=%.6f\n",
+                        b, a, c, r, got, expected);
+            errs++;
+        }
+    }
+    return errs;
+}
+
+// ---------- main ----------
 
 int main(int argc, char** argv) {
     if (argc < 4) {
@@ -36,7 +91,6 @@ int main(int argc, char** argv) {
     CC(cudaMalloc(&dA,bytes)); CC(cudaMalloc(&dB,bytes));
     CC(cudaMemcpy(dA,VAR==1?hB:hA,bytes,cudaMemcpyHostToDevice));
 
-    // cuTENSOR 2.x: all opaque types are value types
     cutensorHandle_t handle;          CT(cutensorCreate(&handle));
     cutensorTensorDescriptor_t dscA, dscB;
     cutensorOperationDescriptor_t opDesc;
@@ -46,7 +100,9 @@ int main(int argc, char** argv) {
     const char* vname;
     if(VAR==0){
         vname="cutensor";
-        int64_t ext[]={N,N}, sA[]={N,1}, sB[]={1,N};
+        int64_t ext[]={N,N};
+        // FIX: A and B share the same strides; mode labels alone define the permutation.
+        int64_t sA[]={N,1}, sB[]={N,1};
         int32_t mA[]={'r','c'}, mB[]={'c','r'};
         CT(cutensorCreateTensorDescriptor(handle,&dscA,2,ext,sA,CUTENSOR_R_32F,CUTENSOR_OP_IDENTITY));
         CT(cutensorCreateTensorDescriptor(handle,&dscB,2,ext,sB,CUTENSOR_R_32F,CUTENSOR_OP_IDENTITY));
@@ -55,8 +111,9 @@ int main(int argc, char** argv) {
         vname="cutensor_blk";
         int NB=N/SB;
         int64_t ext4[]={NB,NB,SB,SB};
+        // FIX: A and B share the same strides; mode labels alone define the permutation.
         int64_t sA4[]={(int64_t)NB*SB*SB,(int64_t)SB*SB,(int64_t)SB,1};
-        int64_t sB4[]={(int64_t)SB*SB,(int64_t)NB*SB*SB,1,(int64_t)SB};
+        int64_t sB4[]={(int64_t)NB*SB*SB,(int64_t)SB*SB,(int64_t)SB,1};
         int32_t mA4[]={'a','b','r','c'}, mB4[]={'b','a','c','r'};
         CT(cutensorCreateTensorDescriptor(handle,&dscA,4,ext4,sA4,CUTENSOR_R_32F,CUTENSOR_OP_IDENTITY));
         CT(cutensorCreateTensorDescriptor(handle,&dscB,4,ext4,sB4,CUTENSOR_R_32F,CUTENSOR_OP_IDENTITY));
@@ -81,16 +138,31 @@ int main(int argc, char** argv) {
     float*ims=(float*)malloc(REPS*sizeof(float)); float tot=0;
     for(int i=0;i<REPS;i++){CC(cudaEventElapsedTime(&ims[i],ev[i],ev[i+1]));tot+=ims[i];}
 
-    CC(cudaMemcpy(hA,dB,bytes,cudaMemcpyDeviceToHost));
-    double cksum=0; for(size_t i=0;i<elems;i++) cksum+=hA[i];
+    // copy result back
+    float* hOut=(float*)malloc(bytes);
+    CC(cudaMemcpy(hOut,dB,bytes,cudaMemcpyDeviceToHost));
+    double cksum=0; for(size_t i=0;i<elems;i++) cksum+=hOut[i];
+
+    // ---------- manual verification ----------
+    int ncheck = (N < 1000) ? N*N : 10000;
+    int errs;
+    if (VAR == 0)
+        errs = verify_var0(hOut, N, ncheck);
+    else
+        errs = verify_var1(hOut, N, SB, ncheck);
+
+    if (errs)
+        fprintf(stderr, "VERIFY FAIL: %d / %d mismatches\n", errs, ncheck);
+    else
+        fprintf(stderr, "VERIFY OK: %d element checks passed\n", ncheck);
 
     // read + write, float = 4 bytes
     double bpi = 2.0 * elems * sizeof(float);
     float avg_ms = tot / REPS;
     float gbps = (float)(bpi / (avg_ms / 1000.0) / 1e9);
 
-    printf("%s N=%d SB=%d | %.4f ms  %.1f GB/s  cksum=%.6e\n",
-           vname, N, SB, avg_ms, gbps, cksum);
+    printf("%s N=%d SB=%d | %.4f ms  %.1f GB/s  cksum=%.6e  verify=%s\n",
+           vname, N, SB, avg_ms, gbps, cksum, errs ? "FAIL" : "OK");
 
     FILE*f=fopen(csv,"a");
     if(f){for(int i=0;i<REPS;i++){
@@ -105,7 +177,7 @@ int main(int argc, char** argv) {
     cutensorDestroyTensorDescriptor(dscB);
     cutensorDestroy(handle);
     for(int i=0;i<=REPS;i++) CC(cudaEventDestroy(ev[i]));
-    free(ev);free(ims);free(hA);if(hB)free(hB);
+    free(ev);free(ims);free(hA);free(hOut);if(hB)free(hB);
     CC(cudaFree(dA));CC(cudaFree(dB));
     return 0;
 }
