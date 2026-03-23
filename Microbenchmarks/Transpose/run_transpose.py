@@ -77,30 +77,36 @@ int main(){
     return dict(name=name, peak_fp64=peak_fp64, peak_bw=peak_bw, emp_bw=emp_bw)
 
 def get_cuda_roofline():
-    try:
-        import pycuda.driver as cuda
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pycuda", "-q"])
-        import pycuda.driver as cuda
-    import pycuda.autoinit
-    from pycuda.compiler import SourceModule
-    dev = pycuda.autoinit.device
-    a = dev.get_attributes()
-    mem = a[cuda.device_attribute.MEMORY_CLOCK_RATE] / 1000
-    bw  = a[cuda.device_attribute.GLOBAL_MEMORY_BUS_WIDTH]
-    peak_bw = 2 * mem * (bw / 8) / 1000
-    SZ = 128 * 1024 * 1024
-    ag = cuda.mem_alloc(SZ*8); bg = cuda.mem_alloc(SZ*8)
-    mod = SourceModule('__global__ void kc(const double*s,double*d,long long n){long long i=blockIdx.x*(long long)blockDim.x+threadIdx.x;if(i<n)d[i]=s[i];}')
-    kc = mod.get_function("kc")
-    bl,gr=256,(SZ+255)//256
-    kc(ag,bg,np.int64(SZ),block=(bl,1,1),grid=(gr,1)); cuda.Context.synchronize()
-    s,e = cuda.Event(), cuda.Event(); s.record()
-    for _ in range(20): kc(ag,bg,np.int64(SZ),block=(bl,1,1),grid=(gr,1))
-    e.record(); e.synchronize()
-    emp_bw = 2*SZ*8 / (s.time_till(e)/20/1000) / 1e9
-    ag.free(); bg.free()
-    return dict(name=dev.name(), peak_bw=peak_bw, emp_bw=emp_bw)
+    # GH200 Grace Hopper (HBM3, 96 GB) — NVIDIA DA-11356-002_10
+    # Peak BW = 2 * 3143 MHz * (5120-bit / 8) / 1000 = 4023 GB/s
+    name, peak_fp64, peak_bw = "GH200", 34000.0, 4023.0
+
+    import tempfile
+    src = r'''
+#include <cuda_runtime.h>
+#include <cstdio>
+__global__ void kc(const double*s,double*d,long long n){
+    long long i=blockIdx.x*(long long)blockDim.x+threadIdx.x;if(i<n)d[i]=s[i];}
+int main(){
+    long long SZ=128LL*1024*1024; size_t bytes=SZ*8;
+    double *a,*b; cudaMalloc(&a,bytes); cudaMalloc(&b,bytes);
+    cudaEvent_t s,e; cudaEventCreate(&s); cudaEventCreate(&e);
+    kc<<<(SZ+255)/256,256>>>(a,b,SZ); cudaDeviceSynchronize();
+    cudaEventRecord(s);
+    for(int i=0;i<20;i++) kc<<<(SZ+255)/256,256>>>(a,b,SZ);
+    cudaEventRecord(e); cudaEventSynchronize(e);
+    float ms; cudaEventElapsedTime(&ms,s,e);
+    printf("%.1f\n",20.0*2*SZ*8/(ms/1000.0)/1e9);
+    cudaFree(a); cudaFree(b);
+}'''
+    with tempfile.NamedTemporaryFile(suffix=".cu", mode="w", delete=False) as f:
+        f.write(src); tmp = f.name
+    bw_bin = tmp.replace(".cu", "")
+    subprocess.run(f"nvcc -O3 -arch=sm_90 -o {bw_bin} {tmp}", shell=True, check=True)
+    r = subprocess.run(bw_bin, capture_output=True, text=True, check=True)
+    emp_bw = float(r.stdout.strip())
+    os.remove(tmp); os.remove(bw_bin)
+    return dict(name=name, peak_fp64=peak_fp64, peak_bw=peak_bw, emp_bw=emp_bw)
 
 def get_roofline():
     return get_amd_roofline() if AMD else get_cuda_roofline()
