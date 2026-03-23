@@ -63,8 +63,6 @@ export PATH=$SCRATCH/bin:$PATH
 export BEVERIN=1
 
 
-spack load openblas
+python run_transpose.py --compile
 
-python run_transpose.py
-
-python run_cpu_transpose.py
+python run_cpu_transpose.py --compile
