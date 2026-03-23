@@ -1,11 +1,12 @@
-// transpose_hiptensor.cpp — hipTensor 2.x permutation: row-major + blocked
+// transpose_hiptensor.cpp — hipTensor 1.x permutation: row-major + blocked
 // Compile: hipcc -O3 -std=c++17 -o transpose_hiptensor transpose_hiptensor.cpp -lhiptensor
 // variant=0: A[N,N] {r,c} -> B[N,N] {c,r}            (row-major)
 // variant=1: A[NB,NB,SB,SB] {a,b,r,c} -> {b,a,c,r}   (blocked layout)
 #include <cstdio>
 #include <cstdlib>
 #include <hip/hip_runtime.h>
-#include <hiptensor/hiptensor.h>
+#include <hiptensor/hiptensor.hpp>
+#include <hiptensor/hiptensor_types.hpp>
 
 #define HC(x) do{hipError_t e=(x);if(e){fprintf(stderr,"HIP %d: %s\n",__LINE__,hipGetErrorString(e));exit(1);}}while(0)
 #define HT(x) do{hiptensorStatus_t s=(x);if(s!=HIPTENSOR_STATUS_SUCCESS){fprintf(stderr,"HT %d: %d\n",__LINE__,(int)s);exit(1);}}while(0)
@@ -37,44 +38,49 @@ int main(int argc, char** argv) {
     HC(hipMalloc(&dA,bytes)); HC(hipMalloc(&dB,bytes));
     HC(hipMemcpy(dA,VAR==1?hB:hA,bytes,hipMemcpyHostToDevice));
 
-    hiptensorHandle_t* handle; HT(hiptensorCreate(&handle));
-    hiptensorTensorDescriptor_t *dscA, *dscB;
-    hiptensorOperationDescriptor_t* opDesc;
+    // hipTensor 1.x: handle is pointer-to-pointer
+    hiptensorHandle_t* handle;
+    HT(hiptensorCreate(&handle));
+
+    // hipTensor 1.x: descriptors are stack-allocated structs
+    hiptensorTensorDescriptor_t dscA, dscB;
 
     const char* vname;
+    int32_t mA2[]={'r','c'}, mB2[]={'c','r'};
+    int32_t mA4[]={'a','b','r','c'}, mB4[]={'b','a','c','r'};
+    int32_t *mA, *mB;
+
     if(VAR==0){
         vname="hiptensor";
         int64_t ext[]={N,N}, sA[]={N,1}, sB[]={1,N};
-        int32_t mA[]={'r','c'}, mB[]={'c','r'};
-        HT(hiptensorCreateTensorDescriptor(handle,&dscA,2,ext,sA,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
-        HT(hiptensorCreateTensorDescriptor(handle,&dscB,2,ext,sB,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
-        HT(hiptensorCreatePermutation(handle,&opDesc,dscA,mA,HIPTENSOR_OP_IDENTITY,dscB,mB,HIPTENSOR_COMPUTE_64F));
+        mA=mA2; mB=mB2;
+        // hipTensor 1.x: hiptensorInitTensorDescriptor takes (handle, &desc, ...)
+        // desc is passed by pointer to stack struct, not pointer-to-pointer
+        HT(hiptensorInitTensorDescriptor(handle,&dscA,2,ext,sA,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
+        HT(hiptensorInitTensorDescriptor(handle,&dscB,2,ext,sB,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
     } else {
         vname="hiptensor_blk";
         int NB=N/SB;
         int64_t ext4[]={NB,NB,SB,SB};
         int64_t sA4[]={(int64_t)NB*SB*SB,(int64_t)SB*SB,(int64_t)SB,1};
         int64_t sB4[]={(int64_t)SB*SB,(int64_t)NB*SB*SB,1,(int64_t)SB};
-        int32_t mA4[]={'a','b','r','c'}, mB4[]={'b','a','c','r'};
-        HT(hiptensorCreateTensorDescriptor(handle,&dscA,4,ext4,sA4,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
-        HT(hiptensorCreateTensorDescriptor(handle,&dscB,4,ext4,sB4,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
-        HT(hiptensorCreatePermutation(handle,&opDesc,dscA,mA4,HIPTENSOR_OP_IDENTITY,dscB,mB4,HIPTENSOR_COMPUTE_64F));
+        mA=mA4; mB=mB4;
+        HT(hiptensorInitTensorDescriptor(handle,&dscA,4,ext4,sA4,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
+        HT(hiptensorInitTensorDescriptor(handle,&dscB,4,ext4,sB4,HIP_R_64F,HIPTENSOR_OP_IDENTITY));
     }
 
-    hiptensorPlanPreference_t* pref;
-    HT(hiptensorCreatePlanPreference(handle,&pref,HIPTENSOR_ALGO_DEFAULT,HIPTENSOR_JIT_MODE_NONE));
-    hiptensorPlan_t* plan;
-    HT(hiptensorCreatePlan(handle,&plan,opDesc,pref,0));
-
+    // hipTensor 1.x: hiptensorPermutation is a direct call, no plan needed
+    // hiptensorPermutation(handle, alpha, A, &descA, modeA, B, &descB, modeB, typeCompute, stream)
     double alpha=1.0;
-    for(int i=0;i<WU;i++) HT(hiptensorPermute(handle,plan,&alpha,dA,dB,0));
+    for(int i=0;i<WU;i++)
+        HT(hiptensorPermutation(handle,&alpha,dA,&dscA,mA,dB,&dscB,mB,HIP_R_64F,0));
     HC(hipDeviceSynchronize());
 
     hipEvent_t*ev=(hipEvent_t*)malloc((REPS+1)*sizeof(hipEvent_t));
     for(int i=0;i<=REPS;i++) HC(hipEventCreate(&ev[i]));
     for(int i=0;i<REPS;i++){
         HC(hipEventRecord(ev[i]));
-        HT(hiptensorPermute(handle,plan,&alpha,dA,dB,0));
+        HT(hiptensorPermutation(handle,&alpha,dA,&dscA,mA,dB,&dscB,mB,HIP_R_64F,0));
     }
     HC(hipEventRecord(ev[REPS])); HC(hipEventSynchronize(ev[REPS]));
 
@@ -93,9 +99,7 @@ int main(int argc, char** argv) {
         fprintf(f,"%s,%d,0,0,0,0,%d,0,%d,%.6f,%.3f,%.6e\n",vname,N,SB,i,ims[i]/1000.0,gbs,cksum);
     }fclose(f);}
 
-    hiptensorDestroyPlan(plan); hiptensorDestroyPlanPreference(pref);
-    hiptensorDestroyOperationDescriptor(opDesc);
-    hiptensorDestroyTensorDescriptor(dscA); hiptensorDestroyTensorDescriptor(dscB);
+    // hipTensor 1.x: only need to destroy the handle (descriptors are stack-allocated)
     hiptensorDestroy(handle);
     for(int i=0;i<=REPS;i++) HC(hipEventDestroy(ev[i]));
     free(ev);free(ims);free(hA);if(hB)free(hB);
