@@ -1,14 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=nbody
+#SBATCH --job-name=b_cpu_transpose
 #SBATCH --nodes=1
 #SBATCH --partition=mi300
 #SBATCH --time=04:00:00
-#SBATCH --output=nbody_%j.out
-#SBATCH --error=nbody_%j.err
-
+#SBATCH --output=beverin_cpu_transpose_%j.out
+#SBATCH --error=beverin_cpu_transpose_%j.err
 #SBATCH --ntasks=1
+#SBATCH --gpus-per-task=0
 #SBATCH --cpus-per-task=192
-
 # -------------------------------
 # OpenMP configuration
 # -------------------------------
@@ -32,10 +31,6 @@ export HIP_PLATFORM_AMD=1
 # -------------------------------
 # Workload parameters (BIG!)
 # -------------------------------
-N=16384
-STEPS=100
-REPS=100
-VL=16
 
 
 export ROCM_HOME=/opt/rocm
@@ -60,17 +55,20 @@ export HCC_AMDGPU_TARGET=gfx942
 export CUPY_HIPCC_GENERATE_CODE=--offload-arch=gfx942
 
 
-python particle_sim.py \
-        --N $N \
-        --steps $STEPS \
-        --vl $VL \
-        --ic random \
-        --dace \
-        --gpu
+export OPENBLAS_HOME=$(spack location -i openblas@0.3.30)
+export C_INCLUDE_PATH=$SCRATCH/include:$OPENBLAS_HOME/include:$C_INCLUDE_PATH
+export CPLUS_INCLUDE_PATH=$SCRATCH/include:$OPENBLAS_HOME/include:$CPLUS_INCLUDE_PATH
+export LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$OPENBLAS_HOME/lib:$OPENBLAS_HOME/lib64:$LIBRARY_PATH
+export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$OPENBLAS_HOME/lib:$OPENBLAS_HOME/lib64:$LD_LIBRARY_PATH
+export PATH=$SCRATCH/bin:$OPENBLAS_HOME/bin:$PATH
 
-python particle_sim.py \
-        --N $N \
-        --steps $STEPS \
-        --vl $VL \
-        --ic random \
-        --dace
+export C_INCLUDE_PATH=$SCRATCH/include:$C_INCLUDE_PATH
+export CPLUS_INCLUDE_PATH=$SCRATCH/include:$CPLUS_INCLUDE_PATH
+export LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LIBRARY_PATH
+export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LD_LIBRARY_PATH
+export PATH=$SCRATCH/bin:$PATH
+export BEVERIN=1
+
+echo $(lscpu)
+
+python run_cpu_transpose.py --compile
