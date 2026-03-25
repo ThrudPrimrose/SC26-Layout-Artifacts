@@ -1,12 +1,13 @@
 // bench_amx_gemm_layouts.cpp
 // g++ -O3 -fopenmp -march=sapphirerapids -mamx-tile -mamx-bf16 -mamx-int8 \
-//     -I. -o bench2 bench_amx_gemm_layouts.cpp -lopenblas
+//     -I. -I${MKLROOT}/include -o bench2 bench_amx_gemm_layouts.cpp \
+//     -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm
 //
 // Thread dispatch:
 //   Static  <BX,BY>:         BX*BY threads, 2D grid, each owns tiles_m/BX x tiles_n/BY tiles
 //   Hypertile <BX,BY,TX,TY>: BX*BY threads, each computes TX*TY tiles per step,
 //                             hypertile = (BX*TX)x(BY*TY), swept over C
-#include <cblas.h>
+#include <mkl.h>
 #include <omp.h>
 #include <sys/mman.h>
 #include <algorithm>
@@ -23,12 +24,7 @@ using namespace core_ir;
 
 static int g_warmup  = 5;
 static int g_iters   = 100;
-
-#if !defined(_NTHREADS)
-    #define _NTHREADS 32
-#endif
-
-static int g_threads = _NTHREADS;
+static int g_threads = 32;
 static const char* g_outfile = "bench_amx_layouts.csv";
 
 static constexpr int T = 32;
@@ -58,43 +54,31 @@ static void rand_fill_f16(_Float16* __restrict__ p, const size_t n) {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// FLAT reference
-// ════════════════════════════════════════════════════════════════════
-
-static void ref_flat(const _Float16* __restrict__ A, const _Float16* __restrict__ B,
-                     float* __restrict__ C, const int M, const int N, const int K) {
-    constexpr int BLK = 64;
-    memset(C, 0, (size_t)M * N * sizeof(float));
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int bi = 0; bi < M; bi += BLK) {
-        for (int bj = 0; bj < N; bj += BLK) {
-            for (int bk = 0; bk < K; bk += BLK) {
-                const int mi = (bi + BLK < M) ? bi + BLK : M;
-                const int nj = (bj + BLK < N) ? bj + BLK : N;
-                const int pk = (bk + BLK < K) ? bk + BLK : K;
-                for (int i = bi; i < mi; ++i) {
-                    for (int k = bk; k < pk; ++k) {
-                        const float av = (float)A[i * K + k];
-                        for (int j = bj; j < nj; ++j) {
-                            C[i * N + j] += av * (float)B[k + K * j];
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 static float* __restrict__ g_A32;
 static float* __restrict__ g_B32;
 
 static void blas_flat(const _Float16* __restrict__ A, const _Float16* __restrict__ B,
                       float* __restrict__ C, const int M, const int N, const int K) {
+    mkl_set_dynamic(0);
+    mkl_set_num_threads(g_threads);
     for (size_t i = 0; i < (size_t)M * K; ++i) { g_A32[i] = (float)A[i]; }
     for (size_t i = 0; i < (size_t)K * N; ++i) { g_B32[i] = (float)B[i]; }
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                 M, N, K, 1.0f, g_A32, K, g_B32, K, 0.0f, C, N);
+}
+
+// MKL half-precision GEMM: uses cblas_gemm_f16f16f32 (fp16 in, fp32 out)
+// B is col-major(K×N) = row-major view of B^T(N×K), so CblasTrans with ldb=K
+static void blas_f16(const _Float16* __restrict__ A, const _Float16* __restrict__ B,
+                     float* __restrict__ C, const int M, const int N, const int K) {
+    mkl_set_dynamic(0);
+    mkl_set_num_threads(g_threads);
+    cblas_gemm_f16f16f32(CblasRowMajor, CblasNoTrans, CblasTrans,
+                         M, N, K, 1.0f,
+                         (const MKL_F16*)A, K,
+                         (const MKL_F16*)B, K,
+                         0.0f, C, N);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -187,9 +171,15 @@ static void ref_tiled(const _Float16* __restrict__ At, const _Float16* __restric
         for (int tk = 0; tk < tk_; ++tk) {
             const _Float16* __restrict__ at = At + (size_t)(tm * tk_ + tk) * TSZ;
             const _Float16* __restrict__ bt = Bt + (size_t)(tn * tk_ + tk) * TSZ;
-            for (int li = 0; li < T; ++li) { for (int lk = 0; lk < T; ++lk) {
+            #pragma omp unroll
+            for (int li = 0; li < T; ++li) { 
+                #pragma omp unroll
+                for (int lk = 0; lk < T; ++lk)
+                {
                 const float av = (float)at[li * T + lk];
-                for (int ln = 0; ln < T; ++ln) {
+                #pragma omp simd
+                for (int ln = 0; ln < T; ++ln)
+                {
                     ct[li * T + ln] += av * (float)bt[lk * T + ln];
                 }
             }}
@@ -736,8 +726,8 @@ static float* __restrict__ g_Cref;     static float* __restrict__ g_Cchk;
 static int g_M, g_N, g_K;
 
 // ── wrappers (thunks to typed functions via globals) ────────────────
-static void w_ref_flat(int M, int N, int K)  { ref_flat(g_A, g_B, g_C, M, N, K); }
 static void w_blas_flat(int M, int N, int K) { blas_flat(g_A, g_B, g_C, M, N, K); }
+static void w_blas_f16(int M, int N, int K) { blas_f16(g_A, g_B, g_C, M, N, K); }
 static void w_ref_tiled(int M, int N, int K) { ref_tiled(g_At, g_Bt, g_Ct, M, N, K); }
 
 // Default flat: pack + compute, flat in/out
@@ -813,8 +803,8 @@ ALL_CONFIGS(32, 1) ALL_CONFIGS(16, 2) ALL_CONFIGS(8, 4) ALL_CONFIGS(4, 8) ALL_CO
 
 static std::vector<KernelEntry> build_kernels() {
     std::vector<KernelEntry> v;
-    v.push_back({"ref_flat",      w_ref_flat,      false, T, T, 0});
-    v.push_back({"blas_flat",     w_blas_flat,     false, T, T, 0});
+    v.push_back({"mkl_sgemm",    w_blas_flat,     false, T, T, 0});
+    v.push_back({"mkl_f16",      w_blas_f16,      false, T, T, 0});
     v.push_back({"default_flat",  w_default_flat,  false, 8*T, 4*T, 32});
     v.push_back({"default_tiled", w_default_tiled, false, 8*T, 4*T, 32});
     v.push_back({"ref_tiled",     w_ref_tiled,     true,  T, T, 0});
@@ -997,7 +987,17 @@ int main(int argc, char** argv) {
           copyin_C(o,ti,M,N); copyout_C(b,ti,M,N); verify_rt_f32(o,b,szC,"C");
           mmap_free(o,szC); mmap_free(ti,szC); mmap_free(b,szC); }
 
-        ref_flat(g_A, g_B, g_Cref, M, N, K);
+        {
+            mkl_set_num_threads(g_threads);
+            #pragma omp parallel for num_threads(g_threads) proc_bind(close)
+            for (size_t i = 0; i < szA; ++i) 
+            { g_A32[i] = (float)g_A[i]; }
+            #pragma omp parallel for num_threads(g_threads) proc_bind(close)
+            for (size_t i = 0; i < szB; ++i)
+            { g_B32[i] = (float)g_B[i]; }
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                        M, N, K, 1.0f, g_A32, K, g_B32, K, 0.0f, g_Cref, N);
+        }
 
         printf("  Kernels (%d warmup, %d iters, %zu total):\n", g_warmup, g_iters, kernels.size());
         for (const auto& ke : kernels) { bench_kernel(fout, ke, g_thread_filter); }

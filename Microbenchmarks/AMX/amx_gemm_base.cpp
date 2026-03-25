@@ -1,26 +1,25 @@
-// bench_amx_gemm_layouts.cpp
-// g++ -O3 -fopenmp -march=sapphirerapids -mamx-tile -mamx-bf16 -mamx-int8 \
-//     -I. -o bench2 bench_amx_gemm_layouts.cpp -lopenblas
-//
-// Thread dispatch:
-//   Static  <BX,BY>:         BX*BY threads, 2D grid, each owns tiles_m/BX x tiles_n/BY tiles
-//   Hypertile <BX,BY,TX,TY>: BX*BY threads, each computes TX*TY tiles per step,
-//                             hypertile = (BX*TX)x(BY*TY), swept over C
-#include <cblas.h>
+// bench_amx_gemm.cpp
+// Usage: ./bench M1 N1 K1 [M2 N2 K2 ...] [-w warmup] [-i iters] [-t threads] [-o file.csv]
+// g++ -O3 -fopenmp -march=sapphirerapids -mamx-tile -mamx-bf16 -mamx-int8
+//     -I. -I${MKLROOT}/include -o bench bench_amx_gemm.cpp
+//     -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm
+#include <mkl.h>
 #include <omp.h>
 #include <sys/mman.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <string>
 #include <vector>
+
 #include "core/amx/tile.hpp"
 
 using namespace core_ir;
 
+// ── defaults ────────────────────────────────────────────────────────
 static int g_warmup  = 5;
 static int g_iters   = 100;
 #if !defined(_NTHREADS)
@@ -28,55 +27,55 @@ static int g_iters   = 100;
 #endif
 
 static int g_threads = _NTHREADS;
-static const char* g_outfile = "bench_amx_layouts.csv";
+static const char* g_outfile = "bench_amx_gemm.csv";
 
-static constexpr int T = 32;
-static constexpr int TSZ = T * T;
-
-// ── helpers ─────────────────────────────────────────────────────────
+// ── timing ──────────────────────────────────────────────────────────
 static inline double now_ns() {
-    const auto t = std::chrono::high_resolution_clock::now();
+    auto t = std::chrono::high_resolution_clock::now();
     return std::chrono::duration<double, std::nano>(t.time_since_epoch()).count();
 }
 
-template <typename X>
-static X* __restrict__ mmap_alloc(const size_t n) {
-    void* const p = mmap(nullptr, n * sizeof(X), PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    return static_cast<X*>(p);
+// ── NUMA-safe mmap alloc ────────────────────────────────────────────
+template <typename T>
+static T* mmap_alloc(size_t n) {
+    void* p = mmap(nullptr, n * sizeof(T), PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return static_cast<T*>(p);
 }
 
-template <typename X>
-static void mmap_free(X* __restrict__ p, const size_t n) {
-    munmap(p, n * sizeof(X));
+template <typename T>
+static void mmap_free(T* p, size_t n) {
+    munmap(p, n * sizeof(T));
 }
 
-static void rand_fill_f16(_Float16* __restrict__ p, const size_t n) {
+// ── random init ─────────────────────────────────────────────────────
+static void rand_fill_f16(_Float16* p, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         p[i] = (_Float16)((float)rand() / (float)RAND_MAX - 0.5f);
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// FLAT reference
-// ════════════════════════════════════════════════════════════════════
-
-static void ref_flat(const _Float16* __restrict__ A, const _Float16* __restrict__ B,
-                     float* __restrict__ C, const int M, const int N, const int K) {
+// ── reference: OpenMP 2D block-tiled scalar GEMM (fp16 in, fp32 out) ──
+static void ref_gemm_omp(const _Float16* A, const _Float16* B, float* C,
+                         int M, int N, int K, bool b_row_major) {
     constexpr int BLK = 64;
     memset(C, 0, (size_t)M * N * sizeof(float));
+
     #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
     for (int bi = 0; bi < M; bi += BLK) {
         for (int bj = 0; bj < N; bj += BLK) {
             for (int bk = 0; bk < K; bk += BLK) {
-                const int mi = (bi + BLK < M) ? bi + BLK : M;
-                const int nj = (bj + BLK < N) ? bj + BLK : N;
-                const int pk = (bk + BLK < K) ? bk + BLK : K;
+                int mi = (bi + BLK < M) ? bi + BLK : M;
+                int nj = (bj + BLK < N) ? bj + BLK : N;
+                int pk = (bk + BLK < K) ? bk + BLK : K;
                 for (int i = bi; i < mi; ++i) {
                     for (int k = bk; k < pk; ++k) {
-                        const float av = (float)A[i * K + k];
+                        float a_val = (float)A[i * K + k];
                         for (int j = bj; j < nj; ++j) {
-                            C[i * N + j] += av * (float)B[k + K * j];
+                            float b_val = b_row_major
+                                ? (float)B[k * N + j]
+                                : (float)B[j * K + k];
+                            C[i * N + j] += a_val * b_val;
                         }
                     }
                 }
@@ -85,869 +84,386 @@ static void ref_flat(const _Float16* __restrict__ A, const _Float16* __restrict_
     }
 }
 
-static float* __restrict__ g_A32;
-static float* __restrict__ g_B32;
-
-static void blas_flat(const _Float16* __restrict__ A, const _Float16* __restrict__ B,
-                      float* __restrict__ C, const int M, const int N, const int K) {
-    for (size_t i = 0; i < (size_t)M * K; ++i) { g_A32[i] = (float)A[i]; }
-    for (size_t i = 0; i < (size_t)K * N; ++i) { g_B32[i] = (float)B[i]; }
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                M, N, K, 1.0f, g_A32, K, g_B32, K, 0.0f, C, N);
+// ── MKL sgemm (upcast fp16->fp32) ──────────────────────────────────
+static void mkl_sgemm_wrap(const _Float16* A16, const _Float16* B16, float* C,
+                           int M, int N, int K, bool b_row_major,
+                           float* A32_buf, float* B32_buf) {
+    mkl_set_num_threads(g_threads);
+    for (size_t i = 0; i < (size_t)M * K; ++i) {
+        A32_buf[i] = (float)A16[i];
+    }
+    for (size_t i = 0; i < (size_t)K * N; ++i) {
+        B32_buf[i] = (float)B16[i];
+    }
+    if (b_row_major) {
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    M, N, K, 1.0f, A32_buf, K, B32_buf, N, 0.0f, C, N);
+    } else {
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    M, N, K, 1.0f, A32_buf, K, B32_buf, K, 0.0f, C, N);
+    }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// TILED copyin/copyout
-// ════════════════════════════════════════════════════════════════════
-
-static void copyin_A(const _Float16* __restrict__ f, _Float16* __restrict__ t,
-                     const int M, const int K) {
-    const int tm_ = M / T, tk_ = K / T;
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int tm = 0; tm < tm_; ++tm) { for (int tk = 0; tk < tk_; ++tk) {
-        _Float16* __restrict__ d = t + (size_t)(tm * tk_ + tk) * TSZ;
-        for (int li = 0; li < T; ++li) { for (int lk = 0; lk < T; ++lk) {
-            d[li * T + lk] = f[(tm * T + li) * K + (tk * T + lk)];
-        }}
-    }}
+// ── MKL f16 GEMM (native fp16 in, fp32 out) ────────────────────────
+static void mkl_f16_wrap(const _Float16* A, const _Float16* B, float* C,
+                         int M, int N, int K, bool b_row_major) {
+    mkl_set_num_threads(g_threads);
+    if (b_row_major) {
+        cblas_gemm_f16f16f32(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                             M, N, K, 1.0f,
+                             (const MKL_F16*)A, K,
+                             (const MKL_F16*)B, N,
+                             0.0f, C, N);
+    } else {
+        cblas_gemm_f16f16f32(CblasRowMajor, CblasNoTrans, CblasTrans,
+                             M, N, K, 1.0f,
+                             (const MKL_F16*)A, K,
+                             (const MKL_F16*)B, K,
+                             0.0f, C, N);
+    }
 }
 
-static void copyin_B(const _Float16* __restrict__ f, _Float16* __restrict__ t,
-                     const int K, const int N) {
-    const int tk_ = K / T, tn_ = N / T;
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int tn = 0; tn < tn_; ++tn) { for (int tk = 0; tk < tk_; ++tk) {
-        _Float16* __restrict__ d = t + (size_t)(tn * tk_ + tk) * TSZ;
-        for (int lk = 0; lk < T; ++lk) { for (int ln = 0; ln < T; ++ln) {
-            d[lk * T + ln] = f[(tk * T + lk) + K * (tn * T + ln)];
-        }}
-    }}
-}
+// ── AMX GEMM (hypertile + static variants) ─────────────────────────
+template <typename IN_T, typename OUT_T, bool R2, int BM, int BN, int BK>
+class amx_gemm_omp {
+public:
+    using GEMM = TileOps<IN_T, IN_T, OUT_T, OUT_T, MajorAxis::ROW,
+                         R2 ? MajorAxis::ROW : MajorAxis::COLUMN,
+                         MajorAxis::ROW, MajorAxis::ROW, BM, BN, BK>;
 
-static void copyin_C(const float* __restrict__ f, float* __restrict__ t,
-                     const int M, const int N) {
-    const int tm_ = M / T, tn_ = N / T;
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int tm = 0; tm < tm_; ++tm) { for (int tn = 0; tn < tn_; ++tn) {
-        float* __restrict__ d = t + (size_t)(tm * tn_ + tn) * TSZ;
-        for (int li = 0; li < T; ++li) { for (int ln = 0; ln < T; ++ln) {
-            d[li * T + ln] = f[(tm * T + li) * N + (tn * T + ln)];
-        }}
-    }}
-}
+    static constexpr int HM = 8;
+    static constexpr int HN = 4;
+    static constexpr int a_tile_sz = BM * BK;
+    static constexpr int b_tile_sz = (BK / 2) * (2 * BN);
 
-static void zero_C_tiled(float* __restrict__ t, const int M, const int N) {
-    memset(t, 0, (size_t)M * N * sizeof(float));
-}
+    static void pack_parallel(const IN_T* src_a, const IN_T* src_b,
+                              IN_T* a_pk, IN_T* b_pk,
+                              int M, int N, int K) {
+        int tiles_m = M / BM, tiles_n = N / BN, tiles_k = K / BK;
+        typename GEMM::TileLayoutA la(src_a, M, K);
+        typename GEMM::TileLayoutB lb(src_b, N, K);
 
-static void copyout_A(_Float16* __restrict__ f, const _Float16* __restrict__ t,
-                      const int M, const int K) {
-    const int tm_ = M / T, tk_ = K / T;
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int tm = 0; tm < tm_; ++tm) { for (int tk = 0; tk < tk_; ++tk) {
-        const _Float16* __restrict__ s = t + (size_t)(tm * tk_ + tk) * TSZ;
-        for (int li = 0; li < T; ++li) { for (int lk = 0; lk < T; ++lk) {
-            f[(tm * T + li) * K + (tk * T + lk)] = s[li * T + lk];
-        }}
-    }}
-}
-
-static void copyout_B(_Float16* __restrict__ f, const _Float16* __restrict__ t,
-                      const int K, const int N) {
-    const int tk_ = K / T, tn_ = N / T;
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int tn = 0; tn < tn_; ++tn) { for (int tk = 0; tk < tk_; ++tk) {
-        const _Float16* __restrict__ s = t + (size_t)(tn * tk_ + tk) * TSZ;
-        for (int lk = 0; lk < T; ++lk) { for (int ln = 0; ln < T; ++ln) {
-            f[(tk * T + lk) + K * (tn * T + ln)] = s[lk * T + ln];
-        }}
-    }}
-}
-
-static void copyout_C(float* __restrict__ f, const float* __restrict__ t,
-                      const int M, const int N) {
-    const int tm_ = M / T, tn_ = N / T;
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int tm = 0; tm < tm_; ++tm) { for (int tn = 0; tn < tn_; ++tn) {
-        const float* __restrict__ s = t + (size_t)(tm * tn_ + tn) * TSZ;
-        for (int li = 0; li < T; ++li) { for (int ln = 0; ln < T; ++ln) {
-            f[(tm * T + li) * N + (tn * T + ln)] = s[li * T + ln];
-        }}
-    }}
-}
-
-static void ref_tiled(const _Float16* __restrict__ At, const _Float16* __restrict__ Bt,
-                      float* __restrict__ Ct, const int M, const int N, const int K) {
-    const int tm_ = M / T, tn_ = N / T, tk_ = K / T;
-    memset(Ct, 0, (size_t)M * N * sizeof(float));
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int tm = 0; tm < tm_; ++tm) { for (int tn = 0; tn < tn_; ++tn) {
-        float* __restrict__ ct = Ct + (size_t)(tm * tn_ + tn) * TSZ;
-        for (int tk = 0; tk < tk_; ++tk) {
-            const _Float16* __restrict__ at = At + (size_t)(tm * tk_ + tk) * TSZ;
-            const _Float16* __restrict__ bt = Bt + (size_t)(tn * tk_ + tk) * TSZ;
-            for (int li = 0; li < T; ++li) { for (int lk = 0; lk < T; ++lk) {
-                const float av = (float)at[li * T + lk];
-                for (int ln = 0; ln < T; ++ln) {
-                    ct[li * T + ln] += av * (float)bt[lk * T + ln];
+        #pragma omp parallel num_threads(g_threads) proc_bind(close)
+        {
+            int tid = omp_get_thread_num();
+            for (int tm = tid; tm < tiles_m; tm += g_threads) {
+                for (int tk = 0; tk < tiles_k; ++tk) {
+                    IN_T* dst = a_pk + (size_t)tm * tiles_k * a_tile_sz
+                                     + (size_t)tk * a_tile_sz;
+                    la.pack(tm, tk, dst);
                 }
-            }}
-        }
-    }}
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Shared: packing routines
-// ════════════════════════════════════════════════════════════════════
-
-using IN_T  = _Float16;
-using OUT_T = float;
-constexpr int BM = 32, BN = 32, BK = 32;
-
-using GEMM = TileOps<IN_T, IN_T, OUT_T, OUT_T,
-                     MajorAxis::ROW, MajorAxis::ROW,
-                     MajorAxis::ROW, MajorAxis::ROW, BM, BN, BK>;
-static constexpr int A_TSZ = BM * BK;
-static constexpr int B_TSZ = (BK / 2) * (2 * BN);
-
-static void pack_A(const IN_T* __restrict__ A, IN_T* __restrict__ ap,
-                   const int M, const int K) {
-    const int tm_ = M / BM, tk_ = K / BK;
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int tm = 0; tm < tm_; ++tm) { for (int tk = 0; tk < tk_; ++tk) {
-        IN_T* __restrict__ d = ap + (size_t)(tm * tk_ + tk) * A_TSZ;
-        for (int li = 0; li < BM; ++li) { for (int lk = 0; lk < BK; ++lk) {
-            d[li * BK + lk] = A[(tm * BM + li) * K + (tk * BK + lk)];
-        }}
-    }}
-}
-
-static void pack_B(const IN_T* __restrict__ B, IN_T* __restrict__ bp,
-                   const int K, const int N) {
-    const int tk_ = K / BK, tn_ = N / BN;
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int tn = 0; tn < tn_; ++tn) { for (int tk = 0; tk < tk_; ++tk) {
-        IN_T* __restrict__ d = bp + (size_t)(tn * tk_ + tk) * B_TSZ;
-        for (int k = 0; k < BK; k += 2) { for (int n = 0; n < BN; ++n) {
-            const int gk = tk * BK + k, gn = tn * BN + n;
-            d[(k / 2) * (2 * BN) + 2 * n + 0] = B[gk + K * gn];
-            d[(k / 2) * (2 * BN) + 2 * n + 1] = B[gk + 1 + K * gn];
-        }}
-    }}
-}
-
-static void repack_B_tiles(const IN_T* __restrict__ bt, IN_T* __restrict__ ba,
-                           const int K, const int N) {
-    const int tk_ = K / BK, tn_ = N / BN, tot = tn_ * tk_;
-    #pragma omp parallel for num_threads(g_threads) schedule(static)
-    for (int t = 0; t < tot; ++t) {
-        const int tn = t / tk_, tk = t % tk_;
-        const IN_T* __restrict__ s = bt + (size_t)(tn * tk_ + tk) * TSZ;
-        IN_T* __restrict__ d = ba + (size_t)(tn * tk_ + tk) * B_TSZ;
-        for (int k = 0; k < BK; k += 2) { for (int n = 0; n < BN; ++n) {
-            d[(k / 2) * (2 * BN) + 2 * n + 0] = s[(k + 0) * BN + n];
-            d[(k / 2) * (2 * BN) + 2 * n + 1] = s[(k + 1) * BN + n];
-        }}
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// MMA body: single tile (tm,tn) over all K tiles
-// ════════════════════════════════════════════════════════════════════
-
-// Packed A/B -> flat C
-static inline void mma_tile_flat(const IN_T* __restrict__ apk, const IN_T* __restrict__ bpk,
-                                 OUT_T* __restrict__ C,
-                                 const int tm, const int tn,
-                                 const int tk_, const int N) {
-    typename GEMM::FragmentD df;
-    for (int tk = 0; tk < tk_; ++tk) {
-        const IN_T* ap = apk + (size_t)(tm * tk_ + tk) * A_TSZ;
-        const IN_T* bp = bpk + (size_t)(tn * tk_ + tk) * B_TSZ;
-        typename GEMM::FragmentA af; af.template load(ap);
-        typename GEMM::FragmentB bf; bf.template load(bp);
-        GEMM::MMA::mma(af, bf, df);
-    }
-    OUT_T* p = C + tm * BM * N + tn * BN;
-    df.template unload_unpack<MajorAxis::ROW>(p, N);
-}
-
-// Packed A / repacked B -> tiled C
-static inline void mma_tile_tiled(const IN_T* __restrict__ at, const IN_T* __restrict__ ba,
-                                  OUT_T* __restrict__ ct,
-                                  const int tm, const int tn,
-                                  const int tk_, const int tn_) {
-    typename GEMM::FragmentD df;
-    for (int tk = 0; tk < tk_; ++tk) {
-        const IN_T* ap = at + (size_t)(tm * tk_ + tk) * A_TSZ;
-        const IN_T* bp = ba + (size_t)(tn * tk_ + tk) * B_TSZ;
-        typename GEMM::FragmentA af; af.template load(ap);
-        typename GEMM::FragmentB bf; bf.template load(bp);
-        GEMM::MMA::mma(af, bf, df);
-    }
-    OUT_T* p = ct + (size_t)(tm * tn_ + tn) * TSZ;
-    df.template unload_unpack<MajorAxis::ROW>(p, BN);
-}
-
-// ════════════════════════════════════════════════════════════════════
-// TX×TY register-blocked body
-// ════════════════════════════════════════════════════════════════════
-
-template <int TX, int TY>
-static inline void mma_block_flat(const IN_T* __restrict__ apk, const IN_T* __restrict__ bpk,
-                                  OUT_T* __restrict__ C,
-                                  const int tm0, const int tn0,
-                                  const int tk_, const int N) {
-    typename GEMM::FragmentD df[TX][TY];
-    for (int tk = 0; tk < tk_; ++tk) {
-        typename GEMM::FragmentA af[TX];
-        for (int tx = 0; tx < TX; ++tx) {
-            const IN_T* ap = apk + (size_t)((tm0 + tx) * tk_ + tk) * A_TSZ;
-            af[tx].template load(ap);
-        }
-        typename GEMM::FragmentB bf[TY];
-        for (int ty = 0; ty < TY; ++ty) {
-            const IN_T* bp = bpk + (size_t)((tn0 + ty) * tk_ + tk) * B_TSZ;
-            bf[ty].template load(bp);
-        }
-        for (int tx = 0; tx < TX; ++tx) {
-            for (int ty = 0; ty < TY; ++ty) {
-                GEMM::MMA::mma(af[tx], bf[ty], df[tx][ty]);
+            }
+            if constexpr (R2) {
+                for (int tn = tid; tn < tiles_n; tn += g_threads) {
+                    for (int tk = 0; tk < tiles_k; ++tk) {
+                        IN_T* dst = b_pk + (size_t)tn * tiles_k * b_tile_sz
+                                         + (size_t)tk * b_tile_sz;
+                        lb.pack(tn, tk, dst);
+                    }
+                }
+            } else {
+                for (int tk = 0; tk < tiles_k; ++tk) {
+                    for (int tn = tid; tn < tiles_n; tn += g_threads) {
+                        IN_T* dst = b_pk + (size_t)tn * tiles_k * b_tile_sz
+                                         + (size_t)tk * b_tile_sz;
+                        lb.pack(tn, tk, dst);
+                    }
+                }
             }
         }
     }
-    for (int tx = 0; tx < TX; ++tx) {
-        for (int ty = 0; ty < TY; ++ty) {
-            OUT_T* p = C + (tm0 + tx) * BM * N + (tn0 + ty) * BN;
-            df[tx][ty].template unload_unpack<MajorAxis::ROW>(p, N);
-        }
-    }
-}
 
-template <int TX, int TY>
-static inline void mma_block_tiled(const IN_T* __restrict__ at, const IN_T* __restrict__ ba,
-                                   OUT_T* __restrict__ ct,
-                                   const int tm0, const int tn0,
-                                   const int tk_, const int tn_) {
-    typename GEMM::FragmentD df[TX][TY];
-    for (int tk = 0; tk < tk_; ++tk) {
-        typename GEMM::FragmentA af[TX];
-        for (int tx = 0; tx < TX; ++tx) {
-            const IN_T* ap = at + (size_t)((tm0 + tx) * tk_ + tk) * A_TSZ;
-            af[tx].template load(ap);
-        }
-        typename GEMM::FragmentB bf[TY];
-        for (int ty = 0; ty < TY; ++ty) {
-            const IN_T* bp = ba + (size_t)((tn0 + ty) * tk_ + tk) * B_TSZ;
-            bf[ty].template load(bp);
-        }
-        for (int tx = 0; tx < TX; ++tx) {
-            for (int ty = 0; ty < TY; ++ty) {
-                GEMM::MMA::mma(af[tx], bf[ty], df[tx][ty]);
+    static void compute_hypertile(const IN_T* a_pk, const IN_T* b_pk,
+                                  OUT_T* d, int M, int N, int K) {
+        int tiles_m = M / BM, tiles_n = N / BN, tiles_k = K / BK;
+        int ht_n = tiles_n / HN;
+        int ht_total = (tiles_m / HM) * ht_n;
+
+        #pragma omp parallel num_threads(g_threads) proc_bind(close)
+        {
+            GEMM::init();
+            int tid = omp_get_thread_num();
+            for (int ht = tid; ht < ht_total; ht += g_threads) {
+                int tm0 = (ht / ht_n) * HM;
+                int tn0 = (ht % ht_n) * HN;
+                for (int ltm = 0; ltm < HM; ++ltm) {
+                    for (int ltn = 0; ltn < HN; ++ltn) {
+                        int t_m = tm0 + ltm, t_n = tn0 + ltn;
+                        OUT_T* dt = d + t_m * BM * N + t_n * BN;
+                        typename GEMM::FragmentD df{};
+                        const IN_T* ap = a_pk + (size_t)t_m * tiles_k * a_tile_sz;
+                        const IN_T* bp = b_pk + (size_t)t_n * tiles_k * b_tile_sz;
+                        for (int tk = 0; tk < tiles_k; ++tk) {
+                            typename GEMM::FragmentA af;
+                            typename GEMM::FragmentB bf;
+                            af.template load(ap);
+                            bf.template load(bp);
+                            GEMM::MMA::mma(af, bf, df);
+                            ap += a_tile_sz;
+                            bp += b_tile_sz;
+                        }
+                        df.template unload_unpack<MajorAxis::ROW>(dt, N);
+                    }
+                }
             }
         }
     }
-    for (int tx = 0; tx < TX; ++tx) {
-        for (int ty = 0; ty < TY; ++ty) {
-            OUT_T* p = ct + (size_t)((tm0 + tx) * tn_ + (tn0 + ty)) * TSZ;
-            df[tx][ty].template unload_unpack<MajorAxis::ROW>(p, BN);
-        }
-    }
-}
 
-// On-the-fly: flat A(row-major) + B(col-major) -> stack pack -> MMA -> flat C
-template <int TX, int TY>
-static inline void mma_block_flat_otf(const IN_T* __restrict__ A, const IN_T* __restrict__ B,
-                                      OUT_T* __restrict__ C,
-                                      const int tm0, const int tn0,
-                                      const int tk_, const int K, const int N) {
-    alignas(64) IN_T ab[TX][A_TSZ];
-    alignas(64) IN_T bb[TY][B_TSZ];
-    typename GEMM::FragmentD df[TX][TY];
-    for (int tk = 0; tk < tk_; ++tk) {
-        typename GEMM::FragmentA af[TX];
-        for (int tx = 0; tx < TX; ++tx) {
-            for (int li = 0; li < BM; ++li) { for (int lk = 0; lk < BK; ++lk) {
-                ab[tx][li * BK + lk] = A[((tm0 + tx) * BM + li) * K + (tk * BK + lk)];
-            }}
-            const IN_T* ap = ab[tx]; af[tx].template load(ap);
-        }
-        typename GEMM::FragmentB bf[TY];
-        for (int ty = 0; ty < TY; ++ty) {
-            for (int k = 0; k < BK; k += 2) { for (int n = 0; n < BN; ++n) {
-                const int gk = tk * BK + k, gn = (tn0 + ty) * BN + n;
-                bb[ty][(k / 2) * (2 * BN) + 2 * n + 0] = B[gk + K * gn];
-                bb[ty][(k / 2) * (2 * BN) + 2 * n + 1] = B[gk + 1 + K * gn];
-            }}
-            const IN_T* bp = bb[ty]; bf[ty].template load(bp);
-        }
-        for (int tx = 0; tx < TX; ++tx) {
-            for (int ty = 0; ty < TY; ++ty) {
-                GEMM::MMA::mma(af[tx], bf[ty], df[tx][ty]);
+    static void compute_static(const IN_T* a_pk, const IN_T* b_pk,
+                               OUT_T* d, int M, int N, int K) {
+        int tiles_m = M / BM, tiles_n = N / BN, tiles_k = K / BK;
+        int total = tiles_m * tiles_n;
+
+        #pragma omp parallel num_threads(g_threads) proc_bind(close)
+        {
+            GEMM::init();
+            int tid = omp_get_thread_num(), nth = omp_get_num_threads();
+            int base = total / nth, extra = total % nth;
+            int start = tid * base + (tid < extra ? tid : extra);
+            int count = base + (tid < extra ? 1 : 0);
+            for (int idx = start; idx < start + count; ++idx) {
+                int t_m = idx / tiles_n, t_n = idx % tiles_n;
+                OUT_T* dt = d + t_m * BM * N + t_n * BN;
+                typename GEMM::FragmentD df{};
+                const IN_T* ap = a_pk + (size_t)t_m * tiles_k * a_tile_sz;
+                const IN_T* bp = b_pk + (size_t)t_n * tiles_k * b_tile_sz;
+                for (int tk = 0; tk < tiles_k; ++tk) {
+                    typename GEMM::FragmentA af;
+                    typename GEMM::FragmentB bf;
+                    af.template load(ap);
+                    bf.template load(bp);
+                    GEMM::MMA::mma(af, bf, df);
+                    ap += a_tile_sz;
+                    bp += b_tile_sz;
+                }
+                df.template unload_unpack<MajorAxis::ROW>(dt, N);
             }
         }
     }
-    for (int tx = 0; tx < TX; ++tx) {
-        for (int ty = 0; ty < TY; ++ty) {
-            OUT_T* p = C + (tm0 + tx) * BM * N + (tn0 + ty) * BN;
-            df[tx][ty].template unload_unpack<MajorAxis::ROW>(p, N);
-        }
-    }
-}
+};
 
-// On-the-fly: tiled A + raw tiled B -> stack repack B -> MMA -> tiled C
-template <int TX, int TY>
-static inline void mma_block_tiled_otf(const IN_T* __restrict__ at, const IN_T* __restrict__ bt,
-                                       OUT_T* __restrict__ ct,
-                                       const int tm0, const int tn0,
-                                       const int tk_, const int tn_) {
-    alignas(64) IN_T bb[TY][B_TSZ];
-    typename GEMM::FragmentD df[TX][TY];
-    for (int tk = 0; tk < tk_; ++tk) {
-        typename GEMM::FragmentA af[TX];
-        for (int tx = 0; tx < TX; ++tx) {
-            const IN_T* ap = at + (size_t)((tm0 + tx) * tk_ + tk) * A_TSZ;
-            af[tx].template load(ap);
-        }
-        typename GEMM::FragmentB bf[TY];
-        for (int ty = 0; ty < TY; ++ty) {
-            const IN_T* s = bt + (size_t)((tn0 + ty) * tk_ + tk) * TSZ;
-            for (int k = 0; k < BK; k += 2) { for (int n = 0; n < BN; ++n) {
-                bb[ty][(k / 2) * (2 * BN) + 2 * n + 0] = s[(k + 0) * BN + n];
-                bb[ty][(k / 2) * (2 * BN) + 2 * n + 1] = s[(k + 1) * BN + n];
-            }}
-            const IN_T* bp = bb[ty]; bf[ty].template load(bp);
-        }
-        for (int tx = 0; tx < TX; ++tx) {
-            for (int ty = 0; ty < TY; ++ty) {
-                GEMM::MMA::mma(af[tx], bf[ty], df[tx][ty]);
-            }
-        }
-    }
-    for (int tx = 0; tx < TX; ++tx) {
-        for (int ty = 0; ty < TY; ++ty) {
-            OUT_T* p = ct + (size_t)((tm0 + tx) * tn_ + (tn0 + ty)) * TSZ;
-            df[tx][ty].template unload_unpack<MajorAxis::ROW>(p, BN);
-        }
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Static kernels <BX,BY>: BX*BY cores, each owns tiles_m/BX x tiles_n/BY
-// ════════════════════════════════════════════════════════════════════
-
-// flat: pack + compute -> flat C
-template <int BX, int BY>
-static void flat_pk_S(const IN_T* __restrict__ A, const IN_T* __restrict__ B,
-                      OUT_T* __restrict__ C, const int M, const int N, const int K,
-                      IN_T* __restrict__ apk, IN_T* __restrict__ bpk) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    pack_A(A, apk, M, K); pack_B(B, bpk, K, N);
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        const int tm_per = tm_ / BX, tn_per = tn_ / BY;
-        const int tm0 = bx * tm_per, tn0 = by * tn_per;
-        for (int tm = tm0; tm < tm0 + tm_per; ++tm) {
-            for (int tn = tn0; tn < tn0 + tn_per; ++tn) {
-                mma_tile_flat(apk, bpk, C, tm, tn, tk_, N);
-            }
-        }
-    }
-}
-
-// flat: compute only -> flat C
-template <int BX, int BY>
-static void flat_co_S(const IN_T* __restrict__ apk, const IN_T* __restrict__ bpk,
-                      OUT_T* __restrict__ C, const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        const int tm_per = tm_ / BX, tn_per = tn_ / BY;
-        const int tm0 = bx * tm_per, tn0 = by * tn_per;
-        for (int tm = tm0; tm < tm0 + tm_per; ++tm) {
-            for (int tn = tn0; tn < tn0 + tn_per; ++tn) {
-                mma_tile_flat(apk, bpk, C, tm, tn, tk_, N);
-            }
-        }
-    }
-}
-
-// flat: on-the-fly -> flat C
-template <int BX, int BY>
-static void flat_otf_S(const IN_T* __restrict__ A, const IN_T* __restrict__ B,
-                       OUT_T* __restrict__ C, const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        const int tm_per = tm_ / BX, tn_per = tn_ / BY;
-        const int tm0 = bx * tm_per, tn0 = by * tn_per;
-        for (int tm = tm0; tm < tm0 + tm_per; ++tm) {
-            for (int tn = tn0; tn < tn0 + tn_per; ++tn) {
-                mma_block_flat_otf<1, 1>(A, B, C, tm, tn, tk_, K, N);
-            }
-        }
-    }
-}
-
-// tiled: repack + compute -> tiled C
-template <int BX, int BY>
-static void tiled_rk_S(const IN_T* __restrict__ at, const IN_T* __restrict__ bt,
-                       IN_T* __restrict__ ba, OUT_T* __restrict__ ct,
-                       const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    repack_B_tiles(bt, ba, K, N);
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        const int tm_per = tm_ / BX, tn_per = tn_ / BY;
-        const int tm0 = bx * tm_per, tn0 = by * tn_per;
-        for (int tm = tm0; tm < tm0 + tm_per; ++tm) {
-            for (int tn = tn0; tn < tn0 + tn_per; ++tn) {
-                mma_tile_tiled(at, ba, ct, tm, tn, tk_, tn_);
-            }
-        }
-    }
-}
-
-// tiled: compute only -> tiled C
-template <int BX, int BY>
-static void tiled_co_S(const IN_T* __restrict__ at, const IN_T* __restrict__ ba,
-                       OUT_T* __restrict__ ct, const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        const int tm_per = tm_ / BX, tn_per = tn_ / BY;
-        const int tm0 = bx * tm_per, tn0 = by * tn_per;
-        for (int tm = tm0; tm < tm0 + tm_per; ++tm) {
-            for (int tn = tn0; tn < tn0 + tn_per; ++tn) {
-                mma_tile_tiled(at, ba, ct, tm, tn, tk_, tn_);
-            }
-        }
-    }
-}
-
-// tiled: on-the-fly -> tiled C
-template <int BX, int BY>
-static void tiled_otf_S(const IN_T* __restrict__ at, const IN_T* __restrict__ bt,
-                        OUT_T* __restrict__ ct, const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        const int tm_per = tm_ / BX, tn_per = tn_ / BY;
-        const int tm0 = bx * tm_per, tn0 = by * tn_per;
-        for (int tm = tm0; tm < tm0 + tm_per; ++tm) {
-            for (int tn = tn0; tn < tn0 + tn_per; ++tn) {
-                mma_block_tiled_otf<1, 1>(at, bt, ct, tm, tn, tk_, tn_);
-            }
-        }
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Hypertile kernels <BX,BY,TX,TY>:
-//   BX*BY cores, each computes TX*TY tiles per step
-//   Hypertile = (BX*TX) x (BY*TY) tiles, swept over C
-// ════════════════════════════════════════════════════════════════════
-
-template <int BX, int BY, int TX, int TY>
-static void flat_pk_H(const IN_T* __restrict__ A, const IN_T* __restrict__ B,
-                      OUT_T* __restrict__ C, const int M, const int N, const int K,
-                      IN_T* __restrict__ apk, IN_T* __restrict__ bpk) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    pack_A(A, apk, M, K); pack_B(B, bpk, K, N);
-    constexpr int HM = BX * TX, HN = BY * TY;
-    const int nhm = tm_ / HM, nhn = tn_ / HN;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        for (int hm = 0; hm < nhm; ++hm) {
-            for (int hn = 0; hn < nhn; ++hn) {
-                const int tm0 = hm * HM + bx * TX;
-                const int tn0 = hn * HN + by * TY;
-                mma_block_flat<TX, TY>(apk, bpk, C, tm0, tn0, tk_, N);
-            }
-        }
-    }
-}
-
-template <int BX, int BY, int TX, int TY>
-static void flat_co_H(const IN_T* __restrict__ apk, const IN_T* __restrict__ bpk,
-                      OUT_T* __restrict__ C, const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    constexpr int HM = BX * TX, HN = BY * TY;
-    const int nhm = tm_ / HM, nhn = tn_ / HN;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        for (int hm = 0; hm < nhm; ++hm) {
-            for (int hn = 0; hn < nhn; ++hn) {
-                const int tm0 = hm * HM + bx * TX;
-                const int tn0 = hn * HN + by * TY;
-                mma_block_flat<TX, TY>(apk, bpk, C, tm0, tn0, tk_, N);
-            }
-        }
-    }
-}
-
-template <int BX, int BY, int TX, int TY>
-static void flat_otf_H(const IN_T* __restrict__ A, const IN_T* __restrict__ B,
-                       OUT_T* __restrict__ C, const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    constexpr int HM = BX * TX, HN = BY * TY;
-    const int nhm = tm_ / HM, nhn = tn_ / HN;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        for (int hm = 0; hm < nhm; ++hm) {
-            for (int hn = 0; hn < nhn; ++hn) {
-                const int tm0 = hm * HM + bx * TX;
-                const int tn0 = hn * HN + by * TY;
-                mma_block_flat_otf<TX, TY>(A, B, C, tm0, tn0, tk_, K, N);
-            }
-        }
-    }
-}
-
-template <int BX, int BY, int TX, int TY>
-static void tiled_rk_H(const IN_T* __restrict__ at, const IN_T* __restrict__ bt,
-                       IN_T* __restrict__ ba, OUT_T* __restrict__ ct,
-                       const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    repack_B_tiles(bt, ba, K, N);
-    constexpr int HM = BX * TX, HN = BY * TY;
-    const int nhm = tm_ / HM, nhn = tn_ / HN;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        for (int hm = 0; hm < nhm; ++hm) {
-            for (int hn = 0; hn < nhn; ++hn) {
-                const int tm0 = hm * HM + bx * TX;
-                const int tn0 = hn * HN + by * TY;
-                mma_block_tiled<TX, TY>(at, ba, ct, tm0, tn0, tk_, tn_);
-            }
-        }
-    }
-}
-
-template <int BX, int BY, int TX, int TY>
-static void tiled_co_H(const IN_T* __restrict__ at, const IN_T* __restrict__ ba,
-                       OUT_T* __restrict__ ct, const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    constexpr int HM = BX * TX, HN = BY * TY;
-    const int nhm = tm_ / HM, nhn = tn_ / HN;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        for (int hm = 0; hm < nhm; ++hm) {
-            for (int hn = 0; hn < nhn; ++hn) {
-                const int tm0 = hm * HM + bx * TX;
-                const int tn0 = hn * HN + by * TY;
-                mma_block_tiled<TX, TY>(at, ba, ct, tm0, tn0, tk_, tn_);
-            }
-        }
-    }
-}
-
-template <int BX, int BY, int TX, int TY>
-static void tiled_otf_H(const IN_T* __restrict__ at, const IN_T* __restrict__ bt,
-                        OUT_T* __restrict__ ct, const int M, const int N, const int K) {
-    const int tm_ = M / BM, tn_ = N / BN, tk_ = K / BK;
-    constexpr int HM = BX * TX, HN = BY * TY;
-    const int nhm = tm_ / HM, nhn = tn_ / HN;
-    #pragma omp parallel num_threads(BX * BY) proc_bind(close)
-    {
-        GEMM::init();
-        const int tid = omp_get_thread_num();
-        const int bx = tid / BY, by = tid % BY;
-        for (int hm = 0; hm < nhm; ++hm) {
-            for (int hn = 0; hn < nhn; ++hn) {
-                const int tm0 = hm * HM + bx * TX;
-                const int tn0 = hn * HN + by * TY;
-                mma_block_tiled_otf<TX, TY>(at, bt, ct, tm0, tn0, tk_, tn_);
-            }
-        }
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Verification + benchmark
-// ════════════════════════════════════════════════════════════════════
-
-static bool check_f32(const float* __restrict__ C, const float* __restrict__ R,
-                      const int M, const int N) {
+// ── verification ────────────────────────────────────────────────────
+static bool verify(const float* C, const float* C_ref, int M, int N,
+                   const char* label) {
+    int mismatches = 0;
     for (int i = 0; i < M * N; ++i) {
-        const float d = fabsf(C[i] - R[i]), den = fabsf(R[i]);
-        if ((den > 1e-6f ? d / den : d) > 0.01f && d > 0.01f) { return false; }
-    }
-    return true;
-}
-
-static bool verify_rt_f16(const _Float16* o, const _Float16* r, size_t n, const char* l) {
-    int bad = 0;
-    for (size_t i = 0; i < n; ++i) { if (o[i] != r[i]) { if (!bad) { printf("  [FAIL] %s rt idx=%zu\n", l, i); } ++bad; } }
-    printf(bad ? "  [FAIL] %s rt: %d\n" : "  [PASS] %s rt\n", l, bad); return !bad;
-}
-
-static bool verify_rt_f32(const float* o, const float* r, size_t n, const char* l) {
-    int bad = 0;
-    for (size_t i = 0; i < n; ++i) { if (o[i] != r[i]) { if (!bad) { printf("  [FAIL] %s rt idx=%zu\n", l, i); } ++bad; } }
-    printf(bad ? "  [FAIL] %s rt: %d\n" : "  [PASS] %s rt\n", l, bad); return !bad;
-}
-
-// ── kernel table ────────────────────────────────────────────────────
-using KernelFn = void(*)(int, int, int);
-struct KernelEntry { std::string name; KernelFn fn; bool tiled_out; };
-
-// Globals
-static _Float16* __restrict__ g_A;     static _Float16* __restrict__ g_B;
-static float* __restrict__ g_C;        static _Float16* __restrict__ g_At;
-static _Float16* __restrict__ g_Bt;    static float* __restrict__ g_Ct;
-static _Float16* __restrict__ g_apk;   static _Float16* __restrict__ g_bpk;
-static _Float16* __restrict__ g_b_amx;
-static float* __restrict__ g_Cref;     static float* __restrict__ g_Cchk;
-static int g_M, g_N, g_K;
-
-// ── wrappers (thunks to typed functions via globals) ────────────────
-static void w_ref_flat(int M, int N, int K)  { ref_flat(g_A, g_B, g_C, M, N, K); }
-static void w_blas_flat(int M, int N, int K) { blas_flat(g_A, g_B, g_C, M, N, K); }
-static void w_ref_tiled(int M, int N, int K) { ref_tiled(g_At, g_Bt, g_Ct, M, N, K); }
-
-// Default flat: pack + compute, flat in/out
-static void w_default_flat(int M, int N, int K) {
-    flat_pk_S<8, 4>(g_A, g_B, g_C, M, N, K, g_apk, g_bpk);
-}
-// Default tiled: copyin + repack + compute + copyout, flat in/out
-static void w_default_tiled(int M, int N, int K) {
-    copyin_A(g_A, g_At, M, K); copyin_B(g_B, g_Bt, K, N);
-    zero_C_tiled(g_Ct, M, N);
-    tiled_rk_S<8, 4>(g_At, g_Bt, g_b_amx, g_Ct, M, N, K);
-    copyout_C(g_C, g_Ct, M, N);
-}
-
-// Static wrappers
-#define W_FLAT_PK_S(BX, BY)  static void w_flat_pk_S_##BX##x##BY(int M,int N,int K) { flat_pk_S<BX,BY>(g_A,g_B,g_C,M,N,K,g_apk,g_bpk); }
-#define W_FLAT_CO_S(BX, BY)  static void w_flat_co_S_##BX##x##BY(int M,int N,int K) { flat_co_S<BX,BY>(g_apk,g_bpk,g_C,M,N,K); }
-#define W_FLAT_OTF_S(BX, BY) static void w_flat_otf_S_##BX##x##BY(int M,int N,int K) { flat_otf_S<BX,BY>(g_A,g_B,g_C,M,N,K); }
-#define W_TILED_RK_S(BX, BY) static void w_tiled_rk_S_##BX##x##BY(int M,int N,int K) { tiled_rk_S<BX,BY>(g_At,g_Bt,g_b_amx,g_Ct,M,N,K); }
-#define W_TILED_CO_S(BX, BY) static void w_tiled_co_S_##BX##x##BY(int M,int N,int K) { tiled_co_S<BX,BY>(g_At,g_b_amx,g_Ct,M,N,K); }
-#define W_TILED_OTF_S(BX, BY) static void w_tiled_otf_S_##BX##x##BY(int M,int N,int K) { tiled_otf_S<BX,BY>(g_At,g_Bt,g_Ct,M,N,K); }
-
-#define ALL_S_WRAPPERS(BX, BY) \
-    W_FLAT_PK_S(BX,BY) W_FLAT_CO_S(BX,BY) W_FLAT_OTF_S(BX,BY) \
-    W_TILED_RK_S(BX,BY) W_TILED_CO_S(BX,BY) W_TILED_OTF_S(BX,BY)
-
-// Hypertile wrappers
-#define W_FLAT_PK_H(BX,BY,TX,TY)  static void w_flat_pk_H_##BX##x##BY##_##TX##x##TY(int M,int N,int K) { flat_pk_H<BX,BY,TX,TY>(g_A,g_B,g_C,M,N,K,g_apk,g_bpk); }
-#define W_FLAT_CO_H(BX,BY,TX,TY)  static void w_flat_co_H_##BX##x##BY##_##TX##x##TY(int M,int N,int K) { flat_co_H<BX,BY,TX,TY>(g_apk,g_bpk,g_C,M,N,K); }
-#define W_FLAT_OTF_H(BX,BY,TX,TY) static void w_flat_otf_H_##BX##x##BY##_##TX##x##TY(int M,int N,int K) { flat_otf_H<BX,BY,TX,TY>(g_A,g_B,g_C,M,N,K); }
-#define W_TILED_RK_H(BX,BY,TX,TY) static void w_tiled_rk_H_##BX##x##BY##_##TX##x##TY(int M,int N,int K) { tiled_rk_H<BX,BY,TX,TY>(g_At,g_Bt,g_b_amx,g_Ct,M,N,K); }
-#define W_TILED_CO_H(BX,BY,TX,TY) static void w_tiled_co_H_##BX##x##BY##_##TX##x##TY(int M,int N,int K) { tiled_co_H<BX,BY,TX,TY>(g_At,g_b_amx,g_Ct,M,N,K); }
-#define W_TILED_OTF_H(BX,BY,TX,TY) static void w_tiled_otf_H_##BX##x##BY##_##TX##x##TY(int M,int N,int K) { tiled_otf_H<BX,BY,TX,TY>(g_At,g_Bt,g_Ct,M,N,K); }
-
-#define ALL_H_WRAPPERS(BX,BY,TX,TY) \
-    W_FLAT_PK_H(BX,BY,TX,TY) W_FLAT_CO_H(BX,BY,TX,TY) W_FLAT_OTF_H(BX,BY,TX,TY) \
-    W_TILED_RK_H(BX,BY,TX,TY) W_TILED_CO_H(BX,BY,TX,TY) W_TILED_OTF_H(BX,BY,TX,TY)
-
-// Instantiate BX*BY=32 static configs
-ALL_S_WRAPPERS(32, 1) ALL_S_WRAPPERS(16, 2) ALL_S_WRAPPERS(8, 4) ALL_S_WRAPPERS(4, 8)
-
-// Instantiate hypertile: BX*BY=32, TX,TY in {1,2,4,8}
-#define ALL_TX_TY(BX, BY) \
-    ALL_H_WRAPPERS(BX,BY,1,1) ALL_H_WRAPPERS(BX,BY,1,2) ALL_H_WRAPPERS(BX,BY,1,4) ALL_H_WRAPPERS(BX,BY,1,8) \
-    ALL_H_WRAPPERS(BX,BY,2,1) ALL_H_WRAPPERS(BX,BY,2,2) ALL_H_WRAPPERS(BX,BY,2,4) ALL_H_WRAPPERS(BX,BY,2,8) \
-    ALL_H_WRAPPERS(BX,BY,4,1) ALL_H_WRAPPERS(BX,BY,4,2) ALL_H_WRAPPERS(BX,BY,4,4) ALL_H_WRAPPERS(BX,BY,4,8) \
-    ALL_H_WRAPPERS(BX,BY,8,1) ALL_H_WRAPPERS(BX,BY,8,2) ALL_H_WRAPPERS(BX,BY,8,4) ALL_H_WRAPPERS(BX,BY,8,8)
-
-ALL_TX_TY(32, 1) ALL_TX_TY(16, 2) ALL_TX_TY(8, 4) ALL_TX_TY(4, 8)
-
-// ── registration macros ─────────────────────────────────────────────
-#define REG_S(V, BX, BY) \
-    V.push_back({"flat_pk_S_"  #BX "x" #BY, w_flat_pk_S_##BX##x##BY, false}); \
-    V.push_back({"flat_co_S_"  #BX "x" #BY, w_flat_co_S_##BX##x##BY, false}); \
-    V.push_back({"flat_otf_S_" #BX "x" #BY, w_flat_otf_S_##BX##x##BY, false}); \
-    V.push_back({"tiled_rk_S_"  #BX "x" #BY, w_tiled_rk_S_##BX##x##BY, true}); \
-    V.push_back({"tiled_co_S_"  #BX "x" #BY, w_tiled_co_S_##BX##x##BY, true}); \
-    V.push_back({"tiled_otf_S_" #BX "x" #BY, w_tiled_otf_S_##BX##x##BY, true});
-
-#define REG_H(V, BX, BY, TX, TY) \
-    V.push_back({"flat_pk_H"  #BX "x" #BY "_" #TX "x" #TY, w_flat_pk_H_##BX##x##BY##_##TX##x##TY, false}); \
-    V.push_back({"flat_co_H"  #BX "x" #BY "_" #TX "x" #TY, w_flat_co_H_##BX##x##BY##_##TX##x##TY, false}); \
-    V.push_back({"flat_otf_H" #BX "x" #BY "_" #TX "x" #TY, w_flat_otf_H_##BX##x##BY##_##TX##x##TY, false}); \
-    V.push_back({"tiled_rk_H"  #BX "x" #BY "_" #TX "x" #TY, w_tiled_rk_H_##BX##x##BY##_##TX##x##TY, true}); \
-    V.push_back({"tiled_co_H"  #BX "x" #BY "_" #TX "x" #TY, w_tiled_co_H_##BX##x##BY##_##TX##x##TY, true}); \
-    V.push_back({"tiled_otf_H" #BX "x" #BY "_" #TX "x" #TY, w_tiled_otf_H_##BX##x##BY##_##TX##x##TY, true});
-
-#define REG_ALL_TX_TY(V, BX, BY) \
-    REG_H(V,BX,BY,1,1) REG_H(V,BX,BY,1,2) REG_H(V,BX,BY,1,4) REG_H(V,BX,BY,1,8) \
-    REG_H(V,BX,BY,2,1) REG_H(V,BX,BY,2,2) REG_H(V,BX,BY,2,4) REG_H(V,BX,BY,2,8) \
-    REG_H(V,BX,BY,4,1) REG_H(V,BX,BY,4,2) REG_H(V,BX,BY,4,4) REG_H(V,BX,BY,4,8) \
-    REG_H(V,BX,BY,8,1) REG_H(V,BX,BY,8,2) REG_H(V,BX,BY,8,4) REG_H(V,BX,BY,8,8)
-
-static std::vector<KernelEntry> build_kernels() {
-    std::vector<KernelEntry> v;
-    v.push_back({"ref_flat",      w_ref_flat,      false});
-    v.push_back({"blas_flat",     w_blas_flat,     false});
-    v.push_back({"default_flat",  w_default_flat,  false});
-    v.push_back({"default_tiled", w_default_tiled, false});
-    v.push_back({"ref_tiled",     w_ref_tiled,     true});
-
-    REG_S(v, 32, 1) REG_S(v, 16, 2) REG_S(v, 8, 4) REG_S(v, 4, 8)
-    REG_ALL_TX_TY(v, 32, 1) REG_ALL_TX_TY(v, 16, 2) REG_ALL_TX_TY(v, 8, 4) REG_ALL_TX_TY(v, 4, 8)
-
-    return v;
-}
-
-// ── per-kernel correctness + benchmark ──────────────────────────────
-static bool check_kernel(const KernelEntry& ke) {
-    const int M = g_M, N = g_N, K = g_K;
-    if (ke.tiled_out) { zero_C_tiled(g_Ct, M, N); }
-    else { memset(g_C, 0, (size_t)M * N * sizeof(float)); }
-
-    ke.fn(M, N, K);
-
-    const float* result;
-    if (ke.tiled_out) { copyout_C(g_Cchk, g_Ct, M, N); result = g_Cchk; }
-    else { result = g_C; }
-
-    if (check_f32(result, g_Cref, M, N)) { return true; }
-
-    for (int i = 0; i < M * N; ++i) {
-        const float d = fabsf(result[i] - g_Cref[i]), den = fabsf(g_Cref[i]);
-        if ((den > 1e-6f ? d / den : d) > 0.01f && d > 0.01f) {
-            printf("    [FAIL] %-36s idx=%d got=%.4f ref=%.4f\n",
-                   ke.name.c_str(), i, result[i], g_Cref[i]);
-            break;
+        float diff = fabsf(C[i] - C_ref[i]);
+        float denom = fabsf(C_ref[i]);
+        float rel = (denom > 1e-6f) ? diff / denom : diff;
+        if (rel > 0.01f && diff > 0.01f) {
+            if (mismatches == 0) {
+                printf("  [FAIL] %s: idx=%d got=%.4f ref=%.4f diff=%.6f\n",
+                       label, i, C[i], C_ref[i], diff);
+            }
+            ++mismatches;
         }
     }
-    return false;
+    if (mismatches == 0) {
+        printf("  [PASS] %s\n", label);
+    } else {
+        printf("  [FAIL] %s: %d mismatches\n", label, mismatches);
+    }
+    return mismatches == 0;
 }
 
-static void bench_kernel(FILE* __restrict__ f, const KernelEntry& ke) {
-    const int M = g_M, N = g_N, K = g_K;
-    if (!check_kernel(ke)) {
-        for (int i = 0; i < g_iters; ++i) {
-            fprintf(f, "%s,%d,%d,%d,%d,%d,-1.00,-1.000000\n", ke.name.c_str(), M, N, K, g_threads, i);
-        }
-        return;
+// ── benchmark + write ALL runs ──────────────────────────────────────
+using KernelFn = void(*)(const _Float16*, const _Float16*, float*, int, int, int);
+
+static void bench_and_write(FILE* f, const char* name, KernelFn fn,
+                            const _Float16* A, const _Float16* B, float* C,
+                            int M, int N, int K) {
+    for (int w = 0; w < g_warmup; ++w) {
+        fn(A, B, C, M, N, K);
     }
-    for (int w = 0; w < g_warmup; ++w) { ke.fn(M, N, K); }
+
     const double flops = 2.0 * (double)M * N * K;
-    double total = 0; std::vector<double> times(g_iters);
+    double total = 0;
+    std::vector<double> times(g_iters);
+
     for (int i = 0; i < g_iters; ++i) {
-        const double t0 = now_ns(); ke.fn(M, N, K); const double t1 = now_ns();
-        times[i] = t1 - t0; total += times[i];
+        double t0 = now_ns();
+        fn(A, B, C, M, N, K);
+        double t1 = now_ns();
+        times[i] = t1 - t0;
+        total += times[i];
     }
-    const double avg = total / g_iters;
-    std::vector<double> s(times); std::sort(s.begin(), s.end());
-    const double med = (g_iters % 2) ? s[g_iters / 2] : (s[g_iters / 2 - 1] + s[g_iters / 2]) / 2.0;
+
+    double avg = total / g_iters;
+    std::vector<double> sorted(times);
+    std::sort(sorted.begin(), sorted.end());
+    double median = (g_iters % 2 == 0)
+        ? (sorted[g_iters / 2 - 1] + sorted[g_iters / 2]) / 2.0
+        : sorted[g_iters / 2];
+
     for (int i = 0; i < g_iters; ++i) {
-        fprintf(f, "%s,%d,%d,%d,%d,%d,%.2f,%.6f\n", ke.name.c_str(), M, N, K, g_threads, i, times[i], flops / times[i]);
+        fprintf(f, "%s,%d,%d,%d,%d,%d,%.2f,%.6f\n",
+                name, M, N, K, g_threads, i, times[i], flops / times[i]);
     }
-    printf("    %-36s [PASS] avg=%.0f med=%.0f %.4f GF/s\n", ke.name.c_str(), avg, med, flops / avg);
+
+    printf("    %-18s avg=%.0f ns  med=%.0f ns  min=%.0f  max=%.0f  %.4f GF/s\n",
+           name, avg, median, sorted[0], sorted[g_iters - 1], flops / avg);
+}
+
+// ── kernel wrappers ─────────────────────────────────────────────────
+static float *g_A32, *g_B32;
+static _Float16 *g_apk, *g_bpk;
+
+static void wrap_mkl_sgemm(const _Float16* A, const _Float16* B, float* C,
+                            int M, int N, int K) {
+    mkl_sgemm_wrap(A, B, C, M, N, K, true, g_A32, g_B32);
+}
+
+static void wrap_mkl_f16(const _Float16* A, const _Float16* B, float* C,
+                          int M, int N, int K) {
+    mkl_f16_wrap(A, B, C, M, N, K, true);
+}
+
+static void wrap_ref(const _Float16* A, const _Float16* B, float* C,
+                     int M, int N, int K) {
+    ref_gemm_omp(A, B, C, M, N, K, true);
+}
+
+template <bool Hypertile>
+static void wrap_amx(const _Float16*, const _Float16*, float* C,
+                     int M, int N, int K) {
+    if constexpr (Hypertile) {
+        amx_gemm_omp<_Float16, float, true, 32, 32, 32>::compute_hypertile(
+            g_apk, g_bpk, C, M, N, K);
+    } else {
+        amx_gemm_omp<_Float16, float, true, 32, 32, 32>::compute_static(
+            g_apk, g_bpk, C, M, N, K);
+    }
 }
 
 // ── arg parsing ─────────────────────────────────────────────────────
 struct MNK { int M, N, K; };
-static void usage(const char* p) { printf("Usage: %s M N K [...] [-w W] [-i I] [-t T] [-o F]\n", p); }
+
+static void usage(const char* prog) {
+    printf("Usage: %s M1 N1 K1 [M2 N2 K2 ...] [-w warmup] [-i iters] [-t threads] [-o file.csv]\n", prog);
+    printf("  Defaults: -w %d -i %d -t %d -o %s\n", g_warmup, g_iters, g_threads, g_outfile);
+}
+
 static std::vector<MNK> parse_args(int argc, char** argv) {
-    std::vector<MNK> sz; std::vector<int> nums;
+    std::vector<MNK> sizes;
+    std::vector<int> nums;
+
     for (int i = 1; i < argc; ++i) {
-        if      (!strcmp(argv[i], "-w") && i+1<argc) { g_warmup  = atoi(argv[++i]); }
-        else if (!strcmp(argv[i], "-i") && i+1<argc) { g_iters   = atoi(argv[++i]); }
-        else if (!strcmp(argv[i], "-t") && i+1<argc) { g_threads = atoi(argv[++i]); }
-        else if (!strcmp(argv[i], "-o") && i+1<argc) { g_outfile = argv[++i]; }
-        else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(argv[0]); exit(0); }
-        else { nums.push_back(atoi(argv[i])); }
+        if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
+            g_warmup = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
+            g_iters = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
+            g_threads = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            g_outfile = argv[++i];
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            usage(argv[0]);
+            exit(0);
+        } else {
+            nums.push_back(atoi(argv[i]));
+        }
     }
-    if (nums.size() % 3 || nums.empty()) { fprintf(stderr, "Need M N K triples\n"); exit(1); }
-    for (size_t i = 0; i < nums.size(); i += 3) { sz.push_back({nums[i], nums[i+1], nums[i+2]}); }
-    return sz;
+
+    if (nums.size() % 3 != 0 || nums.empty()) {
+        fprintf(stderr, "Error: need M N K triples as positional args\n");
+        usage(argv[0]);
+        exit(1);
+    }
+    for (size_t i = 0; i < nums.size(); i += 3) {
+        sizes.push_back({nums[i], nums[i + 1], nums[i + 2]});
+    }
+    return sizes;
 }
 
 // ── main ────────────────────────────────────────────────────────────
 int main(int argc, char** argv) {
-    if (argc < 4) { usage(argv[0]); return 1; }
-    const auto sizes = parse_args(argc, argv);
-    const auto kernels = build_kernels();
-    printf("Config: warmup=%d iters=%d threads=%d output=%s kernels=%zu\n\n",
-           g_warmup, g_iters, g_threads, g_outfile, kernels.size());
+    if (argc < 4) {
+        usage(argv[0]);
+        return 1;
+    }
+
+    std::vector<MNK> sizes = parse_args(argc, argv);
 
     FILE* fout = fopen(g_outfile, "w");
-    if (!fout) { perror("fopen"); return 1; }
+    if (!fout) {
+        perror("fopen");
+        return 1;
+    }
+
     fprintf(fout, "kernel,M,N,K,threads,run,time_ns,gflops\n");
 
+    printf("Config: warmup=%d iters=%d threads=%d output=%s\n\n",
+           g_warmup, g_iters, g_threads, g_outfile);
+
     for (size_t c = 0; c < sizes.size(); ++c) {
-        const int M = sizes[c].M, N = sizes[c].N, K = sizes[c].K;
-        if (M % T || N % T || K % T) { printf("SKIP %dx%dx%d\n\n", M, N, K); continue; }
+        int M = sizes[c].M, N = sizes[c].N, K = sizes[c].K;
         printf("=== M=%d N=%d K=%d ===\n", M, N, K);
-        g_M = M; g_N = N; g_K = K;
-        const size_t szA = (size_t)M*K, szB = (size_t)K*N, szC = (size_t)M*N;
 
-        g_A = mmap_alloc<_Float16>(szA); g_B = mmap_alloc<_Float16>(szB);
-        g_C = mmap_alloc<float>(szC); g_A32 = mmap_alloc<float>(szA); g_B32 = mmap_alloc<float>(szB);
-        g_Cref = mmap_alloc<float>(szC); g_Cchk = mmap_alloc<float>(szC);
+        size_t szA = (size_t)M * K, szB = (size_t)K * N, szC = (size_t)M * N;
+        _Float16* A = mmap_alloc<_Float16>(szA);
+        _Float16* B = mmap_alloc<_Float16>(szB);
+        float* C_ref      = mmap_alloc<float>(szC);
+        float* C_amx_ht   = mmap_alloc<float>(szC);
+        float* C_amx_st   = mmap_alloc<float>(szC);
+        float* C_mkl_s    = mmap_alloc<float>(szC);
+        float* C_mkl_f16  = mmap_alloc<float>(szC);
+        g_A32 = mmap_alloc<float>(szA);
+        g_B32 = mmap_alloc<float>(szB);
 
+        // parallel first-touch init
         #pragma omp parallel num_threads(g_threads) proc_bind(close)
-        { int t=omp_get_thread_num(),n=omp_get_num_threads();
-          size_t l=t*szA/n,h=(t+1)*szA/n; rand_fill_f16(g_A+l,h-l);
-          l=t*szB/n; h=(t+1)*szB/n; rand_fill_f16(g_B+l,h-l); }
+        {
+            int tid = omp_get_thread_num(), nth = omp_get_num_threads();
+            size_t lo, hi;
+            lo = tid * szA / nth; hi = (tid + 1) * szA / nth;
+            rand_fill_f16(A + lo, hi - lo);
+            lo = tid * szB / nth; hi = (tid + 1) * szB / nth;
+            rand_fill_f16(B + lo, hi - lo);
+            lo = tid * szC / nth; hi = (tid + 1) * szC / nth;
+            memset(C_ref + lo, 0, (hi - lo) * sizeof(float));
+            memset(C_amx_ht + lo, 0, (hi - lo) * sizeof(float));
+            memset(C_amx_st + lo, 0, (hi - lo) * sizeof(float));
+            memset(C_mkl_s + lo, 0, (hi - lo) * sizeof(float));
+            memset(C_mkl_f16 + lo, 0, (hi - lo) * sizeof(float));
+        }
 
-        g_At = mmap_alloc<_Float16>(szA); g_Bt = mmap_alloc<_Float16>(szB); g_Ct = mmap_alloc<float>(szC);
-        copyin_A(g_A, g_At, M, K); copyin_B(g_B, g_Bt, K, N); zero_C_tiled(g_Ct, M, N);
-        g_apk = mmap_alloc<_Float16>(szA); g_bpk = mmap_alloc<_Float16>(szB);
-        g_b_amx = mmap_alloc<_Float16>((size_t)(N/32)*(K/32)*B_TSZ);
-        pack_A(g_A, g_apk, M, K); pack_B(g_B, g_bpk, K, N);
-        repack_B_tiles(g_Bt, g_b_amx, K, N);
+        // pack for AMX
+        g_apk = mmap_alloc<_Float16>(szA);
+        g_bpk = mmap_alloc<_Float16>(szB);
+        amx_gemm_omp<_Float16, float, true, 32, 32, 32>::pack_parallel(
+            A, B, g_apk, g_bpk, M, N, K);
 
-        printf("  Roundtrips:\n");
-        { auto t=mmap_alloc<_Float16>(szA); copyout_A(t,g_At,M,K); verify_rt_f16(g_A,t,szA,"A"); mmap_free(t,szA); }
-        { auto t=mmap_alloc<_Float16>(szB); copyout_B(t,g_Bt,K,N); verify_rt_f16(g_B,t,szB,"B"); mmap_free(t,szB); }
-        { auto o=mmap_alloc<float>(szC); auto ti=mmap_alloc<float>(szC); auto b=mmap_alloc<float>(szC);
-          for(size_t i=0;i<szC;++i){o[i]=(float)rand()/(float)RAND_MAX-0.5f;}
-          copyin_C(o,ti,M,N); copyout_C(b,ti,M,N); verify_rt_f32(o,b,szC,"C");
-          mmap_free(o,szC); mmap_free(ti,szC); mmap_free(b,szC); }
+        // correctness
+        printf("  Correctness:\n");
+        ref_gemm_omp(A, B, C_ref, M, N, K, true);
+        wrap_amx<true>(A, B, C_amx_ht, M, N, K);
+        verify(C_amx_ht, C_ref, M, N, "amx_hypertile");
+        wrap_amx<false>(A, B, C_amx_st, M, N, K);
+        verify(C_amx_st, C_ref, M, N, "amx_static");
+        mkl_sgemm_wrap(A, B, C_mkl_s, M, N, K, true, g_A32, g_B32);
+        verify(C_mkl_s, C_ref, M, N, "mkl_sgemm");
+        mkl_f16_wrap(A, B, C_mkl_f16, M, N, K, true);
+        verify(C_mkl_f16, C_ref, M, N, "mkl_f16");
 
-        ref_flat(g_A, g_B, g_Cref, M, N, K);
+        // benchmark
+        printf("  Benchmark (%d warmup, %d iters):\n", g_warmup, g_iters);
+        bench_and_write(fout, "ref_omp",       wrap_ref,          A, B, C_ref,      M, N, K);
+        bench_and_write(fout, "mkl_sgemm",     wrap_mkl_sgemm,    A, B, C_mkl_s,    M, N, K);
+        bench_and_write(fout, "mkl_f16",       wrap_mkl_f16,      A, B, C_mkl_f16,  M, N, K);
+        bench_and_write(fout, "amx_hypertile", wrap_amx<true>,    A, B, C_amx_ht,   M, N, K);
+        bench_and_write(fout, "amx_static",    wrap_amx<false>,   A, B, C_amx_st,   M, N, K);
 
-        printf("  Kernels (%d warmup, %d iters, %zu total):\n", g_warmup, g_iters, kernels.size());
-        for (const auto& ke : kernels) { bench_kernel(fout, ke); }
-
-        mmap_free(g_A,szA); mmap_free(g_B,szB); mmap_free(g_C,szC);
-        mmap_free(g_A32,szA); mmap_free(g_B32,szB);
-        mmap_free(g_Cref,szC); mmap_free(g_Cchk,szC);
-        mmap_free(g_At,szA); mmap_free(g_Bt,szB); mmap_free(g_Ct,szC);
-        mmap_free(g_apk,szA); mmap_free(g_bpk,szB);
-        mmap_free(g_b_amx,(size_t)(N/32)*(K/32)*B_TSZ);
+        // cleanup
+        mmap_free(A, szA); mmap_free(B, szB);
+        mmap_free(C_ref, szC); mmap_free(C_amx_ht, szC);
+        mmap_free(C_amx_st, szC); mmap_free(C_mkl_s, szC);
+        mmap_free(C_mkl_f16, szC);
+        mmap_free(g_A32, szA); mmap_free(g_B32, szB);
+        mmap_free(g_apk, szA); mmap_free(g_bpk, szB);
         printf("\n");
     }
+
     fclose(fout);
-    printf("All runs written to %s\n", g_outfile);
+    printf("All %d runs per kernel written to %s\n", g_iters, g_outfile);
     return 0;
 }

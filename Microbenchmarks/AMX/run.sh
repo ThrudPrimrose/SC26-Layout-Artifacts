@@ -1,15 +1,34 @@
-export OMP_PROC_BIND=close
-export OMP_PLACES=cores
-export OMP_NUM_THREADS=2
+#source /opt/intel/oneapi/setvars.sh
 
-g++ -O3 -fopenmp -march=native \
-    -mamx-tile -mamx-bf16 -mamx-int8 -mavx512f -mavx512bf16 -D_NTHREADS=$OMP_NUM_THREADS \
-    -I. -L/usr/lib/x86_64-linux-gnu/openblas-pthread/ \
-    -o bench1 amx_gemm_base.cpp -lopenblas
+for NTHR in 1 2; do
+    export OMP_NUM_THREADS=$NTHR
+    export MKL_NUM_THREADS=$NTHR
+    export MKL_DYNAMIC=FALSE
+    export OMP_PROC_BIND=close
+    export OMP_PLACES=cores
+    echo "Running with $NTHR threads"
 
-g++ -O3 -fopenmp -march=native -mamx-tile -mamx-bf16 -mamx-int8 -D_NTHREADS=$OMP_NUM_THREADS \
-    -I. -o bench2 amx_gemm_layouts.cpp \
-    -L/usr/lib/x86_64-linux-gnu/openblas-pthread/ -lopenblas
+    g++-14 -O3 -fopenmp -march=graniterapids -mamx-tile -mamx-bf16 -mamx-int8 \
+        -I. -I${MKLROOT}/include -D_NTHREADS=$OMP_NUM_THREADS \
+        -o bench1 amx_gemm_base.cpp \
+        -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core \
+        -lgomp -lpthread -lm
 
-./bench1 256 256 256
-./bench2 256 256 256 -t $OMP_NUM_THREADS -i 100
+    g++-14 -O3 -fopenmp -march=graniterapids -mamx-tile -mamx-bf16 -mamx-int8 \
+        -I. -I${MKLROOT}/include -D_NTHREADS=$OMP_NUM_THREADS \
+        -o bench2 amx_gemm_layouts.cpp \
+        -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core \
+        -lgomp -lpthread -lm
+
+    for S in 1024 2048 4096; do
+        echo "Running bench1 with size $S"
+        ./bench1 $S $S $S
+        ./bench2 $S $S $S -t 2 -i 100
+
+        mv bench_amx_gemm.csv bench_amx_gemm_${NTHR}_threads_${S}_MNK.csv
+        mv bench_amx_layouts.csv bench_amx_layouts_${NTHR}_threads_${S}_MNK.csv
+    done
+done
+
+
+
