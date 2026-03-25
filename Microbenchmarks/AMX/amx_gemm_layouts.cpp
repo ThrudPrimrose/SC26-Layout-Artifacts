@@ -24,7 +24,11 @@ using namespace core_ir;
 
 static int g_warmup  = 5;
 static int g_iters   = 100;
-static int g_threads = 32;
+#if !defined(_NTHREADS)
+    #define _NTHREADS 32
+#endif
+
+static int g_threads = _NTHREADS;
 static const char* g_outfile = "bench_amx_layouts.csv";
 
 static constexpr int T = 32;
