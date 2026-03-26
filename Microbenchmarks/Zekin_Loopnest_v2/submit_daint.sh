@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=transpose_daint
+#SBATCH --job-name=zekin_d
 #SBATCH --nodes=1
 #SBATCH --partition=debug
 #SBATCH --time=00:30:00
-#SBATCH --output=transpose_daint_%j.out
-#SBATCH --error=transpose_daint_%j.err
+#SBATCH --output=zekin_d_%j.out
+#SBATCH --error=zekin_d_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=288
 
