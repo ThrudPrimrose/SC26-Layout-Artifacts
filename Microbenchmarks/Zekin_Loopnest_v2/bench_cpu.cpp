@@ -8,6 +8,7 @@
 #include <omp.h>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <utility>
 
 /* ================================================================ */
@@ -121,7 +122,7 @@ static bool verify(const double* got, const double* ref, size_t n,
 /*  Cache-flush: 2-D Jacobi stencil on persistent static buffers     */
 /* ================================================================ */
 
-static constexpr int FLUSH_N = 8192;
+static constexpr int FLUSH_N = 8192*4;
 static constexpr int FLUSH_STEPS = 3;
 
 static double flush_buf0[FLUSH_N * FLUSH_N];
@@ -153,8 +154,8 @@ static void flush_caches()
         std::swap(A, B);
     }
 
-    volatile double sink = A[FLUSH_N * (FLUSH_N / 2) + FLUSH_N / 2];
-    (void)sink;
+    int ri = rand() % (FLUSH_N * FLUSH_N);
+    printf("  [flush] A[%d] = %.12e\n", ri, A[ri]);
 }
 
 /* ================================================================ */
@@ -176,6 +177,8 @@ int main() {
     int* cell_logical = new int[N * 2];
 
     printf("OMP threads: %d\n", omp_get_max_threads());
+
+    srand((unsigned)time(NULL));
 
     /* fault in flush buffers before any timing */
     flush_caches();
@@ -238,6 +241,7 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_for,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
+                    flush_caches();
                 }
 
                 /* ---- omp collapse(2) ---- */
@@ -246,6 +250,7 @@ int main() {
                     cpu_col_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
+                    flush_caches();
                 }
 
                 /* verify collapse(2) after warmup */
@@ -273,6 +278,7 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_collapse2,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
+                    flush_caches();
                 }
 
                 printf("Done: nlev=%d  dist=%-12s  V=%d\n",
