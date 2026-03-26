@@ -86,4 +86,3 @@ hipcc -O3 -std=c++17 \
 
 
 ./bench_gpu_hip
-./bench_cpu

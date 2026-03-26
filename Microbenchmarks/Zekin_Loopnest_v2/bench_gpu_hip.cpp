@@ -10,6 +10,7 @@
  */
 
 #include "bench_common.h"
+#include <ctime>
 
 /* ================================================================ */
 /*  CUDA helpers                                                     */
@@ -18,6 +19,15 @@
     hipError_t e = (call);                                                \
     if (e != hipSuccess) {                                                \
         fprintf(stderr, "CUDA error %s:%d: %s\n",                         \
+                __FILE__, __LINE__, hipGetErrorString(e));                 \
+        exit(1);                                                           \
+    }                                                                      \
+} while(0)
+
+#define CUDA_LAUNCH_CHECK() do {                                           \
+    hipError_t e = hipGetLastError();                                     \
+    if (e != hipSuccess) {                                                \
+        fprintf(stderr, "CUDA launch error %s:%d: %s\n",                   \
                 __FILE__, __LINE__, hipGetErrorString(e));                 \
         exit(1);                                                           \
     }                                                                      \
@@ -59,17 +69,21 @@ static void cpu_reference_v(int V,
 /* ================================================================ */
 static bool verify(const double* got, const double* ref, size_t n,
                    double rtol, double atol,
-                   int* n_fail, double* max_rel)
+                   int* n_fail, double* max_rel,
+                   size_t* first_fail_idx)
 {
     *n_fail  = 0;
     *max_rel = 0.0;
+    *first_fail_idx = 0;
     for (size_t i = 0; i < n; i++) {
         double diff = std::abs(got[i] - ref[i]);
         double denom = std::max(std::abs(ref[i]), 1e-300);
         double rel = diff / denom;
         if (rel > *max_rel) *max_rel = rel;
-        if (diff > atol + rtol * std::abs(ref[i]))
+        if (diff > atol + rtol * std::abs(ref[i])) {
+            if (*n_fail == 0) *first_fail_idx = i;
             (*n_fail)++;
+        }
     }
     return *n_fail == 0;
 }
@@ -93,8 +107,6 @@ __global__ void gpu_kernel_je_first(
 
     int    ci0_a[TX], ci1_a[TX], vi0_a[TX], vi1_a[TX];
     double id_a[TX],  ip_a[TX],  tg_a[TX];
-
-    if (je_base >= N || jk_base >= nlev) return;
 
     #pragma unroll
     for (int tx = 0; tx < TX; tx++) {
@@ -144,13 +156,15 @@ __global__ void gpu_kernel_jk_first(
     const double* __restrict__ tangent, const double* __restrict__ z_w_v,
     const int*    __restrict__ vert_idx, int N, int nlev)
 {
-    const int jk_base = ((int)blockIdx.x * BX + (int)threadIdx.x) * TX;
-    const int je_base = ((int)blockIdx.y * BY + (int)threadIdx.y) * TY;
+    /* Grid axes swapped to keep N on grid.x (limit 2^31-1):         */
+    /*   grid.x covers je (N, large),  grid.y covers jk (nlev, small) */
+    /* Thread block axes unchanged for coalescing:                     */
+    /*   threadIdx.x = jk (stride-1),  threadIdx.y = je               */
+    const int jk_base = ((int)blockIdx.y * BX + (int)threadIdx.x) * TX;
+    const int je_base = ((int)blockIdx.x * BY + (int)threadIdx.y) * TY;
 
     int    ci0_a[TY], ci1_a[TY], vi0_a[TY], vi1_a[TY];
     double id_a[TY],  ip_a[TY],  tg_a[TY];
-
-    if (je_base >= N || jk_base >= nlev) return;
 
     #pragma unroll
     for (int ty = 0; ty < TY; ty++) {
@@ -218,6 +232,17 @@ static constexpr int N_GCFG = sizeof(GCFG) / sizeof(GCFG[0]);
 
 /* ================================================================ */
 /*  GPU launch dispatch                                              */
+/*                                                                   */
+/*  V1/V2: grid.x covers je, grid.y covers jk (je_first kernel)     */
+/*  V3/V4: grid.x covers je, grid.y covers jk (jk_first kernel)     */
+/*                                                                   */
+/*  IMPORTANT: N can exceed 65535. CUDA grid.y max is 65535.         */
+/*  For je_first: grid.x = f(N) (x max = 2^31-1), grid.y = f(nlev) */
+/*  For jk_first: we MUST put the je dimension (large) on grid.x    */
+/*    and jk (small, <=nlev) on grid.y.                              */
+/*                                                                   */
+/*  jk_first kernel: threadIdx.x = jk, threadIdx.y = je             */
+/*  -> blockIdx.x must cover je (large), blockIdx.y covers jk       */
 /* ================================================================ */
 
 template<int V>
@@ -228,6 +253,7 @@ static void launch_gpu(int cfg,
     const double* tangent, const double* z_w_v,
     const int* vert_idx, int N, int nlev)
 {
+    /* V1/V2: x=je(N), y=jk(nlev). N on x is fine (2^31-1 limit). */
     #define LG_JE(TX_,TY_,BX_,BY_) do {                                   \
         dim3 blk(BX_, BY_);                                                \
         dim3 grd(((unsigned)N    + (BX_)*(TX_) - 1) / ((BX_)*(TX_)),      \
@@ -235,15 +261,21 @@ static void launch_gpu(int cfg,
         gpu_kernel_je_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(              \
             out, vn_ie, inv_dual, w, cell_idx,                             \
             z_vt_ie, inv_primal, tangent, z_w_v, vert_idx, N, nlev);       \
+        CUDA_LAUNCH_CHECK();                                               \
     } while(0)
 
+    /* V3/V4: kernel has threadIdx.x=jk, threadIdx.y=je.             */
+    /* Grid: x covers je (N, large), y covers jk (nlev, small).      */
+    /* NOTE: grid x,y are SWAPPED vs the thread block x,y so that    */
+    /* the large dimension (N) never lands on grid.y (65535 limit).   */
     #define LG_JK(TX_,TY_,BX_,BY_) do {                                   \
         dim3 blk(BX_, BY_);                                                \
-        dim3 grd(((unsigned)nlev + (BX_)*(TX_) - 1) / ((BX_)*(TX_)),      \
-                 ((unsigned)N    + (BY_)*(TY_) - 1) / ((BY_)*(TY_)));     \
+        dim3 grd(((unsigned)N    + (BY_)*(TY_) - 1) / ((BY_)*(TY_)),      \
+                 ((unsigned)nlev + (BX_)*(TX_) - 1) / ((BX_)*(TX_)));     \
         gpu_kernel_jk_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(              \
             out, vn_ie, inv_dual, w, cell_idx,                             \
             z_vt_ie, inv_primal, tangent, z_w_v, vert_idx, N, nlev);       \
+        CUDA_LAUNCH_CHECK();                                               \
     } while(0)
 
     #define LG(TX_,TY_,BX_,BY_) do {                                       \
@@ -324,7 +356,6 @@ struct GpuFlush {
         size_t n = (size_t)FLUSH_N * FLUSH_N;
         size_t bytes = n * sizeof(double);
 
-        /* host init */
         double* h = new double[n];
         for (size_t i = 0; i < n; i++) {
             uint64_t v = splitmix64(12345ULL + i);
@@ -349,6 +380,13 @@ struct GpuFlush {
             std::swap(d_A, d_B);
         }
         CUDA_CHECK(hipDeviceSynchronize());
+
+        /* read back one random element to prevent elision */
+        int ri = rand() % (FLUSH_N * FLUSH_N);
+        double val;
+        CUDA_CHECK(hipMemcpy(&val, d_A + ri, sizeof(double),
+                              hipMemcpyDeviceToHost));
+        printf("  [flush GPU] A[%d] = %.12e\n", ri, val);
     }
 
     void destroy() {
@@ -383,7 +421,11 @@ int main() {
     hipDeviceProp_t prop;
     CUDA_CHECK(hipGetDeviceProperties(&prop, 0));
     printf("GPU: %s  SM count: %d\n", prop.name, prop.multiProcessorCount);
+    printf("Max grid dims: (%d, %d, %d)\n",
+           prop.maxGridSize[0], prop.maxGridSize[1], prop.maxGridSize[2]);
     printf("Configs: %d\n", N_GCFG);
+
+    srand((unsigned)time(NULL));
 
     /* init flush buffers once */
     g_flush.init();
@@ -397,9 +439,7 @@ int main() {
         bd.alloc(N, nlev);
         bd.fill(nlev);
 
-        /* host reference buffer (computed once per nlev,dist,V) */
         double* h_ref = new double[bd.sz2d];
-        /* host buffer to readback GPU output for verification */
         double* h_gpu_out = new double[bd.sz2d];
 
         /* device arrays */
@@ -436,7 +476,7 @@ int main() {
             for (int V = 1; V <= 4; V++) {
                 bd.set_variant(V, cell_logical, vd.logical);
 
-                /* ---- compute CPU reference ONCE per (nlev, dist, V) ---- */
+                /* compute CPU reference ONCE per (nlev, dist, V) */
                 cpu_reference_v(V,
                     h_ref, bd.h_vn_ie, bd.inv_dual,
                     bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
@@ -466,26 +506,42 @@ int main() {
                         CUDA_CHECK(hipDeviceSynchronize());
                     }
 
-                    /* ---- verify first config run against CPU ref ---- */
+                    /* verify after warmup */
                     CUDA_CHECK(hipMemcpy(h_gpu_out, d_out,
                         bd.sz2d * sizeof(double), hipMemcpyDeviceToHost));
                     int n_fail = 0;
                     double max_rel = 0.0;
+                    size_t first_fail = 0;
                     bool ok = verify(h_gpu_out, h_ref, bd.sz2d,
-                                     1e-12, 1e-15, &n_fail, &max_rel);
+                                     1e-12, 1e-15, &n_fail, &max_rel,
+                                     &first_fail);
                     if (!ok) {
+                        /* decode first failing index */
+                        int ff_je, ff_jk;
+                        if (V <= 2) {
+                            ff_je = first_fail % N;
+                            ff_jk = first_fail / N;
+                        } else {
+                            ff_jk = first_fail % nlev;
+                            ff_je = first_fail / nlev;
+                        }
                         printf("VERIFY FAIL: nlev=%d dist=%-12s V=%d "
-                               "cfg=%-14s  fails=%d max_rel=%.3e\n",
+                               "cfg=%-14s  fails=%d/%zu max_rel=%.3e\n"
+                               "  first_fail: idx=%zu (je=%d,jk=%d) "
+                               "got=%.6e ref=%.6e\n",
                                nlev, dist_name[di], V,
-                               GCFG[ci].label, n_fail, max_rel);
+                               GCFG[ci].label, n_fail, bd.sz2d, max_rel,
+                               first_fail, ff_je, ff_jk,
+                               h_gpu_out[first_fail], h_ref[first_fail]);
+                        /* SKIP timed runs for broken configs */
+                        continue;
                     } else if (ci == 0) {
-                        /* print once per (nlev, dist, V) to confirm */
                         printf("VERIFY OK:   nlev=%d dist=%-12s V=%d "
                                "max_rel=%.3e\n",
                                nlev, dist_name[di], V, max_rel);
                     }
 
-                    /* timed runs */
+                    /* timed runs -- only if verification passed */
                     for (int r = 0; r < NRUNS; r++) {
                         g_flush.flush();
                         CUDA_CHECK(hipEventRecord(ev0));
@@ -503,6 +559,7 @@ int main() {
                             GCFG[ci].tx, GCFG[ci].ty,
                             GCFG[ci].bx, GCFG[ci].by,
                             r, (double)ms);
+                        g_flush.flush();
                     }
                 }
 
@@ -529,7 +586,5 @@ int main() {
     fclose(fcsv);
 
     printf("\nResults written to z_v_grad_w_gpu.csv\n");
-    printf("Total rows: 2 nlevs x 4 dists x 4 variants x %d cfgs x %d = %d\n",
-           N_GCFG, NRUNS, 2 * 4 * 4 * N_GCFG * NRUNS);
     return 0;
 }
