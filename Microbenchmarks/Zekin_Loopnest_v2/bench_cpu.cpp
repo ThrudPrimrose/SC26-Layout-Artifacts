@@ -211,6 +211,7 @@ int main() {
                     h_ref, bd.h_vn_ie, bd.inv_dual,
                     bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                     bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
+                    flush_caches();
 
                 /* ---- omp parallel for ---- */
                 for (int r = 0; r < WARMUP; r++) {
@@ -219,6 +220,7 @@ int main() {
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
                 }
+                    flush_caches();
 
                 /* verify omp_for after warmup */
                 {
@@ -245,6 +247,8 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_for,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
+                    flush_caches();
+
                 }
 
                 /* ---- omp collapse(2) ---- */
@@ -253,6 +257,8 @@ int main() {
                     cpu_col_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
+                    flush_caches();
+
                 }
 
                 /* verify collapse(2) after warmup */
@@ -265,7 +271,8 @@ int main() {
                                "collapse2  fails=%d max_rel=%.3e\n",
                                nlev, dist_name[di], V, n_fail, max_rel);
                 }
-
+                    flush_caches();
+                
                 for (int r = 0; r < NRUNS; r++) {
                     flush_caches();
                     auto t0 = std::chrono::high_resolution_clock::now();
@@ -276,7 +283,10 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_collapse2,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
+                    flush_caches();
+                    
                 }
+                    flush_caches();
 
                 printf("Done: nlev=%d  dist=%-12s  V=%d\n",
                        nlev, dist_name[di], V);
