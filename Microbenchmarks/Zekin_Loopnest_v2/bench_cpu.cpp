@@ -125,24 +125,28 @@ static bool verify(const double* got, const double* ref, size_t n,
 static constexpr int FLUSH_N = 8192*4;
 static constexpr int FLUSH_STEPS = 3;
 
-static double flush_buf0[FLUSH_N * FLUSH_N];
-static double flush_buf1[FLUSH_N * FLUSH_N];
+static double* flush_buf0 = nullptr;
+static double* flush_buf1 = nullptr;
 
 static void flush_caches()
 {
     static bool inited = false;
-    double *A = flush_buf0;
-    double *B = flush_buf1;
 
     if (!inited) {
+        size_t n = (size_t)FLUSH_N * FLUSH_N;
+        flush_buf0 = new double[n];
+        flush_buf1 = new double[n];
         #pragma omp parallel for schedule(static)
-        for (int i = 0; i < FLUSH_N * FLUSH_N; i++) {
+        for (size_t i = 0; i < n; i++) {
             uint64_t h = splitmix64(12345ULL + (uint64_t)i);
-            A[i] = (double)(h >> 11) / (double)(1ULL << 53);
-            B[i] = A[i];
+            flush_buf0[i] = (double)(h >> 11) / (double)(1ULL << 53);
+            flush_buf1[i] = flush_buf0[i];
         }
         inited = true;
     }
+
+    double *A = flush_buf0;
+    double *B = flush_buf1;
 
     for (int s = 0; s < FLUSH_STEPS; s++) {
         #pragma omp parallel for schedule(static)
@@ -241,7 +245,6 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_for,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
-                    flush_caches();
                 }
 
                 /* ---- omp collapse(2) ---- */
@@ -250,7 +253,6 @@ int main() {
                     cpu_col_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
-                    flush_caches();
                 }
 
                 /* verify collapse(2) after warmup */
@@ -262,10 +264,6 @@ int main() {
                         printf("VERIFY FAIL: nlev=%d dist=%-12s V=%d "
                                "collapse2  fails=%d max_rel=%.3e\n",
                                nlev, dist_name[di], V, n_fail, max_rel);
-                    else
-                        printf("VERIFY OK:   nlev=%d dist=%-12s V=%d "
-                               "collapse2  max_rel=%.3e\n",
-                               nlev, dist_name[di], V, max_rel);
                 }
 
                 for (int r = 0; r < NRUNS; r++) {
@@ -278,7 +276,6 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_collapse2,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
-                    flush_caches();
                 }
 
                 printf("Done: nlev=%d  dist=%-12s  V=%d\n",

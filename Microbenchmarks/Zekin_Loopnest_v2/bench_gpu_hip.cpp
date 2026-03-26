@@ -342,7 +342,7 @@ __global__ void flush_stencil_step(const double* __restrict__ A,
             A[i*N + (j-1)] + A[i*N + (j+1)]);
 }
 
-static constexpr int FLUSH_N     = 8192;
+static constexpr int FLUSH_N     = 8192*4;
 static constexpr int FLUSH_STEPS = 3;
 
 struct GpuFlush {
