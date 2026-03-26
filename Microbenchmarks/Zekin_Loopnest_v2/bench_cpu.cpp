@@ -257,6 +257,10 @@ int main() {
                         printf("VERIFY FAIL: nlev=%d dist=%-12s V=%d "
                                "collapse2  fails=%d max_rel=%.3e\n",
                                nlev, dist_name[di], V, n_fail, max_rel);
+                    else
+                        printf("VERIFY OK:   nlev=%d dist=%-12s V=%d "
+                               "collapse2  max_rel=%.3e\n",
+                               nlev, dist_name[di], V, max_rel);
                 }
 
                 for (int r = 0; r < NRUNS; r++) {

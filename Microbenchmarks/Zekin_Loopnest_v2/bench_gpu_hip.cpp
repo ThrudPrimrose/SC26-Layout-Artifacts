@@ -94,6 +94,8 @@ __global__ void gpu_kernel_je_first(
     int    ci0_a[TX], ci1_a[TX], vi0_a[TX], vi1_a[TX];
     double id_a[TX],  ip_a[TX],  tg_a[TX];
 
+    if (je_base >= N || jk_base >= nlev) return;
+
     #pragma unroll
     for (int tx = 0; tx < TX; tx++) {
         int je = je_base + tx;
@@ -147,6 +149,8 @@ __global__ void gpu_kernel_jk_first(
 
     int    ci0_a[TY], ci1_a[TY], vi0_a[TY], vi1_a[TY];
     double id_a[TY],  ip_a[TY],  tg_a[TY];
+
+    if (je_base >= N || jk_base >= nlev) return;
 
     #pragma unroll
     for (int ty = 0; ty < TY; ty++) {
