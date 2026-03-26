@@ -265,12 +265,15 @@ __global__ void stencil_step(double* A, double* B, int N)
     }
 }
 
+static constexpr int FLUSH_N = 8192;
+static constexpr int FLUSH_STEPS = 3;
+
 static void flush_caches_gpu()
 {
     static bool inited = false;
 
-    double *h_A = flush_buf0;
-    double *h_B = flush_buf1;
+    double *h_A = new double[FLUSH_N * FLUSH_N];
+    double *h_B = new double[FLUSH_N * FLUSH_N];
 
     size_t bytes = FLUSH_N * FLUSH_N * sizeof(double);
 

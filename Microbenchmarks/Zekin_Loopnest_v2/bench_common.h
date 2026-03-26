@@ -29,16 +29,20 @@ static constexpr int NPROMA   = 81920;
 static constexpr int NLEVS[]  = {90, 96};
 static constexpr int N_NLEVS  = 2;
 static constexpr int WARMUP   = 5;
-static constexpr int NRUNS    = 10;
+static constexpr int NRUNS    = 100;
 
 /* ================================================================ */
 /*  2D index helpers                                                 */
 /* ================================================================ */
 
+#ifdef __HIP_PLATFORM_AMD__
+#define HD __host__ __device__ __forceinline__
+#else
 #ifdef __CUDACC__
 #define HD __host__ __device__ __forceinline__
 #else
 #define HD inline
+#endif
 #endif
 
 /* compute-array:  V1,V2 -> (je,jk),   V3,V4 -> (jk,je) */
