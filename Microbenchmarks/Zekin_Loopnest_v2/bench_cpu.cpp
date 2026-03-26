@@ -67,7 +67,58 @@ static cpu_fn_t cpu_col_tbl[] = {
 };
 
 /* ================================================================ */
-/*  Cache-flush: 2-D Jacobi stencil                                  */
+/*  CPU reference (serial, for verification)                         */
+/* ================================================================ */
+template<int V>
+static void cpu_reference(
+    double* __restrict__ out,
+    const double* __restrict__ vn_ie,   const double* __restrict__ inv_dual,
+    const double* __restrict__ w,       const int*    __restrict__ cell_idx,
+    const double* __restrict__ z_vt_ie, const double* __restrict__ inv_primal,
+    const double* __restrict__ tangent, const double* __restrict__ z_w_v,
+    const int*    __restrict__ vert_idx, int N, int nlev)
+{
+    for (int jk = 0; jk < nlev; jk++)
+        for (int je = 0; je < N; je++) { STENCIL_BODY(V) }
+}
+
+static void cpu_reference_v(int V,
+    double* out, const double* vn_ie, const double* inv_dual,
+    const double* w, const int* cell_idx,
+    const double* z_vt_ie, const double* inv_primal,
+    const double* tangent, const double* z_w_v,
+    const int* vert_idx, int N, int nlev)
+{
+    switch (V) {
+        case 1: cpu_reference<1>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+        case 2: cpu_reference<2>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+        case 3: cpu_reference<3>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+        case 4: cpu_reference<4>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+    }
+}
+
+/* ================================================================ */
+/*  numerical verification                                           */
+/* ================================================================ */
+static bool verify(const double* got, const double* ref, size_t n,
+                   double rtol, double atol,
+                   int* n_fail, double* max_rel)
+{
+    *n_fail  = 0;
+    *max_rel = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        double diff = std::abs(got[i] - ref[i]);
+        double denom = std::max(std::abs(ref[i]), 1e-300);
+        double rel = diff / denom;
+        if (rel > *max_rel) *max_rel = rel;
+        if (diff > atol + rtol * std::abs(ref[i]))
+            (*n_fail)++;
+    }
+    return *n_fail == 0;
+}
+
+/* ================================================================ */
+/*  Cache-flush: 2-D Jacobi stencil on persistent static buffers     */
 /* ================================================================ */
 
 static constexpr int FLUSH_N = 8192;
@@ -79,14 +130,16 @@ static double flush_buf1[FLUSH_N * FLUSH_N];
 static void flush_caches()
 {
     static bool inited = false;
-    double *A = new double[FLUSH_N * FLUSH_N];
-    double *B = new double[FLUSH_N * FLUSH_N];
+    double *A = flush_buf0;
+    double *B = flush_buf1;
 
     if (!inited) {
-        srand(12345);
-        for (int i = 0; i < FLUSH_N * FLUSH_N; i++)
-            A[i] = (double)rand() / RAND_MAX;
-        std::memcpy(B, A, sizeof(flush_buf0));
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < FLUSH_N * FLUSH_N; i++) {
+            uint64_t h = splitmix64(12345ULL + (uint64_t)i);
+            A[i] = (double)(h >> 11) / (double)(1ULL << 53);
+            B[i] = A[i];
+        }
         inited = true;
     }
 
@@ -100,12 +153,8 @@ static void flush_caches()
         std::swap(A, B);
     }
 
-    /* print one random element so the compiler cannot elide the work */
-    int ri = rand() % (FLUSH_N * FLUSH_N);
-    printf("  [flush] A[%d] = %.12e\n", ri, A[ri]);
-
-    delete[] A;
-    delete[] B;
+    volatile double sink = A[FLUSH_N * (FLUSH_N / 2) + FLUSH_N / 2];
+    (void)sink;
 }
 
 /* ================================================================ */
@@ -128,12 +177,20 @@ int main() {
 
     printf("OMP threads: %d\n", omp_get_max_threads());
 
+    /* fault in flush buffers before any timing */
+    flush_caches();
+    printf("Flush buffers initialized (2 x %.0f MB)\n",
+           (double)FLUSH_N * FLUSH_N * 8 / 1e6);
+
     for (int nlev_i = 0; nlev_i < N_NLEVS; nlev_i++) {
         int nlev = NLEVS[nlev_i];
 
         BenchData bd;
         bd.alloc(N, nlev);
         bd.fill(nlev);
+
+        /* host reference buffer (computed once per nlev,dist,V) */
+        double* h_ref = new double[bd.sz2d];
 
         for (int di = 0; di < 4; di++) {
             CellDist dist = (CellDist)di;
@@ -142,13 +199,33 @@ int main() {
             for (int V = 1; V <= 4; V++) {
                 bd.set_variant(V, cell_logical, vd.logical);
 
+                /* ---- compute serial reference ONCE ---- */
+                cpu_reference_v(V,
+                    h_ref, bd.h_vn_ie, bd.inv_dual,
+                    bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
+                    bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
+
                 /* ---- omp parallel for ---- */
                 for (int r = 0; r < WARMUP; r++) {
                     flush_caches();
                     cpu_par_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
-                    flush_caches();
+                }
+
+                /* verify omp_for after warmup */
+                {
+                    int n_fail = 0; double max_rel = 0.0;
+                    bool ok = verify(bd.h_out, h_ref, bd.sz2d,
+                                     1e-12, 1e-15, &n_fail, &max_rel);
+                    if (!ok)
+                        printf("VERIFY FAIL: nlev=%d dist=%-12s V=%d "
+                               "omp_for  fails=%d max_rel=%.3e\n",
+                               nlev, dist_name[di], V, n_fail, max_rel);
+                    else
+                        printf("VERIFY OK:   nlev=%d dist=%-12s V=%d "
+                               "omp_for  max_rel=%.3e\n",
+                               nlev, dist_name[di], V, max_rel);
                 }
 
                 for (int r = 0; r < NRUNS; r++) {
@@ -161,7 +238,6 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_for,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
-                    flush_caches();
                 }
 
                 /* ---- omp collapse(2) ---- */
@@ -170,7 +246,17 @@ int main() {
                     cpu_col_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
-                    flush_caches();
+                }
+
+                /* verify collapse(2) after warmup */
+                {
+                    int n_fail = 0; double max_rel = 0.0;
+                    bool ok = verify(bd.h_out, h_ref, bd.sz2d,
+                                     1e-12, 1e-15, &n_fail, &max_rel);
+                    if (!ok)
+                        printf("VERIFY FAIL: nlev=%d dist=%-12s V=%d "
+                               "collapse2  fails=%d max_rel=%.3e\n",
+                               nlev, dist_name[di], V, n_fail, max_rel);
                 }
 
                 for (int r = 0; r < NRUNS; r++) {
@@ -183,7 +269,6 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_collapse2,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
-                    flush_caches();
                 }
 
                 printf("Done: nlev=%d  dist=%-12s  V=%d\n",
@@ -191,6 +276,7 @@ int main() {
                 fflush(fcsv);
             }
         }
+        delete[] h_ref;
         bd.free_all();
     }
 

@@ -2,8 +2,8 @@
 /*
  * bench_gpu.cu -- GPU-only z_v_grad_w stencil benchmark
  *
- * V1/V2 (je,jk) layout: threadIdx.x → je (stride-1), threadIdx.y → jk
- * V3/V4 (jk,je) layout: threadIdx.x → jk (stride-1), threadIdx.y → je
+ * V1/V2 (je,jk) layout: threadIdx.x -> je (stride-1), threadIdx.y -> jk
+ * V3/V4 (jk,je) layout: threadIdx.x -> jk (stride-1), threadIdx.y -> je
  *
  * Compile:
  *   nvcc -O3 -arch=sm_80 -std=c++17 -Xcompiler -fopenmp bench_gpu.cu -o bench_gpu
@@ -22,6 +22,57 @@
         exit(1);                                                           \
     }                                                                      \
 } while(0)
+
+/* ================================================================ */
+/*  CPU reference (serial, for verification)                         */
+/* ================================================================ */
+template<int V>
+static void cpu_reference(
+    double* __restrict__ out,
+    const double* __restrict__ vn_ie,   const double* __restrict__ inv_dual,
+    const double* __restrict__ w,       const int*    __restrict__ cell_idx,
+    const double* __restrict__ z_vt_ie, const double* __restrict__ inv_primal,
+    const double* __restrict__ tangent, const double* __restrict__ z_w_v,
+    const int*    __restrict__ vert_idx, int N, int nlev)
+{
+    for (int jk = 0; jk < nlev; jk++)
+        for (int je = 0; je < N; je++) { STENCIL_BODY(V) }
+}
+
+static void cpu_reference_v(int V,
+    double* out, const double* vn_ie, const double* inv_dual,
+    const double* w, const int* cell_idx,
+    const double* z_vt_ie, const double* inv_primal,
+    const double* tangent, const double* z_w_v,
+    const int* vert_idx, int N, int nlev)
+{
+    switch (V) {
+        case 1: cpu_reference<1>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+        case 2: cpu_reference<2>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+        case 3: cpu_reference<3>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+        case 4: cpu_reference<4>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+    }
+}
+
+/* ================================================================ */
+/*  numerical verification                                           */
+/* ================================================================ */
+static bool verify(const double* got, const double* ref, size_t n,
+                   double rtol, double atol,
+                   int* n_fail, double* max_rel)
+{
+    *n_fail  = 0;
+    *max_rel = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        double diff = std::abs(got[i] - ref[i]);
+        double denom = std::max(std::abs(ref[i]), 1e-300);
+        double rel = diff / denom;
+        if (rel > *max_rel) *max_rel = rel;
+        if (diff > atol + rtol * std::abs(ref[i]))
+            (*n_fail)++;
+    }
+    return *n_fail == 0;
+}
 
 /* ================================================================ */
 /*  GPU kernel -- V1/V2: threadIdx.x = je, threadIdx.y = jk          */
@@ -91,12 +142,9 @@ __global__ void gpu_kernel_jk_first(
     const double* __restrict__ tangent, const double* __restrict__ z_w_v,
     const int*    __restrict__ vert_idx, int N, int nlev)
 {
-    /* x dimension = jk (stride-1 for (jk,je) layout) */
     const int jk_base = ((int)blockIdx.x * BX + (int)threadIdx.x) * TX;
-    /* y dimension = je */
     const int je_base = ((int)blockIdx.y * BY + (int)threadIdx.y) * TY;
 
-    /* hoist per-je scalars (constant across jk) */
     int    ci0_a[TY], ci1_a[TY], vi0_a[TY], vi1_a[TY];
     double id_a[TY],  ip_a[TY],  tg_a[TY];
 
@@ -139,41 +187,33 @@ __global__ void gpu_kernel_jk_first(
 /* ================================================================ */
 struct GpuCfg { int tx, ty, bx, by; const char* label; };
 static constexpr GpuCfg GCFG[] = {
-    /* 1D blocks, no tiling */
-    {1, 1, 256, 1, "1x1_256x1"},    /* 0  */
-    {1, 1, 128, 1, "1x1_128x1"},    /* 1  */
-    /* tiling in x only */
-    {2, 1, 128, 1, "2x1_128x1"},    /* 2  */
-    {4, 1, 128, 1, "4x1_128x1"},    /* 3  */
-    {4, 1, 64,  1, "4x1_64x1"},     /* 4  */
-    /* tiling in y only */
-    {1, 2, 256, 1, "1x2_256x1"},    /* 5  */
-    {1, 4, 256, 1, "1x4_256x1"},    /* 6  */
-    /* tiling in both */
-    {2, 2, 128, 1, "2x2_128x1"},    /* 7  */
-    {2, 4, 128, 1, "2x4_128x1"},    /* 8  */
-    {4, 2, 64,  1, "4x2_64x1"},     /* 9  */
-    /* 2D thread blocks */
-    {1, 1, 32, 16, "1x1_32x16"},    /* 10 */
-    {1, 1, 32,  8, "1x1_32x8"},     /* 11 */
-    {1, 1, 32,  4, "1x1_32x4"},     /* 12 */
-    {2, 1, 32, 16, "2x1_32x16"},    /* 13 */
-    {2, 1, 32,  8, "2x1_32x8"},     /* 14 */
-    {2, 1, 32,  4, "2x1_32x4"},     /* 15 */
-    {1, 2, 32, 16, "1x2_32x16"},    /* 16 */
-    {1, 2, 32,  8, "1x2_32x8"},     /* 17 */
-    {1, 2, 32,  4, "1x2_32x4"},     /* 18 */
-    {2, 2, 32,  8, "2x2_32x8"},     /* 19 */
-    {2, 2, 32,  4, "2x2_32x4"},     /* 20 */
-    {4, 2, 32,  4, "4x2_32x4"},     /* 21 */
+    {1, 1, 256, 1, "1x1_256x1"},
+    {1, 1, 128, 1, "1x1_128x1"},
+    {2, 1, 128, 1, "2x1_128x1"},
+    {4, 1, 128, 1, "4x1_128x1"},
+    {4, 1, 64,  1, "4x1_64x1"},
+    {1, 2, 256, 1, "1x2_256x1"},
+    {1, 4, 256, 1, "1x4_256x1"},
+    {2, 2, 128, 1, "2x2_128x1"},
+    {2, 4, 128, 1, "2x4_128x1"},
+    {4, 2, 64,  1, "4x2_64x1"},
+    {1, 1, 32, 16, "1x1_32x16"},
+    {1, 1, 32,  8, "1x1_32x8"},
+    {1, 1, 32,  4, "1x1_32x4"},
+    {2, 1, 32, 16, "2x1_32x16"},
+    {2, 1, 32,  8, "2x1_32x8"},
+    {2, 1, 32,  4, "2x1_32x4"},
+    {1, 2, 32, 16, "1x2_32x16"},
+    {1, 2, 32,  8, "1x2_32x8"},
+    {1, 2, 32,  4, "1x2_32x4"},
+    {2, 2, 32,  8, "2x2_32x8"},
+    {2, 2, 32,  4, "2x2_32x4"},
+    {4, 2, 32,  4, "4x2_32x4"},
 };
 static constexpr int N_GCFG = sizeof(GCFG) / sizeof(GCFG[0]);
 
 /* ================================================================ */
 /*  GPU launch dispatch                                              */
-/*                                                                   */
-/*  V1/V2: grid.x covers je, grid.y covers jk (je_first kernel)     */
-/*  V3/V4: grid.x covers jk, grid.y covers je (jk_first kernel)     */
 /* ================================================================ */
 
 template<int V>
@@ -184,7 +224,6 @@ static void launch_gpu(int cfg,
     const double* tangent, const double* z_w_v,
     const int* vert_idx, int N, int nlev)
 {
-    /* V1/V2: x=je, y=jk.  TX tiles je, TY tiles jk. */
     #define LG_JE(TX_,TY_,BX_,BY_) do {                                   \
         dim3 blk(BX_, BY_);                                                \
         dim3 grd(((unsigned)N    + (BX_)*(TX_) - 1) / ((BX_)*(TX_)),      \
@@ -194,7 +233,6 @@ static void launch_gpu(int cfg,
             z_vt_ie, inv_primal, tangent, z_w_v, vert_idx, N, nlev);       \
     } while(0)
 
-    /* V3/V4: x=jk, y=je.  TX tiles jk, TY tiles je. */
     #define LG_JK(TX_,TY_,BX_,BY_) do {                                   \
         dim3 blk(BX_, BY_);                                                \
         dim3 grd(((unsigned)nlev + (BX_)*(TX_) - 1) / ((BX_)*(TX_)),      \
@@ -253,65 +291,71 @@ static void launch_gpu_v(int V, int cfg,
     }
 }
 
-__global__ void stencil_step(double* A, double* B, int N)
+/* ================================================================ */
+/*  GPU cache flush -- persistent device buffers                     */
+/* ================================================================ */
+
+__global__ void flush_stencil_step(const double* __restrict__ A,
+                                   double* __restrict__ B, int N)
 {
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     int j = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (i >= 1 && i < N-1 && j >= 1 && j < N-1) {
+    if (i >= 1 && i < N-1 && j >= 1 && j < N-1)
         B[i * N + j] = 0.25 * (
             A[(i-1)*N + j] + A[(i+1)*N + j] +
             A[i*N + (j-1)] + A[i*N + (j+1)]);
-    }
 }
 
-static constexpr int FLUSH_N = 8192;
+static constexpr int FLUSH_N     = 8192;
 static constexpr int FLUSH_STEPS = 3;
 
-static double flush_buf0[FLUSH_N * FLUSH_N];
-static double flush_buf1[FLUSH_N * FLUSH_N];
+struct GpuFlush {
+    double *d_A, *d_B;
+    bool inited;
 
-static void flush_caches_gpu()
-{
-    static bool inited = false;
+    GpuFlush() : d_A(nullptr), d_B(nullptr), inited(false) {}
 
-    double *h_A = flush_buf0;
-    double *h_B = flush_buf1;
+    void init() {
+        if (inited) return;
+        size_t n = (size_t)FLUSH_N * FLUSH_N;
+        size_t bytes = n * sizeof(double);
 
-    size_t bytes = FLUSH_N * FLUSH_N * sizeof(double);
+        /* host init */
+        double* h = new double[n];
+        for (size_t i = 0; i < n; i++) {
+            uint64_t v = splitmix64(12345ULL + i);
+            h[i] = (double)(v >> 11) / (double)(1ULL << 53);
+        }
 
-    if (!inited) {
-        srand(12345);
-        for (int i = 0; i < FLUSH_N * FLUSH_N; i++)
-            h_A[i] = (double)rand() / RAND_MAX;
-        memcpy(h_B, h_A, bytes);
+        CUDA_CHECK(hipMalloc(&d_A, bytes));
+        CUDA_CHECK(hipMalloc(&d_B, bytes));
+        CUDA_CHECK(hipMemcpy(d_A, h, bytes, hipMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_B, h, bytes, hipMemcpyHostToDevice));
+        delete[] h;
         inited = true;
     }
 
-    double *d_A, *d_B;
-    hipMalloc(&d_A, bytes);
-    hipMalloc(&d_B, bytes);
-
-    hipMemcpy(d_A, h_A, bytes, hipMemcpyHostToDevice);
-    hipMemcpy(d_B, h_B, bytes, hipMemcpyHostToDevice);
-
-    dim3 block(16, 16);
-    dim3 grid((FLUSH_N + block.x - 1) / block.x,
-              (FLUSH_N + block.y - 1) / block.y);
-
-    for (int s = 0; s < FLUSH_STEPS; s++) {
-        stencil_step<<<grid, block>>>(d_A, d_B, FLUSH_N);
-        std::swap(d_A, d_B);
+    void flush() {
+        init();
+        dim3 block(16, 16);
+        dim3 grid((FLUSH_N + block.x - 1) / block.x,
+                  (FLUSH_N + block.y - 1) / block.y);
+        for (int s = 0; s < FLUSH_STEPS; s++) {
+            flush_stencil_step<<<grid, block>>>(d_A, d_B, FLUSH_N);
+            std::swap(d_A, d_B);
+        }
+        CUDA_CHECK(hipDeviceSynchronize());
     }
 
-    hipMemcpy(h_A, d_A, bytes, hipMemcpyDeviceToHost);
+    void destroy() {
+        if (d_A) hipFree(d_A);
+        if (d_B) hipFree(d_B);
+        d_A = d_B = nullptr;
+        inited = false;
+    }
+};
 
-    int ri = rand() % (FLUSH_N * FLUSH_N);
-    printf("  [flush GPU] A[%d] = %.12e\n", ri, h_A[ri]);
-
-    hipFree(d_A);
-    hipFree(d_B);
-}
+static GpuFlush g_flush;
 
 /* ================================================================ */
 /*  main                                                             */
@@ -337,12 +381,22 @@ int main() {
     printf("GPU: %s  SM count: %d\n", prop.name, prop.multiProcessorCount);
     printf("Configs: %d\n", N_GCFG);
 
+    /* init flush buffers once */
+    g_flush.init();
+    printf("GPU flush buffers initialized (2 x %.0f MB)\n",
+           (double)FLUSH_N * FLUSH_N * 8 / 1e6);
+
     for (int nlev_i = 0; nlev_i < N_NLEVS; nlev_i++) {
         int nlev = NLEVS[nlev_i];
 
         BenchData bd;
         bd.alloc(N, nlev);
         bd.fill(nlev);
+
+        /* host reference buffer (computed once per nlev,dist,V) */
+        double* h_ref = new double[bd.sz2d];
+        /* host buffer to readback GPU output for verification */
+        double* h_gpu_out = new double[bd.sz2d];
 
         /* device arrays */
         double *d_vn_ie, *d_w, *d_z_vt_ie, *d_z_w_v, *d_out;
@@ -378,6 +432,13 @@ int main() {
             for (int V = 1; V <= 4; V++) {
                 bd.set_variant(V, cell_logical, vd.logical);
 
+                /* ---- compute CPU reference ONCE per (nlev, dist, V) ---- */
+                cpu_reference_v(V,
+                    h_ref, bd.h_vn_ie, bd.inv_dual,
+                    bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
+                    bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
+
+                /* upload variant data to device */
                 CUDA_CHECK(hipMemcpy(d_vn_ie,   bd.h_vn_ie,
                     bd.sz2d*sizeof(double), hipMemcpyHostToDevice));
                 CUDA_CHECK(hipMemcpy(d_w,       bd.h_w,
@@ -393,15 +454,36 @@ int main() {
 
                 for (int ci = 0; ci < N_GCFG; ci++) {
                     /* warmup */
-                    for (int r = 0; r < WARMUP; r++)
-                        flush_caches_gpu();
+                    for (int r = 0; r < WARMUP; r++) {
+                        g_flush.flush();
                         launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
                             d_w, d_cidx, d_z_vt_ie, d_inv_primal,
                             d_tangent, d_z_w_v, d_vidx, N, nlev);
-                    CUDA_CHECK(hipDeviceSynchronize());
+                        CUDA_CHECK(hipDeviceSynchronize());
+                    }
 
+                    /* ---- verify first config run against CPU ref ---- */
+                    CUDA_CHECK(hipMemcpy(h_gpu_out, d_out,
+                        bd.sz2d * sizeof(double), hipMemcpyDeviceToHost));
+                    int n_fail = 0;
+                    double max_rel = 0.0;
+                    bool ok = verify(h_gpu_out, h_ref, bd.sz2d,
+                                     1e-12, 1e-15, &n_fail, &max_rel);
+                    if (!ok) {
+                        printf("VERIFY FAIL: nlev=%d dist=%-12s V=%d "
+                               "cfg=%-14s  fails=%d max_rel=%.3e\n",
+                               nlev, dist_name[di], V,
+                               GCFG[ci].label, n_fail, max_rel);
+                    } else if (ci == 0) {
+                        /* print once per (nlev, dist, V) to confirm */
+                        printf("VERIFY OK:   nlev=%d dist=%-12s V=%d "
+                               "max_rel=%.3e\n",
+                               nlev, dist_name[di], V, max_rel);
+                    }
+
+                    /* timed runs */
                     for (int r = 0; r < NRUNS; r++) {
-                        flush_caches_gpu();
+                        g_flush.flush();
                         CUDA_CHECK(hipEventRecord(ev0));
                         launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
                             d_w, d_cidx, d_z_vt_ie, d_inv_primal,
@@ -417,7 +499,6 @@ int main() {
                             GCFG[ci].tx, GCFG[ci].ty,
                             GCFG[ci].bx, GCFG[ci].by,
                             r, (double)ms);
-                        flush_caches_gpu();
                     }
                 }
 
@@ -433,9 +514,12 @@ int main() {
         hipFree(d_tangent);    hipFree(d_cidx);      hipFree(d_vidx);
         CUDA_CHECK(hipEventDestroy(ev0));
         CUDA_CHECK(hipEventDestroy(ev1));
+        delete[] h_ref;
+        delete[] h_gpu_out;
         bd.free_all();
     }
 
+    g_flush.destroy();
     vd.free_all();
     delete[] cell_logical;
     fclose(fcsv);
