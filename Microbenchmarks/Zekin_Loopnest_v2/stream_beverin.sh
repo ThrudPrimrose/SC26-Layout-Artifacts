@@ -70,5 +70,23 @@ export OMP_PROC_BIND=close
 export SLURM_CPU_BIND=cores
 
 gcc -O3 -march=native -fopenmp -o numa_triad numa_triad.c -lnuma
+export HSA_ENABLE_SDMA=0
+export GPU_MAX_HEAP_SIZE=100
+export HSA_XNACK=1
+export ARCH=gfx942
+hipcc -O3 -std=c++17 \
+    --offload-arch=$ARCH \
+    -fopenmp \
+    -march=native \
+    -mtune=native \
+    -ffast-math \
+    -munsafe-fp-atomics \
+    -mllvm -amdgpu-early-inline-all=true \
+    -mllvm -amdgpu-function-calls=false \
+    -fgpu-flush-denormals-to-zero \
+    -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
+    -ffast-math --offload-arch=$ARCH -fopenmp \
+    -o gpu_triad gpu_triad_hip.cpp
 
 ./numa_triad
+./gpu_triad
