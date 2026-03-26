@@ -79,7 +79,8 @@ static double flush_buf1[FLUSH_N * FLUSH_N];
 static void flush_caches()
 {
     static bool inited = false;
-    double *A = flush_buf0, *B = flush_buf1;
+    double *A = new double[FLUSH_N * FLUSH_N];
+    double *B = new double[FLUSH_N * FLUSH_N];
 
     if (!inited) {
         srand(12345);
@@ -102,6 +103,9 @@ static void flush_caches()
     /* print one random element so the compiler cannot elide the work */
     int ri = rand() % (FLUSH_N * FLUSH_N);
     printf("  [flush] A[%d] = %.12e\n", ri, A[ri]);
+
+    delete[] A;
+    delete[] B;
 }
 
 /* ================================================================ */
