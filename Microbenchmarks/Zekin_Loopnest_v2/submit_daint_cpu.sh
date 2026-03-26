@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=zekin_d
+#SBATCH --job-name=zekin_d_c
 #SBATCH --nodes=1
 #SBATCH --partition=normal
-#SBATCH --time=01:30:00
+#SBATCH --time=00:30:00
 #SBATCH --output=zekin_d_%j.out
 #SBATCH --error=zekin_d_%j.err
 #SBATCH --ntasks=1
@@ -41,12 +41,6 @@ export LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$CUTENSOR_HOME/lib/12:$CUDA_HOME
 export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$CUTENSOR_HOME/lib/12:$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 export PATH=$SCRATCH/bin:$CUTENSOR_HOME/bin:$PATH
 
-
-nvcc -O3 -std=c++17 \
-    -arch=sm_90 \
-    -Xcompiler=-fopenmp \
-    -o bench_gpu_d bench_gpu.cu
-
 g++ -O3 -std=c++17 \
     -march=native \
     -fopenmp \
@@ -55,5 +49,4 @@ g++ -O3 -std=c++17 \
     -ftree-vectorize \
     -o bench_cpu_d bench_cpu.cpp
 
-./bench_gpu_d
 ./bench_cpu_d
