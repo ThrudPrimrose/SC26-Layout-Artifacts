@@ -70,7 +70,7 @@ static cpu_fn_t cpu_col_tbl[] = {
 /*  Cache-flush: 2-D Jacobi stencil                                  */
 /* ================================================================ */
 
-static constexpr int FLUSH_N = 2048;          /* ~32 MB per grid */
+static constexpr int FLUSH_N = 8192;
 static constexpr int FLUSH_STEPS = 3;
 
 static double flush_buf0[FLUSH_N * FLUSH_N];
@@ -139,10 +139,13 @@ int main() {
                 bd.set_variant(V, cell_logical, vd.logical);
 
                 /* ---- omp parallel for ---- */
-                for (int r = 0; r < WARMUP; r++)
+                for (int r = 0; r < WARMUP; r++) {
+                    flush_caches();
                     cpu_par_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
+                    flush_caches();
+                }
 
                 for (int r = 0; r < NRUNS; r++) {
                     flush_caches();
@@ -154,13 +157,17 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_for,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
+                    flush_caches();
                 }
 
                 /* ---- omp collapse(2) ---- */
-                for (int r = 0; r < WARMUP; r++)
+                for (int r = 0; r < WARMUP; r++) {
+                    flush_caches();
                     cpu_col_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
+                    flush_caches();
+                }
 
                 for (int r = 0; r < NRUNS; r++) {
                     flush_caches();
@@ -172,6 +179,7 @@ int main() {
                     double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_collapse2,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
+                    flush_caches();
                 }
 
                 printf("Done: nlev=%d  dist=%-12s  V=%d\n",
