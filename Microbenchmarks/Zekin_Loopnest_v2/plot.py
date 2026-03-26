@@ -73,7 +73,7 @@ def plot_cpu(df, out_dir):
                 pos_list = []
                 col_list = []
                 for vi, v in enumerate(variants):
-                    times = gp[gp["variant"] == v]["time_s"].values * 1e3
+                    times = gp[gp["variant"] == v]["time_ms"].values * 1e3
                     data_list.append(times)
                     pos_list.append(group_offset + vi)
                     col_list.append(VARIANT_COLORS[v])
@@ -98,6 +98,7 @@ def plot_cpu(df, out_dir):
                           ncol=2, framealpha=0.9)
 
         path = os.path.join(out_dir, f"cpu_nlev{nlev}.pdf")
+        path = os.path.join(out_dir, f"cpu_nlev{nlev}.png")
         fig.savefig(path, dpi=150)
         plt.close(fig)
         print(f"  saved {path}")
@@ -107,7 +108,7 @@ def plot_gpu(df, out_dir):
     """One figure per (nlev, dist).  X-axis = config_label.  Violins = V1-V4."""
     for (nlev, dist), gnd in df.groupby(["nlev", "cell_dist"]):
         configs = sorted(gnd["config_label"].unique(),
-                         key=lambda c: gnd[gnd["config_label"] == c]["time_s"].median())
+                         key=lambda c: gnd[gnd["config_label"] == c]["time_ms"].median())
 
         n_cfg = len(configs)
         fig_w = max(10, 0.9 * n_cfg)
@@ -128,7 +129,7 @@ def plot_gpu(df, out_dir):
             pos_list = []
             col_list = []
             for vi, v in enumerate(variants):
-                times = gc[gc["variant"] == v]["time_s"].values * 1e3
+                times = gc[gc["variant"] == v]["time_ms"].values * 1e3
                 if len(times) == 0:
                     continue
                 data_list.append(times)
@@ -154,6 +155,7 @@ def plot_gpu(df, out_dir):
                   ncol=2, framealpha=0.9)
 
         path = os.path.join(out_dir, f"gpu_nlev{nlev}_{dist}.pdf")
+        path = os.path.join(out_dir, f"gpu_nlev{nlev}_{dist}.png")
         fig.savefig(path, dpi=150)
         plt.close(fig)
         print(f"  saved {path}")
@@ -162,8 +164,8 @@ def plot_gpu(df, out_dir):
 def plot_gpu_summary(df, out_dir):
     """One figure per nlev: bar chart of median time per (config, variant), averaged over dists."""
     for nlev, gn in df.groupby("nlev"):
-        med = gn.groupby(["config_label", "variant"])["time_s"].median().reset_index()
-        med["time_ms"] = med["time_s"] * 1e3
+        med = gn.groupby(["config_label", "variant"])["time_ms"].median().reset_index()
+        med["time_ms"] = med["time_ms"] * 1e3
 
         configs = sorted(med["config_label"].unique(),
                          key=lambda c: med[med["config_label"] == c]["time_ms"].mean())
@@ -192,6 +194,7 @@ def plot_gpu_summary(df, out_dir):
         ax.grid(axis="y", alpha=0.3)
 
         path = os.path.join(out_dir, f"gpu_summary_nlev{nlev}.pdf")
+        path = os.path.join(out_dir, f"gpu_summary_nlev{nlev}.png")
         fig.savefig(path, dpi=150)
         plt.close(fig)
         print(f"  saved {path}")

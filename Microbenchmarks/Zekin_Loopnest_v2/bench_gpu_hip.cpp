@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * bench_gpu.cu -- GPU-only z_v_grad_w stencil benchmark
  *
@@ -14,10 +15,10 @@
 /*  CUDA helpers                                                     */
 /* ================================================================ */
 #define CUDA_CHECK(call) do {                                              \
-    cudaError_t e = (call);                                                \
-    if (e != cudaSuccess) {                                                \
+    hipError_t e = (call);                                                \
+    if (e != hipSuccess) {                                                \
         fprintf(stderr, "CUDA error %s:%d: %s\n",                         \
-                __FILE__, __LINE__, cudaGetErrorString(e));                 \
+                __FILE__, __LINE__, hipGetErrorString(e));                 \
         exit(1);                                                           \
     }                                                                      \
 } while(0)
@@ -271,8 +272,8 @@ int main() {
     int* cell_logical = new int[N * 2];
 
     /* print GPU info */
-    cudaDeviceProp prop;
-    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+    hipDeviceProp_t prop;
+    CUDA_CHECK(hipGetDeviceProperties(&prop, 0));
     printf("GPU: %s  SM count: %d\n", prop.name, prop.multiProcessorCount);
     printf("Configs: %d\n", N_GCFG);
 
@@ -288,27 +289,27 @@ int main() {
         double *d_inv_dual, *d_inv_primal, *d_tangent;
         int    *d_cidx, *d_vidx;
 
-        CUDA_CHECK(cudaMalloc(&d_vn_ie,      bd.sz2d * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_w,          bd.sz2d * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_z_vt_ie,    bd.sz2d * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_z_w_v,      bd.sz2d * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_out,        bd.sz2d * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_inv_dual,   N * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_inv_primal, N * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_tangent,    N * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_cidx,       N * 2 * sizeof(int)));
-        CUDA_CHECK(cudaMalloc(&d_vidx,       N * 2 * sizeof(int)));
+        CUDA_CHECK(hipMalloc(&d_vn_ie,      bd.sz2d * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_w,          bd.sz2d * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_z_vt_ie,    bd.sz2d * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_z_w_v,      bd.sz2d * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_out,        bd.sz2d * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_inv_dual,   N * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_inv_primal, N * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_tangent,    N * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_cidx,       N * 2 * sizeof(int)));
+        CUDA_CHECK(hipMalloc(&d_vidx,       N * 2 * sizeof(int)));
 
-        CUDA_CHECK(cudaMemcpy(d_inv_dual,   bd.inv_dual,
-                              N*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_inv_primal, bd.inv_primal,
-                              N*sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_tangent,    bd.tangent_o,
-                              N*sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_inv_dual,   bd.inv_dual,
+                              N*sizeof(double), hipMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_inv_primal, bd.inv_primal,
+                              N*sizeof(double), hipMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_tangent,    bd.tangent_o,
+                              N*sizeof(double), hipMemcpyHostToDevice));
 
-        cudaEvent_t ev0, ev1;
-        CUDA_CHECK(cudaEventCreate(&ev0));
-        CUDA_CHECK(cudaEventCreate(&ev1));
+        hipEvent_t ev0, ev1;
+        CUDA_CHECK(hipEventCreate(&ev0));
+        CUDA_CHECK(hipEventCreate(&ev1));
 
         for (int di = 0; di < 4; di++) {
             CellDist dist = (CellDist)di;
@@ -317,18 +318,18 @@ int main() {
             for (int V = 1; V <= 4; V++) {
                 bd.set_variant(V, cell_logical, vd.logical);
 
-                CUDA_CHECK(cudaMemcpy(d_vn_ie,   bd.h_vn_ie,
-                    bd.sz2d*sizeof(double), cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_w,       bd.h_w,
-                    bd.sz2d*sizeof(double), cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_z_vt_ie, bd.h_z_vt_ie,
-                    bd.sz2d*sizeof(double), cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_z_w_v,   bd.h_z_w_v,
-                    bd.sz2d*sizeof(double), cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_cidx,    bd.h_cidx,
-                    N*2*sizeof(int), cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_vidx,    bd.h_vidx,
-                    N*2*sizeof(int), cudaMemcpyHostToDevice));
+                CUDA_CHECK(hipMemcpy(d_vn_ie,   bd.h_vn_ie,
+                    bd.sz2d*sizeof(double), hipMemcpyHostToDevice));
+                CUDA_CHECK(hipMemcpy(d_w,       bd.h_w,
+                    bd.sz2d*sizeof(double), hipMemcpyHostToDevice));
+                CUDA_CHECK(hipMemcpy(d_z_vt_ie, bd.h_z_vt_ie,
+                    bd.sz2d*sizeof(double), hipMemcpyHostToDevice));
+                CUDA_CHECK(hipMemcpy(d_z_w_v,   bd.h_z_w_v,
+                    bd.sz2d*sizeof(double), hipMemcpyHostToDevice));
+                CUDA_CHECK(hipMemcpy(d_cidx,    bd.h_cidx,
+                    N*2*sizeof(int), hipMemcpyHostToDevice));
+                CUDA_CHECK(hipMemcpy(d_vidx,    bd.h_vidx,
+                    N*2*sizeof(int), hipMemcpyHostToDevice));
 
                 for (int ci = 0; ci < N_GCFG; ci++) {
                     /* warmup */
@@ -336,17 +337,17 @@ int main() {
                         launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
                             d_w, d_cidx, d_z_vt_ie, d_inv_primal,
                             d_tangent, d_z_w_v, d_vidx, N, nlev);
-                    CUDA_CHECK(cudaDeviceSynchronize());
+                    CUDA_CHECK(hipDeviceSynchronize());
 
                     for (int r = 0; r < NRUNS; r++) {
-                        CUDA_CHECK(cudaEventRecord(ev0));
+                        CUDA_CHECK(hipEventRecord(ev0));
                         launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
                             d_w, d_cidx, d_z_vt_ie, d_inv_primal,
                             d_tangent, d_z_w_v, d_vidx, N, nlev);
-                        CUDA_CHECK(cudaEventRecord(ev1));
-                        CUDA_CHECK(cudaEventSynchronize(ev1));
+                        CUDA_CHECK(hipEventRecord(ev1));
+                        CUDA_CHECK(hipEventSynchronize(ev1));
                         float ms = 0.0f;
-                        CUDA_CHECK(cudaEventElapsedTime(&ms, ev0, ev1));
+                        CUDA_CHECK(hipEventElapsedTime(&ms, ev0, ev1));
                         fprintf(fcsv,
                             "gpu,%d,%d,%d,%s,%s,%d,%d,%d,%d,%d,%.6f\n",
                             V, nlev, N, dist_name[di],
@@ -363,12 +364,12 @@ int main() {
             }
         }
 
-        cudaFree(d_vn_ie);      cudaFree(d_w);
-        cudaFree(d_z_vt_ie);    cudaFree(d_z_w_v);    cudaFree(d_out);
-        cudaFree(d_inv_dual);   cudaFree(d_inv_primal);
-        cudaFree(d_tangent);    cudaFree(d_cidx);      cudaFree(d_vidx);
-        CUDA_CHECK(cudaEventDestroy(ev0));
-        CUDA_CHECK(cudaEventDestroy(ev1));
+        hipFree(d_vn_ie);      hipFree(d_w);
+        hipFree(d_z_vt_ie);    hipFree(d_z_w_v);    hipFree(d_out);
+        hipFree(d_inv_dual);   hipFree(d_inv_primal);
+        hipFree(d_tangent);    hipFree(d_cidx);      hipFree(d_vidx);
+        CUDA_CHECK(hipEventDestroy(ev0));
+        CUDA_CHECK(hipEventDestroy(ev1));
         bd.free_all();
     }
 

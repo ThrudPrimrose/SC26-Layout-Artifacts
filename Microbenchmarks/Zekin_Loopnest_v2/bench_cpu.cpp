@@ -71,7 +71,7 @@ int main() {
     if (!fcsv) { perror("fopen"); return 1; }
     fprintf(fcsv,
         "backend,variant,nlev,nproma,cell_dist,"
-        "parallelization,run_id,time_s\n");
+        "parallelization,run_id,time_ms\n");
 
     const int N = NPROMA;
     std::mt19937 rng(42);
@@ -109,12 +109,13 @@ int main() {
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
                     auto t1 = std::chrono::high_resolution_clock::now();
-                    double dt = std::chrono::duration<double>(t1-t0).count();
+                    double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_for,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
                 }
 
                 /* omp collapse(2) */
+                /*
                 for (int r = 0; r < WARMUP; r++)
                     cpu_col_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
@@ -126,10 +127,11 @@ int main() {
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
                     auto t1 = std::chrono::high_resolution_clock::now();
-                    double dt = std::chrono::duration<double>(t1-t0).count();
+                    double dt = std::chrono::duration<double, std::milli>(t1-t0).count();
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_collapse2,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
                 }
+                */
 
                 printf("Done: nlev=%d  dist=%-12s  V=%d\n",
                        nlev, dist_name[di], V);
