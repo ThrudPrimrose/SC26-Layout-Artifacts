@@ -44,16 +44,12 @@ export PATH=$SCRATCH/bin:$CUTENSOR_HOME/bin:$PATH
 
 nvcc -O3 -std=c++17 \
     -arch=sm_90 \
-    -Xcompiler=-fopenmp \
+    -Xcompiler=-fopenmp -ffast-math \
+    -Xcompiler="-march=native -ffast-math -mtune=native" \
+    --use_fast_math \
     -o bench_gpu_d bench_gpu.cu
 
-g++ -O3 -std=c++17 \
-    -march=native \
-    -fopenmp \
-    -ffast-math \
-    -funroll-loops \
-    -ftree-vectorize \
-    -o bench_cpu_d bench_cpu.cpp
+
 
 ./bench_gpu_d
 ./bench_cpu_d

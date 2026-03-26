@@ -74,21 +74,16 @@ hipcc -O3 -std=c++17 \
     --offload-arch=$ARCH \
     -fopenmp \
     -march=native \
+    -mtune=native \
     -ffast-math \
-    -funroll-loops \
     -munsafe-fp-atomics \
     -mllvm -amdgpu-early-inline-all=true \
+    -mllvm -amdgpu-function-calls=false \
+    -fgpu-flush-denormals-to-zero \
     -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
     -ffast-math --offload-arch=$ARCH -fopenmp \
     -o bench_gpu_hip bench_gpu_hip.cpp
 
-g++ -O3 -std=c++17 \
-    -march=native \
-    -fopenmp \
-    -ffast-math \
-    -funroll-loops \
-    -ftree-vectorize \
-    -o bench_cpu bench_cpu.cpp
 
 ./bench_gpu_hip
 ./bench_cpu

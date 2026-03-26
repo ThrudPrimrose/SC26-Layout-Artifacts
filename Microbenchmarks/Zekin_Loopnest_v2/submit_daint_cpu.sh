@@ -45,7 +45,8 @@ g++ -O3 -std=c++17 \
     -march=native \
     -fopenmp \
     -ffast-math \
-    -funroll-loops \
+    -mtune=native \
+    -fno-vect-cost-model \
     -ftree-vectorize \
     -o bench_cpu_d bench_cpu.cpp
 
