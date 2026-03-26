@@ -70,7 +70,9 @@ export OMP_PROC_BIND=close
 export SLURM_CPU_BIND=cores
 
 gcc -O3 -march=native -fopenmp -o numa_triad numa_triad.c -lnuma
-
+export HSA_ENABLE_SDMA=0
+export GPU_MAX_HEAP_SIZE=100
+export HSA_XNACK=1
 export ARCH=gfx942
 hipcc -O3 -std=c++17 \
     --offload-arch=$ARCH \
