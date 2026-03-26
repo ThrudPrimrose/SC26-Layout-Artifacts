@@ -1,5 +1,5 @@
 /*
- * bench_cpu.cpp -- CPU-only z_v_grad_w stencil benchmark
+ * bench_cpu.cpp -- NUMA-aware CPU-only z_v_grad_w stencil benchmark
  *
  * Compile:  g++ -O3 -fopenmp -march=native -std=c++17 bench_cpu.cpp -o bench_cpu
  */
@@ -10,6 +10,19 @@
 #include <cstring>
 #include <ctime>
 #include <utility>
+
+/* ================================================================ */
+/*  Map variant + parallelization -> SchedKind                       */
+/*                                                                   */
+/*  cpu_par_for:                                                     */
+/*    V<=2: omp for schedule(static) over jk -> SCHED_JK_OUTER      */
+/*    V> 2: omp for schedule(static) over je -> SCHED_JE_OUTER      */
+/*                                                                   */
+/*  cpu_collapse2: always SCHED_COLLAPSE2                            */
+/* ================================================================ */
+static SchedKind sched_for_par_for(int V) {
+    return (V <= 2) ? SCHED_JK_OUTER : SCHED_JE_OUTER;
+}
 
 /* ================================================================ */
 /*  CPU kernels                                                      */
@@ -119,10 +132,10 @@ static bool verify(const double* got, const double* ref, size_t n,
 }
 
 /* ================================================================ */
-/*  Cache-flush: 2-D Jacobi stencil on persistent static buffers     */
+/*  Cache-flush: 2-D Jacobi on NUMA-aware persistent buffers         */
 /* ================================================================ */
 
-static constexpr int FLUSH_N = 8192*4;
+static constexpr int FLUSH_N = 8192 * 4;
 static constexpr int FLUSH_STEPS = 3;
 
 static double* flush_buf0 = nullptr;
@@ -134,8 +147,9 @@ static void flush_caches()
 
     if (!inited) {
         size_t n = (size_t)FLUSH_N * FLUSH_N;
-        flush_buf0 = new double[n];
-        flush_buf1 = new double[n];
+        flush_buf0 = numa_alloc_unfaulted<double>(n);
+        flush_buf1 = numa_alloc_unfaulted<double>(n);
+        /* First-touch with schedule(static) so pages are distributed */
         #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < n; i++) {
             uint64_t h = splitmix64(12345ULL + (uint64_t)i);
@@ -196,31 +210,39 @@ int main() {
         bd.alloc(N, nlev);
         bd.fill(nlev);
 
-        /* host reference buffer (computed once per nlev,dist,V) */
-        double* h_ref = new double[bd.sz2d];
+        /* NUMA-placed reference buffer */
+        double* h_ref = numa_alloc_unfaulted<double>(bd.sz2d);
+        #pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < bd.sz2d; i++)
+            h_ref[i] = 0.0;
 
         for (int di = 0; di < 4; di++) {
             CellDist dist = (CellDist)di;
             gen_cell_idx_logical(cell_logical, N, dist, rng);
 
             for (int V = 1; V <= 4; V++) {
-                bd.set_variant(V, cell_logical, vd.logical);
 
-                /* ---- compute serial reference ONCE ---- */
+                /* ------------------------------------------------
+                 * Initial setup: place pages for omp_for schedule
+                 * ------------------------------------------------ */
+                SchedKind par_sched = sched_for_par_for(V);
+                bd.set_variant(V, cell_logical, vd.logical, par_sched);
+
+                /* compute serial reference once */
                 cpu_reference_v(V,
                     h_ref, bd.h_vn_ie, bd.inv_dual,
                     bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                     bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
-                    flush_caches();
+                flush_caches();
 
-                /* ---- omp parallel for ---- */
+                /* ---- omp parallel for (pages already placed) ---- */
                 for (int r = 0; r < WARMUP; r++) {
                     flush_caches();
                     cpu_par_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
                 }
-                    flush_caches();
+                flush_caches();
 
                 /* verify omp_for after warmup */
                 {
@@ -248,17 +270,20 @@ int main() {
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_for,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
                     flush_caches();
-
                 }
 
-                /* ---- omp collapse(2) ---- */
+                /* ------------------------------------------------
+                 * Redistribute pages for collapse(2) schedule
+                 * ------------------------------------------------ */
+                bd.change_schedule(SCHED_COLLAPSE2);
+
+                /* ---- omp collapse(2) (pages now placed for collapse) ---- */
                 for (int r = 0; r < WARMUP; r++) {
                     flush_caches();
                     cpu_col_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
                     flush_caches();
-
                 }
 
                 /* verify collapse(2) after warmup */
@@ -270,9 +295,13 @@ int main() {
                         printf("VERIFY FAIL: nlev=%d dist=%-12s V=%d "
                                "collapse2  fails=%d max_rel=%.3e\n",
                                nlev, dist_name[di], V, n_fail, max_rel);
+                    else
+                        printf("VERIFY OK:   nlev=%d dist=%-12s V=%d "
+                               "collapse2  max_rel=%.3e\n",
+                               nlev, dist_name[di], V, max_rel);
                 }
-                    flush_caches();
-                
+                flush_caches();
+
                 for (int r = 0; r < NRUNS; r++) {
                     flush_caches();
                     auto t0 = std::chrono::high_resolution_clock::now();
@@ -284,25 +313,28 @@ int main() {
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_collapse2,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
                     flush_caches();
-                    
                 }
-                    flush_caches();
+                flush_caches();
 
                 printf("Done: nlev=%d  dist=%-12s  V=%d\n",
                        nlev, dist_name[di], V);
                 fflush(fcsv);
             }
         }
-        delete[] h_ref;
+        numa_dealloc(h_ref, bd.sz2d);
         bd.free_all();
     }
+
+    /* clean up flush buffers */
+    numa_dealloc(flush_buf0, (size_t)FLUSH_N * FLUSH_N);
+    numa_dealloc(flush_buf1, (size_t)FLUSH_N * FLUSH_N);
 
     vd.free_all();
     delete[] cell_logical;
     fclose(fcsv);
 
     printf("\nResults written to z_v_grad_w_cpu.csv\n");
-    printf("Total rows: 2 nlevs x 4 dists x 4 variants x 2 omp x %d = %d\n",
-           NRUNS, 2 * 4 * 4 * 2 * NRUNS);
+    printf("Total rows: %d nlevs x 4 dists x 4 variants x 2 omp x %d = %d\n",
+           N_NLEVS, NRUNS, N_NLEVS * 4 * 4 * 2 * NRUNS);
     return 0;
 }
