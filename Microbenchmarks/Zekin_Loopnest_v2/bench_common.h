@@ -65,6 +65,35 @@ static void numa_dealloc(T* p, size_t count)
 }
 
 /* ================================================================ */
+/*  2D index helpers                                                 */
+/* ================================================================ */
+
+#ifdef __HIP_PLATFORM_AMD__
+#define HD __host__ __device__ __forceinline__
+#else
+#ifdef __CUDACC__
+#define HD __host__ __device__ __forceinline__
+#else
+#define HD inline
+#endif
+#endif
+
+/* compute-array:  V1,V2 -> (je,jk),   V3,V4 -> (jk,je) */
+template<int V>
+HD int IC(int je, int jk, int N, int nlev) {
+    if constexpr (V <= 2) return je + jk * N;
+    else                  return jk + je * nlev;
+}
+
+/* neighbor-table (2 neighbors per edge):
+   V1,V3 -> (je,n)    V2,V4 -> (n,je) */
+template<int V>
+HD int IN(int je, int n, int N) {
+    if constexpr (V == 1 || V == 3) return je + n * N;
+    else                            return n + je * 2;
+}
+
+/* ================================================================ */
 /*  Schedule types -- describes how a compute kernel iterates        */
 /* ================================================================ */
 enum SchedKind {
@@ -180,35 +209,6 @@ static int* redistribute_idx_rt(int V, const int* src, int N,
         case 4: return redistribute_idx<4>(src, N, target);
     }
     return nullptr;
-}
-
-/* ================================================================ */
-/*  2D index helpers                                                 */
-/* ================================================================ */
-
-#ifdef __HIP_PLATFORM_AMD__
-#define HD __host__ __device__ __forceinline__
-#else
-#ifdef __CUDACC__
-#define HD __host__ __device__ __forceinline__
-#else
-#define HD inline
-#endif
-#endif
-
-/* compute-array:  V1,V2 -> (je,jk),   V3,V4 -> (jk,je) */
-template<int V>
-HD int IC(int je, int jk, int N, int nlev) {
-    if constexpr (V <= 2) return je + jk * N;
-    else                  return jk + je * nlev;
-}
-
-/* neighbor-table (2 neighbors per edge):
-   V1,V3 -> (je,n)    V2,V4 -> (n,je) */
-template<int V>
-HD int IN(int je, int n, int N) {
-    if constexpr (V == 1 || V == 3) return je + n * N;
-    else                            return n + je * 2;
 }
 
 /* ================================================================ */

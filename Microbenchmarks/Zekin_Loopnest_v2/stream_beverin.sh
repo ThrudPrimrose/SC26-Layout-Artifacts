@@ -1,19 +1,16 @@
 #!/bin/bash
-#SBATCH --job-name=zekin_b_c
+#SBATCH --job-name=str
 #SBATCH --nodes=1
 #SBATCH --partition=mi300
-#SBATCH --time=04:00:00
-#SBATCH --output=zekin_b_c_%j.out
-#SBATCH --error=zekin_b_c_%j.err
+#SBATCH --time=00:15:00
+#SBATCH --output=str_%j.out
+#SBATCH --error=str_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
 
 # -------------------------------
 # OpenMP configuration
 # -------------------------------
-
-
-
 
 export OMP_DISPLAY_ENV=TRUE
 
@@ -68,18 +65,10 @@ export OMP_NUM_THREADS=96
 export OMP_PLACES="{0}:24:1,{24}:24:1,{48}:24:1,{72}:24:1"
 export OMP_SCHEDULE=static
 export OMP_PROC_BIND=close
+
 # Strong pinning via Slurm
 export SLURM_CPU_BIND=cores
 
-ARCH=${HIP_ARCH:-gfx942}
-echo "Building for $ARCH"
-g++ -O3 -std=c++17 \
-    -march=native \
-    -fopenmp \
-    -ffast-math \
-    -mtune=native \
-    -fno-vect-cost-model \
-    -ftree-vectorize \
-    -o bench_cpu bench_cpu.cpp
+gcc -O3 -march=native -fopenmp -o numa_triad numa_triad.c -lnuma
 
-./bench_cpu
+./numa_triad
