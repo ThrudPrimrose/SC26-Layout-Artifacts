@@ -1,17 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=b_gpu_transpose
+#SBATCH --job-name=zekin_b
 #SBATCH --nodes=1
 #SBATCH --partition=mi300
 #SBATCH --time=04:00:00
-#SBATCH --output=beverin_gpu_transpose_%j.out
-#SBATCH --error=beverin_gpu_transpose_%j.err
+#SBATCH --output=zekin_b_%j.out
+#SBATCH --error=zekin_b_%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=128
+#SBATCH --cpus-per-task=192
 
 # -------------------------------
 # OpenMP configuration
 # -------------------------------
-export OMP_NUM_THREADS=64
+export OMP_NUM_THREADS=96
 export OMP_PROC_BIND=spread
 export OMP_PLACES=cores
 
