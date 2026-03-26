@@ -12,11 +12,9 @@
 # OpenMP configuration
 # -------------------------------
 export OMP_NUM_THREADS=96
-export OMP_PROC_BIND=spread
-export OMP_PLACES=cores
+export OMP_PLACES="{0}:24:1,{24}:24:1,{48}:24:1,{72}:24:1"
+export OMP_PROC_BIND=close
 
-# Strong pinning via Slurm
-export SLURM_CPU_BIND=cores
 
 export OMP_DISPLAY_ENV=TRUE
 
@@ -67,6 +65,10 @@ export LD_LIBRARY_PATH=$LLVM_HOME/lib:$LLVM_HOME/lib64:$LD_LIBRARY_PATH
 export CPATH=$LLVM_HOME/include:$CPATH
 export LIBRARY_PATH=$LLVM_HOME/lib:$LLVM_HOME/lib64:$LIBRARY_PATH
 
+export OMP_NUM_THREADS=96
+export OMP_PLACES="{0}:24:1,{24}:24:1,{48}:24:1,{72}:24:1"
+export OMP_SCHEDULE=static
+export OMP_PROC_BIND=close
 
 ARCH=${HIP_ARCH:-gfx942}
 echo "Building for $ARCH"
