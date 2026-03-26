@@ -253,6 +253,60 @@ static void launch_gpu_v(int V, int cfg,
     }
 }
 
+__global__ void stencil_step(double* A, double* B, int N)
+{
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (i >= 1 && i < N-1 && j >= 1 && j < N-1) {
+        B[i * N + j] = 0.25 * (
+            A[(i-1)*N + j] + A[(i+1)*N + j] +
+            A[i*N + (j-1)] + A[i*N + (j+1)]);
+    }
+}
+
+static void flush_caches_gpu()
+{
+    static bool inited = false;
+
+    double *h_A = flush_buf0;
+    double *h_B = flush_buf1;
+
+    size_t bytes = FLUSH_N * FLUSH_N * sizeof(double);
+
+    if (!inited) {
+        srand(12345);
+        for (int i = 0; i < FLUSH_N * FLUSH_N; i++)
+            h_A[i] = (double)rand() / RAND_MAX;
+        memcpy(h_B, h_A, bytes);
+        inited = true;
+    }
+
+    double *d_A, *d_B;
+    hipMalloc(&d_A, bytes);
+    hipMalloc(&d_B, bytes);
+
+    hipMemcpy(d_A, h_A, bytes, hipMemcpyHostToDevice);
+    hipMemcpy(d_B, h_B, bytes, hipMemcpyHostToDevice);
+
+    dim3 block(16, 16);
+    dim3 grid((FLUSH_N + block.x - 1) / block.x,
+              (FLUSH_N + block.y - 1) / block.y);
+
+    for (int s = 0; s < FLUSH_STEPS; s++) {
+        stencil_step<<<grid, block>>>(d_A, d_B, FLUSH_N);
+        std::swap(d_A, d_B);
+    }
+
+    hipMemcpy(h_A, d_A, bytes, hipMemcpyDeviceToHost);
+
+    int ri = rand() % (FLUSH_N * FLUSH_N);
+    printf("  [flush GPU] A[%d] = %.12e\n", ri, h_A[ri]);
+
+    hipFree(d_A);
+    hipFree(d_B);
+}
+
 /* ================================================================ */
 /*  main                                                             */
 /* ================================================================ */
@@ -334,12 +388,14 @@ int main() {
                 for (int ci = 0; ci < N_GCFG; ci++) {
                     /* warmup */
                     for (int r = 0; r < WARMUP; r++)
+                        flush_caches_gpu();
                         launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
                             d_w, d_cidx, d_z_vt_ie, d_inv_primal,
                             d_tangent, d_z_w_v, d_vidx, N, nlev);
                     CUDA_CHECK(hipDeviceSynchronize());
 
                     for (int r = 0; r < NRUNS; r++) {
+                        flush_caches_gpu();
                         CUDA_CHECK(hipEventRecord(ev0));
                         launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
                             d_w, d_cidx, d_z_vt_ie, d_inv_primal,
@@ -355,6 +411,7 @@ int main() {
                             GCFG[ci].tx, GCFG[ci].ty,
                             GCFG[ci].bx, GCFG[ci].by,
                             r, (double)ms);
+                        flush_caches_gpu();
                     }
                 }
 

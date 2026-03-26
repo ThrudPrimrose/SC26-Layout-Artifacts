@@ -6,6 +6,9 @@
 
 #include "bench_common.h"
 #include <omp.h>
+#include <cstdlib>
+#include <cstring>
+#include <utility>
 
 /* ================================================================ */
 /*  CPU kernels                                                      */
@@ -64,6 +67,44 @@ static cpu_fn_t cpu_col_tbl[] = {
 };
 
 /* ================================================================ */
+/*  Cache-flush: 2-D Jacobi stencil                                  */
+/* ================================================================ */
+
+static constexpr int FLUSH_N = 2048;          /* ~32 MB per grid */
+static constexpr int FLUSH_STEPS = 3;
+
+static double flush_buf0[FLUSH_N * FLUSH_N];
+static double flush_buf1[FLUSH_N * FLUSH_N];
+
+static void flush_caches()
+{
+    static bool inited = false;
+    double *A = flush_buf0, *B = flush_buf1;
+
+    if (!inited) {
+        srand(12345);
+        for (int i = 0; i < FLUSH_N * FLUSH_N; i++)
+            A[i] = (double)rand() / RAND_MAX;
+        std::memcpy(B, A, sizeof(flush_buf0));
+        inited = true;
+    }
+
+    for (int s = 0; s < FLUSH_STEPS; s++) {
+        #pragma omp parallel for schedule(static)
+        for (int i = 1; i < FLUSH_N - 1; i++)
+            for (int j = 1; j < FLUSH_N - 1; j++)
+                B[i * FLUSH_N + j] = 0.25 * (
+                    A[(i-1)*FLUSH_N + j] + A[(i+1)*FLUSH_N + j] +
+                    A[i*FLUSH_N + (j-1)] + A[i*FLUSH_N + (j+1)]);
+        std::swap(A, B);
+    }
+
+    /* print one random element so the compiler cannot elide the work */
+    int ri = rand() % (FLUSH_N * FLUSH_N);
+    printf("  [flush] A[%d] = %.12e\n", ri, A[ri]);
+}
+
+/* ================================================================ */
 /*  main                                                             */
 /* ================================================================ */
 int main() {
@@ -97,13 +138,14 @@ int main() {
             for (int V = 1; V <= 4; V++) {
                 bd.set_variant(V, cell_logical, vd.logical);
 
-                /* omp parallel for */
+                /* ---- omp parallel for ---- */
                 for (int r = 0; r < WARMUP; r++)
                     cpu_par_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
 
                 for (int r = 0; r < NRUNS; r++) {
+                    flush_caches();
                     auto t0 = std::chrono::high_resolution_clock::now();
                     cpu_par_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
@@ -114,14 +156,14 @@ int main() {
                             V, nlev, N, dist_name[di], r, dt);
                 }
 
-                /* omp collapse(2) */
-                /*
+                /* ---- omp collapse(2) ---- */
                 for (int r = 0; r < WARMUP; r++)
                     cpu_col_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
                         bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev);
 
                 for (int r = 0; r < NRUNS; r++) {
+                    flush_caches();
                     auto t0 = std::chrono::high_resolution_clock::now();
                     cpu_col_tbl[V-1](bd.h_out, bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx, bd.h_z_vt_ie, bd.inv_primal,
@@ -131,7 +173,6 @@ int main() {
                     fprintf(fcsv, "cpu,%d,%d,%d,%s,omp_collapse2,%d,%.9f\n",
                             V, nlev, N, dist_name[di], r, dt);
                 }
-                */
 
                 printf("Done: nlev=%d  dist=%-12s  V=%d\n",
                        nlev, dist_name[di], V);
