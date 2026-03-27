@@ -51,7 +51,7 @@
 #define PAGE_4K    4096
 #define PAGE_64K   65536
 #define PAGE_2M    (2*1024*1024)
-#define GiB        (1UL << 30)
+#define GiB        (1UL << 32)
 
 /* ================================================================ */
 /*  Allocation                                                       */

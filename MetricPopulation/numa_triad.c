@@ -27,7 +27,7 @@
  */
 
 #ifndef N_DEFAULT
-#define N_DEFAULT  (1L << 30)   /* ~1B doubles = 8 GiB per array */
+#define N_DEFAULT  (1L << 32)   /* ~2B doubles = 16 GiB per array */
 #endif
 #define NTIMES     100
 #define SCALAR     3.0
