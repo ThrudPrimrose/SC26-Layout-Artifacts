@@ -149,3 +149,5 @@ echo "  β  = stride (in CLs) where stride_lat shows a latency jump"
 echo "  α  = lat(stride < β) / lat(stride = β)"
 echo "  γ  = lat_remote / lat_local  (from numa_lat)"
 
+# MI300A Zen 4:  β = 4,  α = 0.38,  γ = 2.0
+# Grace Neoverse V2: β = 1024,  α = 0.52,  γ = 2.7
