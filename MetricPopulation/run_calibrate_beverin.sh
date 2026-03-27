@@ -8,6 +8,7 @@
 #SBATCH --error=numa_bench_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
+#SBATCH --exclusive
 
 PLATFORM="beverin"
 BINARY="./numa_calibrate"

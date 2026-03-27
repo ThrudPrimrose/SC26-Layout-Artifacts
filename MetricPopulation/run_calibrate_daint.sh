@@ -7,6 +7,7 @@
 #SBATCH --error=numa_bench_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=288
+#SBATCH --exclusive
 
 set -e
 PLATFORM="daint"
