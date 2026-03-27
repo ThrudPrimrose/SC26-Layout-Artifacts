@@ -23,6 +23,16 @@ gcc -O3 -std=c++17 \
     -ftree-vectorize \
      -o numa_calibrate numa_calibrate.c -lm
 
+
+gcc -O3 -std=c++17 \
+    -march=native \
+    -fopenmp \
+    -ffast-math \
+    -mtune=native \
+    -fno-vect-cost-model \
+    -ftree-vectorize \
+     -o numa_triad numa_triad.c -lm
+
 # ================================================================
 # Platform-specific configuration
 # ================================================================
@@ -122,6 +132,12 @@ echo "  Benchmark 5: NUMA BW matrix (thread → owner)"
 echo "================================================================"
 $BINARY numa_matrix | tee numa_matrix_${PLATFORM}.txt
 
+
+echo "================================================================"
+echo "  Benchmark 5: NUMA Triad copy"
+echo "================================================================"
+$BINARY numa_triad | tee numa_triad_${PLATFORM}.txt
+
 echo ""
 echo "=== Summary ==="
 echo "Results saved to: stride_bw_${PLATFORM}.txt, stride_lat_${PLATFORM}.txt,"
@@ -131,3 +147,4 @@ echo "To extract parameters:"
 echo "  β  = stride (in CLs) where stride_lat shows a latency jump"
 echo "  α  = lat(stride < β) / lat(stride = β)"
 echo "  γ  = lat_remote / lat_local  (from numa_lat)"
+
