@@ -1,403 +1,519 @@
 /*
- * calc_metrics.cpp -- Cost model metrics for z_v_grad_w stencil
+ * cost_metrics.cpp -- Cost-model metrics for the z_v_grad_w stencil
  *
- * Each "step" processes VW consecutive inner-loop iterations (vector tile).
- * The block set for a step is the union of blocks touched by all VW lanes.
+ * Implements the metrics from Section 3 (Cost Model):
+ *   μ(π,Φ)  = average new-block count   (Eq. 4)
+ *   Δ(π,Φ)  = average block distance    (Eq. 7)
  *
- *   mu    = avg new-block count per vector step
- *   delta = avg block distance of new blocks to previous step's set
- *   sigma = avg element stride (lane-0 to lane-0) across refs / 16
+ * Schedule π:  for jk in [0,nlev)  for je in [0,N)  { STENCIL_BODY }
  *
- * Configurations:
- *   CPU:  B=64,  VW=1 (scalar), VW=8 (AVX-512 doubles)
- *   GPU:  B=128, VW=1 (scalar), VW=32 (warp), VW=64 (AMD wavefront)
+ * Vectorized variants treat W consecutive je elements as one "iteration",
+ * so B_t collects blocks across all W lanes.
  *
- * Compile: g++ -O3 -std=c++17 -march=native calc_metrics.cpp -o calc_metrics
+ * Additionally reports per-reference element strides (|addr(je+1)-addr(je)|)
+ * and per-array aggregated μ / Δ for detailed analysis.
+ *
+ * Compile:  g++ -O3 -std=c++17 -o cost_metrics cost_metrics.cpp
+ * Run:      ./cost_metrics [N] [nlev]      (defaults: 8192, 96)
+ * Output:   CSV on stdout, progress on stderr
  */
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cmath>
-#include <cstring>
-#include <chrono>
-#include <random>
+#include <vector>
 #include <algorithm>
 #include <numeric>
-#include <cstdint>
-#include <vector>
+#include <random>
+#include <climits>
+#include <cassert>
+#include <cstring>
 
-/* ================================================================ */
-/*  constants                                                        */
-/* ================================================================ */
-static constexpr int NPROMA = 81920;
-static constexpr int NLEVS[] = {90, 96};
-static constexpr int N_NLEVS = 2;
-static constexpr int N_REFS  = 14;
+/* ============================================================
+ *  Layout index functions  (same semantics as bench_common.h)
+ * ============================================================ */
 
-/* ================================================================ */
-/*  index helpers                                                    */
-/* ================================================================ */
-static inline int ic(int V, int je, int jk, int N, int nlev) {
-    return (V <= 2) ? (je + jk * N) : (jk + je * nlev);
+// 2D compute-array index: (je, jk) -> flat
+//   V1,V2: row-of-je  = je + jk*N
+//   V3,V4: row-of-jk  = jk + je*nlev
+inline int IC(int V, int je, int jk, int N, int nlev) {
+    return (V <= 2) ? je + jk * N : jk + je * nlev;
 }
 
-static inline int in_idx(int V, int je, int n, int N) {
-    return (V == 1 || V == 3) ? (je + n * N) : (n + je * 2);
+// Neighbor-table index: (je, n) -> flat,  n ∈ {0,1}
+//   V1,V3: (je,n) = je + n*N
+//   V2,V4: (n,je) = n  + je*2
+inline int IN(int V, int je, int n, int N) {
+    return (V == 1 || V == 3) ? je + n * N : n + je * 2;
 }
 
-/* ================================================================ */
-/*  index generation                                                 */
-/* ================================================================ */
-enum CellDist { UNIFORM = 0, NORMAL1 = 1, NORMAL4 = 2, SEQUENTIAL = 3 };
-static const char* dist_name[] = {"uniform", "normal_var1", "normal_var4", "sequential"};
+/* ============================================================
+ *  Array identifiers and metadata
+ * ============================================================ */
 
-static void gen_permutation(int* arr, int N, std::mt19937& rng) {
-    std::iota(arr, arr + N, 0);
-    std::shuffle(arr, arr + N, rng);
+enum ArrID {
+    A_OUT = 0, A_VN_IE, A_W, A_Z_VT_IE, A_Z_W_V,
+    A_INV_DUAL, A_INV_PRIMAL, A_TANGENT,
+    A_CELL_IDX, A_VERT_IDX,
+    NUM_ARR
+};
+
+static const char* arr_name[] = {
+    "out","vn_ie","w","z_vt_ie","z_w_v",
+    "inv_dual","inv_primal","tangent","cell_idx","vert_idx"
+};
+
+// Element size in bytes (double=8, int=4)
+static const int ebytes[] = { 8,8,8,8,8, 8,8,8, 4,4 };
+
+/* ============================================================
+ *  Block address helper
+ *  block_addr = floor(element_index * elem_bytes / B)
+ * ============================================================ */
+
+static int BLOCK_BYTES = 64;  // cache line size, set at runtime
+
+// Return block address for element index of array
+inline int64_t blk(int elem_idx, int arr) {
+    return (int64_t)elem_idx * ebytes[arr] / BLOCK_BYTES;
 }
 
-static void gen_cell_idx_logical(int* idx, int N, CellDist dist, std::mt19937& rng) {
+/* ============================================================
+ *  Reference descriptors for a single scalar point (je, jk)
+ *
+ *  14 memory references in the stencil body:
+ *    0  out[c2d]                   (write, direct)
+ *    1  vn_ie[c2d]                 (read,  direct)
+ *    2  inv_dual[je]               (read,  direct)
+ *    3  w[IC(ci0,jk)]              (read,  indirect via cell_idx)
+ *    4  w[IC(ci1,jk)]              (read,  indirect via cell_idx)
+ *    5  z_vt_ie[c2d]               (read,  direct)
+ *    6  inv_primal[je]             (read,  direct)
+ *    7  tangent[je]                (read,  direct)
+ *    8  z_w_v[IC(vi0,jk)]          (read,  indirect via vert_idx)
+ *    9  z_w_v[IC(vi1,jk)]          (read,  indirect via vert_idx)
+ *   10  cell_idx[IN(je,0)]         (read,  direct)
+ *   11  cell_idx[IN(je,1)]         (read,  direct)
+ *   12  vert_idx[IN(je,0)]         (read,  direct)
+ *   13  vert_idx[IN(je,1)]         (read,  direct)
+ * ============================================================ */
+
+static constexpr int NREFS = 14;
+
+struct Ref { int arr; int64_t block; };
+
+// Fills refs[0..13] for one scalar point
+inline void collect_refs(int V, int je, int jk, int N, int nlev,
+                         const int* cidx, const int* vidx,
+                         Ref refs[NREFS])
+{
+    int c2d = IC(V, je, jk, N, nlev);
+    int ci0 = cidx[IN(V, je, 0, N)];
+    int ci1 = cidx[IN(V, je, 1, N)];
+    int vi0 = vidx[IN(V, je, 0, N)];
+    int vi1 = vidx[IN(V, je, 1, N)];
+
+    refs[ 0] = { A_OUT,        blk(c2d, A_OUT)       };
+    refs[ 1] = { A_VN_IE,      blk(c2d, A_VN_IE)     };
+    refs[ 2] = { A_INV_DUAL,   blk(je,  A_INV_DUAL)  };
+    refs[ 3] = { A_W,          blk(IC(V, ci0, jk, N, nlev), A_W) };
+    refs[ 4] = { A_W,          blk(IC(V, ci1, jk, N, nlev), A_W) };
+    refs[ 5] = { A_Z_VT_IE,    blk(c2d, A_Z_VT_IE)   };
+    refs[ 6] = { A_INV_PRIMAL, blk(je,  A_INV_PRIMAL) };
+    refs[ 7] = { A_TANGENT,    blk(je,  A_TANGENT)    };
+    refs[ 8] = { A_Z_W_V,      blk(IC(V, vi0, jk, N, nlev), A_Z_W_V) };
+    refs[ 9] = { A_Z_W_V,      blk(IC(V, vi1, jk, N, nlev), A_Z_W_V) };
+    refs[10] = { A_CELL_IDX,   blk(IN(V, je, 0, N), A_CELL_IDX) };
+    refs[11] = { A_CELL_IDX,   blk(IN(V, je, 1, N), A_CELL_IDX) };
+    refs[12] = { A_VERT_IDX,   blk(IN(V, je, 0, N), A_VERT_IDX) };
+    refs[13] = { A_VERT_IDX,   blk(IN(V, je, 1, N), A_VERT_IDX) };
+}
+
+// Also collect raw element indices (for stride computation)
+inline void collect_elem_indices(int V, int je, int jk, int N, int nlev,
+                                 const int* cidx, const int* vidx,
+                                 int elems[NREFS])
+{
+    int c2d = IC(V, je, jk, N, nlev);
+    int ci0 = cidx[IN(V, je, 0, N)];
+    int ci1 = cidx[IN(V, je, 1, N)];
+    int vi0 = vidx[IN(V, je, 0, N)];
+    int vi1 = vidx[IN(V, je, 1, N)];
+
+    elems[ 0] = c2d;
+    elems[ 1] = c2d;
+    elems[ 2] = je;
+    elems[ 3] = IC(V, ci0, jk, N, nlev);
+    elems[ 4] = IC(V, ci1, jk, N, nlev);
+    elems[ 5] = c2d;
+    elems[ 6] = je;
+    elems[ 7] = je;
+    elems[ 8] = IC(V, vi0, jk, N, nlev);
+    elems[ 9] = IC(V, vi1, jk, N, nlev);
+    elems[10] = IN(V, je, 0, N);
+    elems[11] = IN(V, je, 1, N);
+    elems[12] = IN(V, je, 0, N);
+    elems[13] = IN(V, je, 1, N);
+}
+
+static const char* ref_label[] = {
+    "out[c2d]","vn_ie[c2d]","inv_dual[je]",
+    "w[ci0,jk]","w[ci1,jk]",
+    "z_vt_ie[c2d]","inv_primal[je]","tangent[je]",
+    "z_w_v[vi0,jk]","z_w_v[vi1,jk]",
+    "cell_idx[je,0]","cell_idx[je,1]",
+    "vert_idx[je,0]","vert_idx[je,1]"
+};
+
+/* ============================================================
+ *  Per-array block set  (used as B_t)
+ *
+ *  Stored as sorted, deduplicated vectors per array.
+ *  Sizes are tiny (~2-4 entries per array per scalar iteration)
+ *  so linear operations are fast.
+ * ============================================================ */
+
+struct BlockSet {
+    std::vector<int64_t> a[NUM_ARR];   // blocks for each array
+
+    void clear() { for (int i = 0; i < NUM_ARR; i++) a[i].clear(); }
+
+    void add(int arr, int64_t b) { a[arr].push_back(b); }
+
+    // Sort + deduplicate each array's block list
+    void finalize() {
+        for (int i = 0; i < NUM_ARR; i++) {
+            auto& v = a[i];
+            std::sort(v.begin(), v.end());
+            v.erase(std::unique(v.begin(), v.end()), v.end());
+        }
+    }
+
+    int total() const {
+        int n = 0;
+        for (int i = 0; i < NUM_ARR; i++) n += (int)a[i].size();
+        return n;
+    }
+
+    bool contains(int arr, int64_t b) const {
+        return std::binary_search(a[arr].begin(), a[arr].end(), b);
+    }
+};
+
+/* ============================================================
+ *  Core metric computation
+ *
+ *  For a given (variant V, vector width W), iterates through
+ *  the full loop nest and accumulates:
+ *    mu_total    = average |N_t|  across all vector-iterations
+ *    delta_total = average rho_bar_t
+ *    mu_arr[a]   = per-array average new-block count
+ *    delta_arr[a]= per-array average block distance
+ * ============================================================ */
+
+struct MetricResult {
+    double mu_total, delta_total;
+    double mu_arr[NUM_ARR];
+    double delta_arr[NUM_ARR];
+    int64_t T;   // number of vector-iterations
+};
+
+MetricResult compute_metrics(int V, int W, int N, int nlev,
+                             const int* cidx, const int* vidx)
+{
+    MetricResult res = {};
+    BlockSet prev, curr;
+    Ref refs[NREFS];
+
+    int64_t T = 0;
+    double sum_new = 0, sum_rho = 0;
+    double sum_new_a[NUM_ARR] = {}, sum_rho_a[NUM_ARR] = {};
+
+    for (int jk = 0; jk < nlev; jk++) {
+        for (int je0 = 0; je0 + W <= N; je0 += W) {
+
+            /* --- Build B_t: collect blocks across all W lanes --- */
+            curr.clear();
+            for (int w = 0; w < W; w++) {
+                collect_refs(V, je0 + w, jk, N, nlev, cidx, vidx, refs);
+                for (int r = 0; r < NREFS; r++)
+                    curr.add(refs[r].arr, refs[r].block);
+            }
+            curr.finalize();
+
+            /* --- First iteration: N_1 = B_1, rho_1(b) = 1 --- */
+            if (T == 0) {
+                int nb = curr.total();
+                sum_new += nb;
+                sum_rho += 1.0;  // rho_bar_1 = 1 by convention
+                for (int a = 0; a < NUM_ARR; a++) {
+                    int na = (int)curr.a[a].size();
+                    sum_new_a[a] += na;
+                    sum_rho_a[a] += (na > 0) ? 1.0 : 0.0;
+                }
+            } else {
+                /* --- N_t = B_t \ B_{t-1} and distance rho_t --- */
+                int    new_total = 0;
+                double dist_total = 0.0;
+
+                for (int a = 0; a < NUM_ARR; a++) {
+                    int    new_a = 0;
+                    double dist_a = 0.0;
+
+                    for (int64_t b : curr.a[a]) {
+                        if (!prev.contains(a, b)) {
+                            new_a++;
+                            // rho_t(b) = min distance to any block in B_{t-1}[a]
+                            int64_t min_d = INT64_MAX;
+                            for (int64_t bp : prev.a[a])
+                                min_d = std::min(min_d, std::abs(b - bp));
+                            // If no previous blocks for this array, use 1
+                            dist_a += (min_d == INT64_MAX) ? 1.0 : (double)min_d;
+                        }
+                    }
+
+                    sum_new_a[a] += new_a;
+                    // Per-array rho_bar: mean distance of new blocks
+                    sum_rho_a[a] += (new_a > 0) ? dist_a / new_a : 0.0;
+
+                    new_total += new_a;
+                    dist_total += dist_a;
+                }
+
+                sum_new += new_total;
+                // rho_bar_t = mean distance over all new blocks (Eq. 6)
+                sum_rho += (new_total > 0) ? dist_total / new_total : 0.0;
+            }
+
+            T++;
+            std::swap(prev, curr);
+        }
+    }
+
+    /* --- Normalize: mu = (1/T) sum |N_t|,  delta = (1/T) sum rho_bar_t --- */
+    res.T = T;
+    res.mu_total    = sum_new / T;
+    res.delta_total = sum_rho / T;
+    for (int a = 0; a < NUM_ARR; a++) {
+        res.mu_arr[a]    = sum_new_a[a] / T;
+        res.delta_arr[a] = sum_rho_a[a] / T;
+    }
+    return res;
+}
+
+/* ============================================================
+ *  Per-reference stride computation
+ *
+ *  For each of the 14 references, compute the average absolute
+ *  element-index change between consecutive je iterations
+ *  (within the same jk row).  This captures spatial locality
+ *  at the element level, independent of blocking.
+ * ============================================================ */
+
+struct StrideResult {
+    double avg_stride[NREFS];  // average |elem(je+1) - elem(je)| per ref
+};
+
+StrideResult compute_strides(int V, int N, int nlev,
+                             const int* cidx, const int* vidx)
+{
+    StrideResult res = {};
+    double sum[NREFS] = {};
+    int64_t count = 0;
+
+    int prev_elem[NREFS], curr_elem[NREFS];
+
+    for (int jk = 0; jk < nlev; jk++) {
+        // First je in this row: just record, no stride yet
+        collect_elem_indices(V, 0, jk, N, nlev, cidx, vidx, prev_elem);
+
+        for (int je = 1; je < N; je++) {
+            collect_elem_indices(V, je, jk, N, nlev, cidx, vidx, curr_elem);
+            for (int r = 0; r < NREFS; r++)
+                sum[r] += std::abs(curr_elem[r] - prev_elem[r]);
+            memcpy(prev_elem, curr_elem, sizeof(prev_elem));
+            count++;
+        }
+    }
+
+    for (int r = 0; r < NREFS; r++)
+        res.avg_stride[r] = sum[r] / count;
+
+    return res;
+}
+
+/* ============================================================
+ *  Index array generation  (mirrors bench_common.h logic)
+ * ============================================================ */
+
+enum CellDist { UNIFORM=0, NORMAL1=1, NORMAL4=2, SEQUENTIAL=3 };
+static const char* dist_name[] = {"uniform","normal1","normal4","sequential"};
+
+// Generate cell_idx in logical (je*2+n) format, then scatter into variant layout
+static void gen_cell_idx(int* dst, int V, int N,
+                         CellDist dist, std::mt19937& rng)
+{
+    std::vector<int> logical(N * 2);
+
     switch (dist) {
     case UNIFORM: {
         std::uniform_int_distribution<int> ud(0, N - 1);
-        for (int i = 0; i < N; i++) { idx[i*2] = ud(rng); idx[i*2+1] = ud(rng); }
+        for (int i = 0; i < N; i++) {
+            logical[i*2+0] = ud(rng);
+            logical[i*2+1] = ud(rng);
+        }
         break;
     }
     case NORMAL1: {
         std::normal_distribution<double> nd(0.0, 1.0);
         for (int i = 0; i < N; i++) {
-            idx[i*2]   = (((i+1+(int)std::round(nd(rng))) % N) + N) % N;
-            idx[i*2+1] = (((i-1+(int)std::round(nd(rng))) % N) + N) % N;
+            int v0 = i + 1 + (int)std::round(nd(rng));
+            int v1 = i - 1 + (int)std::round(nd(rng));
+            logical[i*2+0] = ((v0 % N) + N) % N;
+            logical[i*2+1] = ((v1 % N) + N) % N;
         }
         break;
     }
     case NORMAL4: {
         std::normal_distribution<double> nd(0.0, 2.0);
         for (int i = 0; i < N; i++) {
-            idx[i*2]   = (((i+1+(int)std::round(nd(rng))) % N) + N) % N;
-            idx[i*2+1] = (((i-1+(int)std::round(nd(rng))) % N) + N) % N;
+            int v0 = i + 1 + (int)std::round(nd(rng));
+            int v1 = i - 1 + (int)std::round(nd(rng));
+            logical[i*2+0] = ((v0 % N) + N) % N;
+            logical[i*2+1] = ((v1 % N) + N) % N;
         }
         break;
     }
     case SEQUENTIAL:
-        for (int i = 0; i < N; i++) { idx[i*2] = (i+1)%N; idx[i*2+1] = (i+1)%N; }
+        for (int i = 0; i < N; i++) {
+            logical[i*2+0] = (i + 1) % N;
+            logical[i*2+1] = (i + 1) % N;
+        }
         break;
     }
-}
 
-static void layout_idx(int V, int* dst, const int* logical, int N) {
+    // Scatter logical[je*2+n] -> dst[IN(V, je, n, N)]
     for (int je = 0; je < N; je++) {
-        dst[in_idx(V, je, 0, N)] = logical[je*2];
-        dst[in_idx(V, je, 1, N)] = logical[je*2+1];
+        dst[IN(V, je, 0, N)] = logical[je*2+0];
+        dst[IN(V, je, 1, N)] = logical[je*2+1];
     }
 }
 
-/* ================================================================ */
-/*  array layout                                                     */
-/* ================================================================ */
-enum ArrID {
-    A_OUT=0, A_VNIE, A_W, A_ZVTIE, A_ZWV,
-    A_INVDUAL, A_INVPRIMAL, A_TANGENT,
-    A_CIDX, A_VIDX,
-    N_ARRAYS
-};
+// Generate vert_idx as two independent permutations
+static void gen_vert_idx(int* dst, int V, int N, std::mt19937& rng) {
+    std::vector<int> perm(N);
 
-static constexpr int ref_arr[N_REFS] = {
-    A_OUT, A_VNIE, A_INVDUAL,
-    A_W, A_W,
-    A_ZVTIE, A_INVPRIMAL, A_TANGENT,
-    A_ZWV, A_ZWV,
-    A_CIDX, A_CIDX,
-    A_VIDX, A_VIDX,
-};
+    std::iota(perm.begin(), perm.end(), 0);
+    std::shuffle(perm.begin(), perm.end(), rng);
+    for (int je = 0; je < N; je++)
+        dst[IN(V, je, 0, N)] = perm[je];
 
-struct ArrInfo {
-    int64_t base;
-    int     elem_size;
-};
-
-static void compute_bases(ArrInfo* info, int N, int nlev, int B) {
-    int64_t sizes[N_ARRAYS] = {
-        (int64_t)N*nlev*8, (int64_t)N*nlev*8, (int64_t)N*nlev*8,
-        (int64_t)N*nlev*8, (int64_t)N*nlev*8,
-        (int64_t)N*8, (int64_t)N*8, (int64_t)N*8,
-        (int64_t)N*2*4, (int64_t)N*2*4,
-    };
-    int esz[N_ARRAYS] = {8,8,8,8,8,8,8,8,4,4};
-    int64_t off = 0;
-    for (int i = 0; i < N_ARRAYS; i++) {
-        info[i].base = off;
-        info[i].elem_size = esz[i];
-        off += sizes[i];
-        off = ((off + B - 1) / B) * B;
-    }
+    std::iota(perm.begin(), perm.end(), 0);
+    std::shuffle(perm.begin(), perm.end(), rng);
+    for (int je = 0; je < N; je++)
+        dst[IN(V, je, 1, N)] = perm[je];
 }
 
-static inline int64_t baddr(const ArrInfo& a, int elem, int B) {
-    return (a.base + (int64_t)elem * a.elem_size) / B;
-}
-static inline int64_t byteaddr(const ArrInfo& a, int elem) {
-    return a.base + (int64_t)elem * a.elem_size;
-}
+/* ============================================================
+ *  Main
+ * ============================================================ */
 
-/* ================================================================ */
-/*  block set -- capacity for VW*14 refs (max ~900)                  */
-/* ================================================================ */
-struct BlockSet {
-    std::vector<int64_t> d;
-    BlockSet() { d.reserve(1024); }
-    void clear() { d.clear(); }
-    void add(int64_t v) { d.push_back(v); }  /* no dedup yet */
-    void finish() {
-        std::sort(d.begin(), d.end());
-        d.erase(std::unique(d.begin(), d.end()), d.end());
-    }
-    int size() const { return (int)d.size(); }
+int main(int argc, char** argv) {
+    int N    = (argc > 1) ? atoi(argv[1]) : 8192;
+    int nlev = (argc > 2) ? atoi(argv[2]) : 96;
 
-    bool contains(int64_t v) const {
-        auto it = std::lower_bound(d.begin(), d.end(), v);
-        return it != d.end() && *it == v;
-    }
-    int64_t nearest(int64_t v) const {
-        auto it = std::lower_bound(d.begin(), d.end(), v);
-        int64_t best = INT64_MAX;
-        if (it != d.end())
-            best = std::min(best, std::abs(*it - v));
-        if (it != d.begin()) {
-            --it;
-            best = std::min(best, std::abs(*it - v));
-        }
-        return best;
-    }
-};
+    int block_sizes[] = {64, 128};
+    int n_bsizes = 2;
 
-/* ================================================================ */
-/*  metrics                                                          */
-/* ================================================================ */
-struct Metrics {
-    double mu;
-    double delta;
-    double sigma;
-};
+    int vec_widths[] = {1, 2, 8, 32, 64};
+    int n_widths = 5;
 
-enum LoopOrder { KLON_FIRST = 0, KLEV_FIRST = 1 };
-static const char* loop_name[] = {"klon_first", "klev_first"};
-
-/* ================================================================ */
-/*  compute metrics with vector-width tiling                         */
-/*                                                                   */
-/*  VW = vector width (number of inner-loop iters per step)          */
-/*  One "step" = VW consecutive inner iterations at fixed outer      */
-/*  Block set = union of all blocks across VW lanes x 14 refs        */
-/*  sigma = stride of lane-0 address between consecutive steps       */
-/* ================================================================ */
-static Metrics compute(
-    int V, int N, int nlev, int B, int VW, int loop_order,
-    const int* cidx, const int* vidx)
-{
-    ArrInfo arr[N_ARRAYS];
-    compute_bases(arr, N, nlev, B);
-
-    int outer_n = (loop_order == KLON_FIRST) ? nlev : N;
-    int inner_n = (loop_order == KLON_FIRST) ? N    : nlev;
-
-    /* number of vector steps */
-    int inner_steps = (inner_n + VW - 1) / VW;
-    int64_t T_vec = (int64_t)outer_n * inner_steps;
-
-    double sum_new   = 0.0;
-    double sum_delta = 0.0;
-    double sum_sigma = 0.0;
-
-    BlockSet prev, cur;
-
-    /* lane-0 byte addresses from previous step (for sigma) */
-    int64_t prev_byte[N_REFS];
-    for (int i = 0; i < N_REFS; i++) prev_byte[i] = -1;
-
-    int64_t step = 0;
-    for (int outer = 0; outer < outer_n; outer++) {
-        for (int inner_base = 0; inner_base < inner_n; inner_base += VW, step++) {
-
-            int vw_end = std::min(inner_base + VW, inner_n);
-
-            cur.clear();
-            int64_t lane0_byte[N_REFS];
-            bool lane0_set = false;
-
-            /* collect blocks from all VW lanes */
-            for (int lane = inner_base; lane < vw_end; lane++) {
-                int je, jk;
-                if (loop_order == KLON_FIRST) {
-                    jk = outer; je = lane;
-                } else {
-                    je = outer; jk = lane;
-                }
-
-                int ci0 = cidx[in_idx(V, je, 0, N)];
-                int ci1 = cidx[in_idx(V, je, 1, N)];
-                int vi0 = vidx[in_idx(V, je, 0, N)];
-                int vi1 = vidx[in_idx(V, je, 1, N)];
-
-                int elem[N_REFS] = {
-                    ic(V, je,  jk, N, nlev),   /* 0  out */
-                    ic(V, je,  jk, N, nlev),   /* 1  vn_ie */
-                    je,                         /* 2  inv_dual */
-                    ic(V, ci0, jk, N, nlev),   /* 3  w[ci0] */
-                    ic(V, ci1, jk, N, nlev),   /* 4  w[ci1] */
-                    ic(V, je,  jk, N, nlev),   /* 5  z_vt_ie */
-                    je,                         /* 6  inv_primal */
-                    je,                         /* 7  tangent */
-                    ic(V, vi0, jk, N, nlev),   /* 8  z_w_v[vi0] */
-                    ic(V, vi1, jk, N, nlev),   /* 9  z_w_v[vi1] */
-                    in_idx(V, je, 0, N),       /* 10 cell_idx[0] */
-                    in_idx(V, je, 1, N),       /* 11 cell_idx[1] */
-                    in_idx(V, je, 0, N),       /* 12 vert_idx[0] */
-                    in_idx(V, je, 1, N),       /* 13 vert_idx[1] */
-                };
-
-                for (int r = 0; r < N_REFS; r++)
-                    cur.add(baddr(arr[ref_arr[r]], elem[r], B));
-
-                /* record lane 0 for sigma */
-                if (!lane0_set) {
-                    for (int r = 0; r < N_REFS; r++)
-                        lane0_byte[r] = byteaddr(arr[ref_arr[r]], elem[r]);
-                    lane0_set = true;
-                }
-            }
-            cur.finish();
-
-            if (step == 0) {
-                sum_new   += cur.size();
-                sum_delta += 1.0 * cur.size();
-            } else {
-                /* new blocks = cur \ prev */
-                int n_new = 0;
-                double step_dist = 0.0;
-                for (int i = 0; i < cur.size(); i++) {
-                    if (!prev.contains(cur.d[i])) {
-                        n_new++;
-                        step_dist += (double)prev.nearest(cur.d[i]);
-                    }
-                }
-                sum_new += n_new;
-                if (n_new > 0)
-                    sum_delta += step_dist / n_new;
-
-                /* sigma: lane-0 stride between consecutive steps */
-                double step_stride = 0.0;
-                int n_valid = 0;
-                for (int r = 0; r < N_REFS; r++) {
-                    if (prev_byte[r] >= 0) {
-                        step_stride += (double)std::abs(lane0_byte[r] - prev_byte[r]);
-                        n_valid++;
-                    }
-                }
-                if (n_valid > 0)
-                    sum_sigma += (step_stride / n_valid) / 16.0;
-            }
-
-            std::swap(prev, cur);
-            for (int r = 0; r < N_REFS; r++) prev_byte[r] = lane0_byte[r];
-        }
-    }
-
-    return {sum_new / T_vec, sum_delta / T_vec, sum_sigma / T_vec};
-}
-
-/* ================================================================ */
-/*  target configs                                                   */
-/* ================================================================ */
-struct Target {
-    int         B;       /* cache line bytes */
-    int         VW;      /* vector width (inner-loop tile) */
-    const char* label;
-};
-
-static constexpr Target TARGETS[] = {
-    { 64,  1, "cpu_scalar"},
-    { 64,  8, "cpu_avx512"},
-    { 64,  2, "cpu_neon"  },
-    {128,  1, "gpu_scalar"},
-    {128, 32, "gpu_warp32"},
-    {128, 64, "gpu_wave64"},
-};
-static constexpr int N_TARGETS = sizeof(TARGETS) / sizeof(TARGETS[0]);
-
-/* ================================================================ */
-/*  main                                                             */
-/* ================================================================ */
-int main() {
-    const int N = NPROMA;
     std::mt19937 rng(42);
 
-    int* vert_logical = new int[N * 2];
-    {
-        int* tmp = new int[N];
-        gen_permutation(tmp, N, rng);
-        for (int i = 0; i < N; i++) vert_logical[i*2] = tmp[i];
-        gen_permutation(tmp, N, rng);
-        for (int i = 0; i < N; i++) vert_logical[i*2+1] = tmp[i];
-        delete[] tmp;
-    }
+    // Allocate index arrays (big enough for any variant)
+    std::vector<int> cidx(N * 2), vidx(N * 2);
 
-    int* cell_logical = new int[N * 2];
-    int* cidx = new int[N * 2];
-    int* vidx = new int[N * 2];
+    /* --- CSV header --- */
+    printf("block_bytes,variant,dist,vector_width,T,"
+           "mu_total,delta_total");
+    for (int a = 0; a < NUM_ARR; a++)
+        printf(",mu_%s,delta_%s", arr_name[a], arr_name[a]);
+    printf("\n");
 
-    FILE* fcsv = fopen("metrics.csv", "w");
-    fprintf(fcsv,
-        "nlev,variant,cell_dist,loop_order,target,block_bytes,vector_width,"
-        "mu,delta,sigma\n");
+    /* --- Open CSV output --- */
+    FILE* csv = fopen("results_full.csv", "w");
+    if (!csv) { perror("fopen results_full.csv"); return 1; }
 
-    for (int nlev_i = 0; nlev_i < N_NLEVS; nlev_i++) {
-        int nlev = NLEVS[nlev_i];
+    /* --- CSV header --- */
+    fprintf(csv, "block_bytes,variant,dist,vec_width,T,"
+                 "mu_total,delta_total");
+    for (int a = 0; a < NUM_ARR; a++)
+        fprintf(csv, ",mu_%s,delta_%s", arr_name[a], arr_name[a]);
+    fprintf(csv, "\n");
 
-        for (int di = 0; di < 4; di++) {
-            CellDist dist = (CellDist)di;
-            gen_cell_idx_logical(cell_logical, N, dist, rng);
+    /* --- Main loop over configurations --- */
+    for (int bi = 0; bi < n_bsizes; bi++) {
+      BLOCK_BYTES = block_sizes[bi];
+      fprintf(stderr, "=== Block size B=%d bytes ===\n", BLOCK_BYTES);
 
-            for (int V = 1; V <= 4; V++) {
-                layout_idx(V, cidx, cell_logical, N);
-                layout_idx(V, vidx, vert_logical, N);
+      for (int V = 1; V <= 4; V++) {
+        for (int d = 0; d < 4; d++) {
+            CellDist dist = (CellDist)d;
 
-                for (int lo = 0; lo < 2; lo++) {
-                    for (int ti = 0; ti < N_TARGETS; ti++) {
-                        auto& tgt = TARGETS[ti];
+            rng.seed(42 + d);
+            gen_cell_idx(cidx.data(), V, N, dist, rng);
+            gen_vert_idx(vidx.data(), V, N, rng);
 
-                        auto t0 = std::chrono::steady_clock::now();
-                        Metrics m = compute(V, N, nlev,
-                                            tgt.B, tgt.VW, lo,
-                                            cidx, vidx);
-                        auto t1 = std::chrono::steady_clock::now();
-                        double sec = std::chrono::duration<double>(t1-t0).count();
+            for (int wi = 0; wi < n_widths; wi++) {
+                int W = vec_widths[wi];
 
-                        fprintf(fcsv,
-                            "%d,%d,%s,%s,%s,%d,%d,%.6f,%.6f,%.6f\n",
-                            nlev, V, dist_name[di], loop_name[lo],
-                            tgt.label, tgt.B, tgt.VW,
-                            m.mu, m.delta, m.sigma);
-                        fflush(fcsv);
+                fprintf(stderr, "  B=%-3d V%d  dist=%-10s  W=%-3d ...",
+                        BLOCK_BYTES, V, dist_name[d], W);
 
-                        printf("nlev=%d V=%d dist=%-12s loop=%-11s "
-                               "%-12s B=%3d VW=%2d  "
-                               "mu=%.3f delta=%.3f sigma=%.3f  (%.1fs)\n",
-                               nlev, V, dist_name[di], loop_name[lo],
-                               tgt.label, tgt.B, tgt.VW,
-                               m.mu, m.delta, m.sigma, sec);
-                    }
-                }
+                MetricResult m = compute_metrics(V, W, N, nlev,
+                                                 cidx.data(), vidx.data());
+
+                fprintf(stderr, "  mu=%.3f  delta=%.3f  (T=%ld)\n",
+                        m.mu_total, m.delta_total, (long)m.T);
+
+                /* CSV row */
+                fprintf(csv, "%d,V%d,%s,%d,%ld,%.6f,%.6f",
+                        BLOCK_BYTES, V, dist_name[d], W, (long)m.T,
+                        m.mu_total, m.delta_total);
+                for (int a = 0; a < NUM_ARR; a++)
+                    fprintf(csv, ",%.6f,%.6f", m.mu_arr[a], m.delta_arr[a]);
+                fprintf(csv, "\n");
             }
+        }
+      }
+    } /* block sizes */
+
+    fclose(csv);
+
+    /* --- Per-reference strides (independent of block size) --- */
+    fprintf(stderr, "\n=== Per-reference average element strides ===\n");
+    fprintf(stderr, "%-4s %-12s", "V", "dist");
+    for (int r = 0; r < NREFS; r++)
+        fprintf(stderr, "  %16s", ref_label[r]);
+    fprintf(stderr, "\n");
+
+    for (int V = 1; V <= 4; V++) {
+        for (int d = 0; d < 4; d++) {
+            CellDist dist = (CellDist)d;
+            rng.seed(42 + d);
+            gen_cell_idx(cidx.data(), V, N, dist, rng);
+            gen_vert_idx(vidx.data(), V, N, rng);
+
+            StrideResult s = compute_strides(V, N, nlev,
+                                             cidx.data(), vidx.data());
+
+            fprintf(stderr, "V%-3d %-12s", V, dist_name[d]);
+            for (int r = 0; r < NREFS; r++)
+                fprintf(stderr, "  %16.2f", s.avg_stride[r]);
+            fprintf(stderr, "\n");
         }
     }
 
-    fclose(fcsv);
-    delete[] vert_logical;
-    delete[] cell_logical;
-    delete[] cidx;
-    delete[] vidx;
-
-    printf("\nResults written to metrics.csv\n");
     return 0;
 }
