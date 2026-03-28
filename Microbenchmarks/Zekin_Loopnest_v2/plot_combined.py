@@ -3,15 +3,16 @@
 plot_best_schedule.py
 
 Top 2x2:  violins of bandwidth per platform.
-Bottom 1x2: scatter of cost metrics (mu, delta).
-            x = 4 combos: V1/Uniform, V1/Normal, V4/Uniform, V4/Normal
-            Bracket annotations show klon-first vs klev-first grouping.
+Bottom 1x2: scatter of cost metrics (mu, delta) with schedule dimension.
+            Filled markers = omp_for, open markers = omp_collapse2.
 """
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch, FancyArrowPatch
 from matplotlib.lines import Line2D
+import matplotlib.path as mpath
+import matplotlib.patches as mpatches
 import pandas as pd, numpy as np
 
 # ---- CONFIG ----
@@ -19,7 +20,7 @@ GPU_AMD_CSV = "z_v_grad_w_gpu_beverin.csv"
 GPU_NV_CSV  = "z_v_grad_w_gpu_daint.csv"
 CPU_AMD_CSV = "z_v_grad_w_cpu_beverin.csv"
 CPU_NV_CSV  = "z_v_grad_w_cpu_daint.csv"
-COST_CSV    = "metrics.csv"
+COST_CSV    = "results_full.csv"
 
 STREAM_PEAK = {
     "MI300A Zen Cores":   811.35*1e-3,
@@ -52,7 +53,6 @@ GRID = [
      ("H200",              GPU_NV_CSV, "config_label",    "1x1_32x16", "gpu_scalar")],
 ]
 
-LOOP_FOR_V = {1: "klon_first", 4: "klev_first"}
 VCOL = {1: "#e67e22", 4: "#2980b9"}
 VLAB = {1: "Klon-first Layout", 4: "Klev-first Layout"}
 
@@ -61,29 +61,21 @@ DIST_LABEL = {
     "normal_var1": r"Normal ($\sigma^2 = 1$)",
 }
 
-PLAT_STYLE = {
-    "MI300A Zen Cores":  {"color": "#e67e22", "marker": "o"},
-    "Grace Neoverse v2": {"color": "#2ecc71", "marker": "s"},
-    "MI300A":            {"color": "#e74c3c", "marker": "D"},
-    "H200":              {"color": "#3498db", "marker": "^"},
-}
-
-SCHED_SHORT = {
-    "omp_for":           "for",
-    "omp_collapse2":     "col2",
-    "opt_for":           "opt-for",
-    "opt_collapse_tile": "opt-col",
-}
-
-
 COMPUTE_VARIANTS = [
-    ("BlockWidth:8, ComputeWidth:1",  "cpu_scalar", 64, 1,   "#2c3e50", "o"),
-    ("BlockWidth:8, ComputeWidth:8",  "cpu_avx512", 64, 8,   "#e67e22", "s"),
-    ("BlockWidth:16, ComputeWidth:1", "gpu_scalar", 128, 1,  "#2ecc71", "D"),
-    ("BlockWidth:16, ComputeWidth:16","gpu_warp32", 128, 32, "#3498db", "^"),
-    ("BlockWidth:16, ComputeWidth:32","gpu_wave64", 128, 64, "#e74c3c", "P"),
+    ("BlockWidth:8, ComputeWidth:1",  "CPU_scalar", 64, 1,   "#2c3e50", "o"),
+    ("BlockWidth:8, ComputeWidth:8",  "CPU_AVX512", 64, 8,   "#e67e22", "s"),
+    ("BlockWidth:16, ComputeWidth:1", "GPU_scalar", 128, 1,  "#2ecc71", "D"),
+    ("BlockWidth:16, ComputeWidth:16","GPU_halfw",  128, 16, "#3498db", "^"),
+    ("BlockWidth:16, ComputeWidth:32","GPU_warp32", 128, 32, "#e74c3c", "P"),
 ]
 
+# Schedule visual encoding
+SCHED_STYLE = {
+    "omp_for":       {"fillstyle": "full",  "label": "omp_for"},
+    "omp_collapse2": {"fillstyle": "none",  "label": "collapse2"},
+}
+
+# x-axis: (layout, dist) → position
 COST_COMBOS = [
     (1, "uniform",    "Uniform"),
     (1, "normal_var1", r"Normal ($\sigma^2 = 1$)"),
@@ -95,6 +87,8 @@ BRACKET_GROUPS = [
     (0, 1, "Klon-First"),
     (2, 3, "Klev-First"),
 ]
+
+LOOP_FOR_V = {1: "klon_first", 4: "klev_first"}
 
 import argparse
 parser = argparse.ArgumentParser()
@@ -117,8 +111,7 @@ def compute_bandwidth(df):
 
 def pick_best_schedule(df_full, V, dist, nlev):
     sub = df_full[(df_full["variant"] == V) &
-                  (df_full["cell_dist"] == dist) &
-                  (df_full["nlev"] == nlev)].copy()
+                  (df_full["cell_dist"] == dist)].copy()
     if sub.empty:
         return None, sub
     sub["bandwidth"] = compute_bandwidth(sub)
@@ -143,53 +136,26 @@ def get_best_data(df_full, label, fcol, fval, V, dist, nlev):
         return fval, sub["bandwidth"].values
 
 def draw_bracket(ax, x_start, x_end, label, y_frac=-0.16, height=0.06):
-    """Draw a horizontal curly brace below the axis with a centered label."""
     inv = ax.transData + ax.transAxes.inverted()
     x0 = inv.transform((x_start, 0))[0]
     x1 = inv.transform((x_end, 0))[0]
     xm = (x0 + x1) / 2.0
-    w = x1 - x0
-
-    # Parametric curly brace: left half then right half
-    import matplotlib.path as mpath
-    import matplotlib.patches as mpatches
-
-    # Control points for curly brace (horizontal, opening downward)
-    y_top = y_frac
-    y_bot = y_frac - height
-    y_mid = (y_top + y_bot) / 2.0
-    q = w / 4.0  # quarter width
 
     verts = [
-        (x0, y_top),
-        (x0, y_mid),           # left arm down
-        (x0, y_bot),
-        (xm - 0.01, y_bot),   # to center tip
-        (xm, y_bot - height * 0.5),  # tip
-        (xm + 0.01, y_bot),   # from center tip
-        (x1, y_bot),
-        (x1, y_mid),          # right arm up
-        (x1, y_top),
+        (x0, y_frac), (x0, y_frac - height/2),
+        (x0, y_frac - height), (xm - 0.01, y_frac - height),
+        (xm, y_frac - height * 1.5),
+        (xm + 0.01, y_frac - height), (x1, y_frac - height),
+        (x1, y_frac - height/2), (x1, y_frac),
     ]
-    codes = [
-        mpath.Path.MOVETO,
-        mpath.Path.CURVE3,
-        mpath.Path.CURVE3,
-        mpath.Path.CURVE3,
-        mpath.Path.CURVE3,
-        mpath.Path.CURVE3,
-        mpath.Path.CURVE3,
-        mpath.Path.CURVE3,
-        mpath.Path.CURVE3,
-    ]
+    codes = [mpath.Path.MOVETO] + [mpath.Path.CURVE3] * 8
     path = mpath.Path(verts, codes)
     patch = mpatches.PathPatch(path, facecolor="none", edgecolor="black",
                                 lw=1.3, transform=ax.transAxes, clip_on=False)
     ax.add_patch(patch)
+    ax.text(xm, y_frac - height * 1.5 - 0.04, label,
+            transform=ax.transAxes, ha="center", va="top", fontsize=10)
 
-    ax.text(xm, y_bot - height * 0.5 - 0.04, label,
-            transform=ax.transAxes, ha="center", va="top",
-            fontsize=10)
 
 # ---- main ----
 def main():
@@ -207,12 +173,8 @@ def main():
     cost = pd.read_csv(COST_CSV)
 
     plt.rcParams.update({
-        "font.size": 14,
-        "axes.titlesize": 15,
-        "axes.labelsize": 14,
-        "xtick.labelsize": 12,
-        "ytick.labelsize": 12,
-        "legend.fontsize": 12,
+        "font.size": 14, "axes.titlesize": 15, "axes.labelsize": 14,
+        "xtick.labelsize": 12, "ytick.labelsize": 12, "legend.fontsize": 12,
     })
 
     if have_runtime:
@@ -221,19 +183,17 @@ def main():
                                    hspace=0.35, wspace=0.35,
                                    left=0.10, right=0.96)
         gs_bot = fig.add_gridspec(1, 2, top=0.40, bottom=0.24,
-                                   wspace=0.35,
-                                   left=0.10, right=0.96)
+                                   wspace=0.35, left=0.10, right=0.96)
         fig.suptitle("Semi-Structured Weather Stencil Pattern from ICON",
-                     fontsize=15, )
+                     fontsize=15)
     else:
         fig = plt.figure(figsize=(9, 4.5))
         gs_bot = fig.add_gridspec(1, 2, top=0.80, bottom=0.30,
-                                   wspace=0.35,
-                                   left=0.10, right=0.96)
-        fig.suptitle("Cost Metrics", fontsize=15, )
+                                   wspace=0.35, left=0.10, right=0.96)
+        fig.suptitle("Cost Metrics", fontsize=15)
 
     # =========================================================
-    #  TOP 2x2: violin plots
+    #  TOP 2x2: violin plots (unchanged)
     # =========================================================
     if have_runtime:
         for ri, row_data in enumerate(GRID):
@@ -273,23 +233,19 @@ def main():
                 from matplotlib.ticker import MaxNLocator
                 ax.yaxis.set_major_locator(MaxNLocator(nbins=6, min_n_ticks=5))
                 ax.margins(y=0.05)
-                ax.set_title(label, )
+                ax.set_title(label)
                 ax.grid(axis="y", alpha=0.3)
-                # --- NEW: add peak line and ylim(bottom=0) ---
-                print(f"Label: {label}, add_peak: {args.add_peak}")
-                print(STREAM_PEAK)
+
                 if args.add_peak and label in STREAM_PEAK:
                     peak = STREAM_PEAK[label]
                     ax.axhline(y=peak, color='red', linestyle='--',
-                               linewidth=1.5, alpha=0.7,
-                               label=f'Peak {peak:.1f} TB/s')
+                               linewidth=1.5, alpha=0.7)
                     ax.set_ylim(bottom=0)
                     x_min, x_max = ax.get_xlim()
-                    x_text = x_max - 0.02 * (x_max - x_min)  # small offset from right edge
-                    y_text = peak * 0.98
-                    ax.text(x_text, y_text, f'STREAM Peak: {peak:.1f} TB/s',
+                    ax.text(x_max - 0.02 * (x_max - x_min), peak * 0.98,
+                            f'STREAM Peak: {peak:.1f} TB/s',
                             ha='right', va='top', fontsize=9, color='red')
-        # Violin legend below top grid
+
         v_handles = [
             Patch(facecolor=VCOL[1], edgecolor="black", label=VLAB[1]),
             Patch(facecolor=VCOL[4], edgecolor="black", label=VLAB[4]),
@@ -298,42 +254,33 @@ def main():
                    loc='lower center', bbox_to_anchor=(0.5, 0.425),
                    ncol=2, framealpha=0.9)
 
-
     # =========================================================
-    #  BOTTOM 1x2: cost metric scatter
+    #  BOTTOM 1x2: cost metric scatter with schedule dimension
+    #
+    #  x-axis:  4 positions (klon/uni, klon/norm, klev/uni, klev/norm)
+    #  markers: compute variants (shape + color)
+    #  fill:    omp_for = filled, omp_collapse2 = open
     # =========================================================
-    n_combos = len(COST_COMBOS)
-    x_positions = np.arange(n_combos)
-    x_labels = [lbl for _, _, lbl in COST_COMBOS]
-    sep_x = 1.5
 
-    n_cv = len(COMPUTE_VARIANTS)
-    offsets = np.linspace(-0.25, 0.25, n_cv)
-
-    metrics_to_plot = [
-        ("delta", r"Avg. Block Distance $\Delta$"),
-        ("mu",    r"Avg. New-Block Count $\mu$"),
-    ]
-
-    # Explicit x-axis mapping
+    # Map (layout, dist) → x position
     x_map = {
         ("klon_first", "uniform"): 0,
-        ("klon_first", "normal_var1"): 1,
+        ("klon_first", "normal1"): 1,
         ("klev_first", "uniform"): 2,
-        ("klev_first", "normal_var1"): 3,
+        ("klev_first", "normal1"): 3,
     }
 
     xticks = [0, 1, 2, 3]
     xlabels = [
-        "Uniform",
-        "Normal\n($\\sigma^2 = 1$)",
-        "Uniform",
-        "Normal\n($\\sigma^2 = 1$)",
+        "Uniform", r"Normal" + "\n" + r"($\sigma^2 = 1$)",
+        "Uniform", r"Normal" + "\n" + r"($\sigma^2 = 1$)",
     ]
 
-    # offsets for compute variants (visual separation)
     n_cv = len(COMPUTE_VARIANTS)
-    offsets = np.linspace(-0.25, 0.25, n_cv)
+    schedules = ["omp_for", "omp_collapse2"]
+    # Offsets: compute variants spread, schedules stacked within
+    cv_offsets = np.linspace(-0.30, 0.30, n_cv)
+    sched_offsets = {"omp_for": -0.04, "omp_collapse2": 0.04}
 
     metrics_to_plot = [
         ("delta", r"Avg. Block Distance $\Delta$"),
@@ -343,91 +290,110 @@ def main():
     for mi, (mcol, mlab) in enumerate(metrics_to_plot):
         ax = fig.add_subplot(gs_bot[0, mi])
 
+        seen_labels = set()
+
         for cvi, (cv_label, cv_target, cv_block, cv_width, cv_color, cv_marker) in enumerate(COMPUTE_VARIANTS):
-            for lay, var in [("klon_first", 1), ("klev_first", 4)]:
-                xs, ys = [], []
-                V = var
-                for (_, dist, _) in COST_COMBOS:   # ignore V in the tuple
-                    key = (lay, dist)
-                    if key not in x_map:
-                        continue
-                    row = cost[
-                        (cost["variant"] == V) &
-                        (cost["cell_dist"] == dist) &
-                        (cost["target"] == cv_target) &
-                        (cost["nlev"] == NLEV) &
-                        (cost["loop_order"] == lay) &
-                        (cost["block_bytes"] == cv_block) &
-                        (cost["vector_width"] == cv_width)
-                    ]
-                    # now row should be exactly one entry
-                    if len(row) == 0:
-                        continue
-                    print(V, key, cv_label, row[mcol].values[0])
+            for sched in schedules:
+                sty = SCHED_STYLE[sched]
 
-                    assert len(row) == 1, f"Non-unique row for {key}, {cv_target}"
-                    x = x_map[key] + offsets[cvi]
-                    y = row[mcol].values[0]
-                    print(x, y)
-                    xs.append(x)
-                    ys.append(y)
-                    
+                for lay, var in [("klon_first", 1), ("klev_first", 4)]:
+                    xs, ys = [], []
 
-                if len(xs) > 0:
-                    ax.scatter(
-                        xs, ys,
-                        c=[cv_color],
-                        marker=cv_marker,
-                        s=65,
-                        alpha=0.85,
-                        edgecolors="black",
-                        linewidths=0.4,
-                        label=cv_label,
-                        zorder=3
-                    )
+                    for dist_csv in ["uniform", "normal1"]:
+                        key = (lay, dist_csv)
+                        if key not in x_map:
+                            continue
 
-        # separator
+                        row = cost[
+                            (cost["variant"] == f"V{var}") &
+                            (cost["dist"] == dist_csv) &
+                            (cost["target"] == cv_target) &
+                            (cost["schedule"] == sched) &
+                            (cost["block_bytes"] == cv_block) &
+                            (cost["vec_width"] == cv_width)
+                        ]
+                        if len(row) == 0:
+                            continue
+                        if len(row) > 1:
+                            row = row.iloc[:1]
+
+                        x = x_map[key] + cv_offsets[cvi] + sched_offsets[sched]
+                        y = row[mcol].values[0]
+                        if np.isfinite(y) and y > 0:
+                            xs.append(x)
+                            ys.append(y)
+
+                    if len(xs) > 0:
+                        label_key = (cv_label, sched)
+                        lbl = None
+                        if label_key not in seen_labels:
+                            seen_labels.add(label_key)
+                            # Only add to legend once per combo
+
+                        fc = cv_color if sty["fillstyle"] == "full" else "none"
+                        ax.scatter(
+                            xs, ys,
+                            facecolors=[fc] * len(xs),
+                            edgecolors=[cv_color] * len(xs),
+                            marker=cv_marker,
+                            s=65,
+                            alpha=0.85,
+                            linewidths=1.2 if sty["fillstyle"] == "none" else 0.4,
+                            zorder=3,
+                        )
+
+        # Separator between layouts
         ax.axvline(x=1.5, color="gray", linestyle="--",
-                linewidth=0.8, alpha=0.6)
+                   linewidth=0.8, alpha=0.6)
 
         ax.set_xticks(xticks)
         ax.set_xticklabels(xlabels)
-
         ax.set_title(mlab, fontsize=13)
         ax.set_ylabel("Metric Value")
         ax.set_yscale("log")
-
         ax.margins(y=0.05)
         ax.grid(axis="y", alpha=0.3, which="both")
         ax.set_xlim(-0.5, 3.5)
 
-        # brackets
         for start, end, blabel in BRACKET_GROUPS:
-            draw_bracket(ax, start-0.28, end+0.28, blabel, y_frac=-0.3, height=0.04)
+            draw_bracket(ax, start - 0.28, end + 0.28, blabel,
+                         y_frac=-0.3, height=0.04)
 
-   # Single compute-variant legend below bottom subplots
+    # ---- Legends ----
+    # Compute variant legend (shape + color)
     cv_handles = [
         Line2D([0], [0], marker=m, color="none",
                markerfacecolor=c, markeredgecolor="black",
                markersize=9, label=lab)
         for lab, _, _, _, c, m in COMPUTE_VARIANTS
     ]
-    fig.legend(handles=cv_handles,
-               loc='lower center', bbox_to_anchor=(0.52, 0.06),
-               ncol=2, )
+    # Schedule legend (filled vs open)
+    sched_handles = [
+        Line2D([0], [0], marker="o", color="none",
+               markerfacecolor="gray", markeredgecolor="black",
+               markersize=8, label="omp_for (filled)"),
+        Line2D([0], [0], marker="o", color="none",
+               markerfacecolor="none", markeredgecolor="gray",
+               markeredgewidth=1.5,
+               markersize=8, label="collapse2 (open)"),
+    ]
+
+    all_handles = cv_handles + sched_handles
+    fig.legend(handles=all_handles,
+               loc='lower center', bbox_to_anchor=(0.52, 0.04),
+               ncol=3, fontsize=10)
 
     fig.tight_layout()
-    if args.add_peak:
-        PPref = "_w_stream_peak"
-    else:
-        PPref = ""
-    fig.savefig(f"{OUT_STEM}{PPref}.png", dpi=180)
-    fig.savefig(f"{OUT_STEM}{PPref}.pdf", dpi=180)
+    sfx = "_w_stream_peak" if args.add_peak else ""
+    fig.savefig(f"{OUT_STEM}{sfx}.png", dpi=180, bbox_inches='tight')
+    fig.savefig(f"{OUT_STEM}{sfx}.pdf", dpi=180, bbox_inches='tight')
 
+    # ---- Summary table ----
     if have_runtime:
         print("\nBest schedule selection:")
-        print(f"{'Platform':<22} {'Variant':<8} {'Distribution':<20} {'Best Schedule':<22} {'Median TB/s':<12}")
-        print("-" * 84)
+        fmt = f"{'Platform':<22} {'Variant':<8} {'Distribution':<20} {'Best Schedule':<22} {'Median TB/s':<12}"
+        print(fmt)
+        print("-" * len(fmt))
         for row_data in GRID:
             for label, csv, fcol, fval, _ in row_data:
                 if fcol != "parallelization":
@@ -441,7 +407,7 @@ def main():
                             print(f"{label:<22} V{V:<7} {dist:<20} {best_par:<22} {med:.4f}")
         print()
 
-    print(f"Saved: {OUT_STEM}.png, {OUT_STEM}.pdf")
+    print(f"Saved: {OUT_STEM}{sfx}.png, {OUT_STEM}{sfx}.pdf")
 
 if __name__ == "__main__":
     main()

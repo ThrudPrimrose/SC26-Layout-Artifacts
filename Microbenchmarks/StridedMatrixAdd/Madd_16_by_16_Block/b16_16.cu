@@ -71,14 +71,21 @@ struct ColMajor {
  *
  *  TILE_R x TILE_C tile starting at (bi, bj) in global coords.
  *  nthd threads cooperatively iterate over TILE_R*TILE_C elements.
- *  Iteration order is chosen at compile time to match the source
- *  layout for coalesced global memory access:
- *    row-major source: consecutive threads -> consecutive j (cols)
- *    col-major source: consecutive threads -> consecutive i (rows)
- *  Shared memory is always row-major: smem[li * TILE_C + lj].
+ *
+ *  Global memory: unit stride guaranteed.
+ *    row-major source: consecutive threads -> consecutive j -> stride-1
+ *    col-major source: consecutive threads -> consecutive i -> stride-1
+ *
+ *  Shared memory: row-major with padded stride (STRIDE = TILE_C + 1)
+ *    to eliminate bank conflicts when the global iteration order
+ *    walks down columns (col-major load/store).
+ *    smem[li * STRIDE + lj]
+ *
+ *  Callers must declare smem as:  double smem[TILE_R * STRIDE]
+ *  where STRIDE = TILE_C + 1.
  * ================================================================ */
 
-template<int TILE_R, int TILE_C, typename Layout>
+template<int TILE_R, int TILE_C, int STRIDE, typename Layout>
 __device__ __forceinline__
 void coop_load(double* __restrict__ smem,
                const double* __restrict__ gmem,
@@ -89,20 +96,20 @@ void coop_load(double* __restrict__ smem,
     for (int k = tid; k < TELEMS; k += nthd) {
         int li, lj;
         if constexpr (Layout::is_col) {
-            /* col-major: consecutive threads -> consecutive i -> consecutive addr */
+            /* col-major global: consecutive k -> consecutive i -> unit stride */
             li = k % TILE_R;
             lj = k / TILE_R;
         } else {
-            /* row-major: consecutive threads -> consecutive j -> consecutive addr */
+            /* row-major global: consecutive k -> consecutive j -> unit stride */
             li = k / TILE_C;
             lj = k % TILE_C;
         }
         int gi = bi + li, gj = bj + lj;
-        smem[li * TILE_C + lj] = (gi < M && gj < N) ? gmem[lay(gi, gj)] : 0.0;
+        smem[li * STRIDE + lj] = (gi < M && gj < N) ? gmem[lay(gi, gj)] : 0.0;
     }
 }
 
-template<int TILE_R, int TILE_C, typename Layout>
+template<int TILE_R, int TILE_C, int STRIDE, typename Layout>
 __device__ __forceinline__
 void coop_store(const double* __restrict__ smem,
                 double* __restrict__ gmem,
@@ -121,7 +128,7 @@ void coop_store(const double* __restrict__ smem,
         }
         int gi = bi + li, gj = bj + lj;
         if (gi < M && gj < N)
-            gmem[lay(gi, gj)] = smem[li * TILE_C + lj];
+            gmem[lay(gi, gj)] = smem[li * STRIDE + lj];
     }
 }
 
@@ -289,22 +296,23 @@ __global__ void __launch_bounds__(BX * BY)
 kernel_smem(const double* __restrict__ A, double* __restrict__ B,
             LA la, LB lb, int M, int N)
 {
-    __shared__ double A_s[BX * BY];
-    __shared__ double B_s[BX * BY];
+    constexpr int S = BX + 1;  /* padded stride */
+    __shared__ double A_s[BY * S];
+    __shared__ double B_s[BY * S];
 
     const int bj = blockIdx.x * BX, bi = blockIdx.y * BY;
     const int tid  = threadIdx.y * BX + threadIdx.x;
     const int nthd = BX * BY;
 
-    coop_load<BY, BX>(A_s, A, la, bi, bj, M, N, tid, nthd);
-    coop_load<BY, BX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+    coop_load<BY, BX, S>(A_s, A, la, bi, bj, M, N, tid, nthd);
+    coop_load<BY, BX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
     __syncthreads();
 
-    const int si = threadIdx.y * BX + threadIdx.x;
+    const int si = threadIdx.y * S + threadIdx.x;
     B_s[si] = ALPHA * (A_s[si] + B_s[si]);
     __syncthreads();
 
-    coop_store<BY, BX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+    coop_store<BY, BX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
 }
 
 /* 7: smem_flat_row -- 16x16 tile via 256x1 block, row-major tile order */
@@ -313,32 +321,32 @@ __global__ void __launch_bounds__(256)
 kernel_smem_flat_row(const double* __restrict__ A, double* __restrict__ B,
                      LA la, LB lb, int M, int N)
 {
-    __shared__ double A_s[BX * BY];
-    __shared__ double B_s[BX * BY];
+    constexpr int S = BX + 1;
+    __shared__ double A_s[BY * S];
+    __shared__ double B_s[BY * S];
 
     const int tiles_j = (N + BX - 1) / BX;
     const int tiles_i = (M + BY - 1) / BY;
     const int total_tiles = tiles_i * tiles_j;
     const int tid = threadIdx.x;
     const int nthd = 256;
-    /* compute index within 16x16 tile for this thread */
-    const int cli = tid / BX;
-    const int clj = tid % BX;
 
     for (int t = blockIdx.x; t < total_tiles; t += gridDim.x) {
         int ti = t / tiles_j;
         int tj = t % tiles_j;
         int bi = ti * BY, bj = tj * BX;
 
-        coop_load<BY, BX>(A_s, A, la, bi, bj, M, N, tid, nthd);
-        coop_load<BY, BX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+        coop_load<BY, BX, S>(A_s, A, la, bi, bj, M, N, tid, nthd);
+        coop_load<BY, BX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
         __syncthreads();
 
-        /* 256 threads, 256 elements: 1:1 */
-        B_s[tid] = ALPHA * (A_s[tid] + B_s[tid]);
+        /* 256 threads, 256 elements: remap tid -> (li,lj) in padded smem */
+        int cli = tid / BX;
+        int clj = tid % BX;
+        B_s[cli * S + clj] = ALPHA * (A_s[cli * S + clj] + B_s[cli * S + clj]);
         __syncthreads();
 
-        coop_store<BY, BX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+        coop_store<BY, BX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
         __syncthreads();
     }
 }
@@ -349,8 +357,9 @@ __global__ void __launch_bounds__(256)
 kernel_smem_flat_col(const double* __restrict__ A, double* __restrict__ B,
                      LA la, LB lb, int M, int N)
 {
-    __shared__ double A_s[BX * BY];
-    __shared__ double B_s[BX * BY];
+    constexpr int S = BX + 1;
+    __shared__ double A_s[BY * S];
+    __shared__ double B_s[BY * S];
 
     const int tiles_j = (N + BX - 1) / BX;
     const int tiles_i = (M + BY - 1) / BY;
@@ -359,19 +368,20 @@ kernel_smem_flat_col(const double* __restrict__ A, double* __restrict__ B,
     const int nthd = 256;
 
     for (int t = blockIdx.x; t < total_tiles; t += gridDim.x) {
-        /* col-major tile iteration */
         int tj = t / tiles_i;
         int ti = t % tiles_i;
         int bi = ti * BY, bj = tj * BX;
 
-        coop_load<BY, BX>(A_s, A, la, bi, bj, M, N, tid, nthd);
-        coop_load<BY, BX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+        coop_load<BY, BX, S>(A_s, A, la, bi, bj, M, N, tid, nthd);
+        coop_load<BY, BX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
         __syncthreads();
 
-        B_s[tid] = ALPHA * (A_s[tid] + B_s[tid]);
+        int cli = tid / BX;
+        int clj = tid % BX;
+        B_s[cli * S + clj] = ALPHA * (A_s[cli * S + clj] + B_s[cli * S + clj]);
         __syncthreads();
 
-        coop_store<BY, BX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+        coop_store<BY, BX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
         __syncthreads();
     }
 }
@@ -384,15 +394,16 @@ kernel_smem_2x2(const double* __restrict__ A, double* __restrict__ B,
 {
     constexpr int TX = BX * 2;
     constexpr int TY = BY * 2;
-    __shared__ double A_s[TX * TY];
-    __shared__ double B_s[TX * TY];
+    constexpr int S  = TX + 1;  /* padded stride */
+    __shared__ double A_s[TY * S];
+    __shared__ double B_s[TY * S];
 
     const int bj = blockIdx.x * TX, bi = blockIdx.y * TY;
     const int tid  = threadIdx.y * BX + threadIdx.x;
     const int nthd = BX * BY;
 
-    coop_load<TY, TX>(A_s, A, la, bi, bj, M, N, tid, nthd);
-    coop_load<TY, TX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+    coop_load<TY, TX, S>(A_s, A, la, bi, bj, M, N, tid, nthd);
+    coop_load<TY, TX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
     __syncthreads();
 
     #pragma unroll
@@ -401,13 +412,13 @@ kernel_smem_2x2(const double* __restrict__ A, double* __restrict__ B,
         #pragma unroll
         for (int dx = 0; dx < 2; dx++) {
             int lj = threadIdx.x + dx * BX;
-            int si = li * TX + lj;
+            int si = li * S + lj;
             B_s[si] = ALPHA * (A_s[si] + B_s[si]);
         }
     }
     __syncthreads();
 
-    coop_store<TY, TX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+    coop_store<TY, TX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
 }
 
 /* 10: smem_4x1 -- 64x16 tile, 4 cols per thread, 16x16 block */
@@ -418,27 +429,28 @@ kernel_smem_4x1(const double* __restrict__ A, double* __restrict__ B,
 {
     constexpr int TX = BX * 4;
     constexpr int TY = BY;
-    __shared__ double A_s[TX * TY];
-    __shared__ double B_s[TX * TY];
+    constexpr int S  = TX + 1;
+    __shared__ double A_s[TY * S];
+    __shared__ double B_s[TY * S];
 
     const int bj = blockIdx.x * TX, bi = blockIdx.y * TY;
     const int tid  = threadIdx.y * BX + threadIdx.x;
     const int nthd = BX * BY;
 
-    coop_load<TY, TX>(A_s, A, la, bi, bj, M, N, tid, nthd);
-    coop_load<TY, TX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+    coop_load<TY, TX, S>(A_s, A, la, bi, bj, M, N, tid, nthd);
+    coop_load<TY, TX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
     __syncthreads();
 
     int li = threadIdx.y;
     #pragma unroll
     for (int dx = 0; dx < 4; dx++) {
         int lj = threadIdx.x + dx * BX;
-        int si = li * TX + lj;
+        int si = li * S + lj;
         B_s[si] = ALPHA * (A_s[si] + B_s[si]);
     }
     __syncthreads();
 
-    coop_store<TY, TX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+    coop_store<TY, TX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
 }
 
 /* 11: smem_1x4 -- 16x64 tile, 4 rows per thread, 16x16 block */
@@ -449,27 +461,28 @@ kernel_smem_1x4(const double* __restrict__ A, double* __restrict__ B,
 {
     constexpr int TX = BX;
     constexpr int TY = BY * 4;
-    __shared__ double A_s[TX * TY];
-    __shared__ double B_s[TX * TY];
+    constexpr int S  = TX + 1;
+    __shared__ double A_s[TY * S];
+    __shared__ double B_s[TY * S];
 
     const int bj = blockIdx.x * TX, bi = blockIdx.y * TY;
     const int tid  = threadIdx.y * BX + threadIdx.x;
     const int nthd = BX * BY;
 
-    coop_load<TY, TX>(A_s, A, la, bi, bj, M, N, tid, nthd);
-    coop_load<TY, TX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+    coop_load<TY, TX, S>(A_s, A, la, bi, bj, M, N, tid, nthd);
+    coop_load<TY, TX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
     __syncthreads();
 
     int lj = threadIdx.x;
     #pragma unroll
     for (int dy = 0; dy < 4; dy++) {
         int li = threadIdx.y + dy * BY;
-        int si = li * TX + lj;
+        int si = li * S + lj;
         B_s[si] = ALPHA * (A_s[si] + B_s[si]);
     }
     __syncthreads();
 
-    coop_store<TY, TX>(B_s, B, lb, bi, bj, M, N, tid, nthd);
+    coop_store<TY, TX, S>(B_s, B, lb, bi, bj, M, N, tid, nthd);
 }
 
 /* ================================================================
