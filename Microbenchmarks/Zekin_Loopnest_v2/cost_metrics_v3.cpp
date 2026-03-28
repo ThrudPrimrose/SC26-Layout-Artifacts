@@ -1,24 +1,19 @@
 /*
  * cost_metrics.cpp -- Three-tier cost metrics for z_v_grad_w stencil
  *
- * Metrics (Section 3):
- *   μ(π,Φ)      = avg new-block count per step           (Eq. 4)
- *   Δ(π,Φ)      = avg block distance, UMA                (Eq. 7)
- *   σ(π,Φ,ν)    = avg weighted traffic, NUMA              (Eq. 10)
- *
- * Weight functions:
- *   ω_U(b)  = α              if ρ_t(b) < β                (UMA)
- *           = 1              otherwise
- *   ω(b)    = γ              if ν(b) ≠ ν₀                 (NUMA: remote priority)
- *           = α              if ν(b) = ν₀ and ρ_t(b) < β
- *           = 1              otherwise
- *
- * ν : block → NUMA domain     (placement function, from first-touch)
- * ν₀ = 0                      (home domain of evaluated iteration slice)
+ * Six distance metrics per configuration:
+ *   μ           = avg new-block count per step
+ *   Δ_raw       = avg block distance, unweighted
+ *   Δ_uma       = avg block distance, α prefetcher discount
+ *   Δ_numa      = avg block distance, α discount + γ NUMA penalty
+ *   μ·Δ_raw     = new-block count × raw distance
+ *   μ·Δ_uma     = new-block count × UMA distance
+ *   μ·Δ_numa    = new-block count × NUMA distance  (= σ in paper)
  *
  * Compile:  g++ -O3 -std=c++17 -fopenmp -o cost_metrics cost_metrics.cpp
  * Run:      ./cost_metrics [N] [nlev] [β] [α] [γ] [P_NUMA]
- * Output:   results_full.csv
+ * Output:   metrics.csv  (flat CSV)
+ *           stdout: human-readable table
  */
 
 #include <cstdio>
@@ -36,7 +31,7 @@
 /* ---- Parameters (from argv) ---- */
 static int    BETA       = 8;
 static double ALPHA      = 0.16;
-static double GAMMA      = 2.0;
+static double GAMMA      = 7.0;
 static int    P_NUMA     = 4;
 static int    BLOCK_BYTES = 64;
 #pragma omp threadprivate(BLOCK_BYTES)
@@ -75,9 +70,6 @@ inline LoopOrder iteration_order(Schedule sched, int V) {
 
 /* ============================================================
  *  Placement function  ν : block_addr → NUMA domain
- *
- *  External input to the cost model.  Encodes first-touch under
- *  schedule(static) without introducing threads into the model.
  * ============================================================ */
 
 static Schedule G_SCHED;
@@ -143,12 +135,10 @@ inline int nu_block(int arr, int V, int64_t baddr, int N, int nlev) {
 static int NU_HOME = 0;
 #pragma omp threadprivate(NU_HOME)
 
-/* ω_U(b): UMA — prefetcher discount only (Eq. 6) */
 inline double w_uma(int64_t raw_dist) {
     return (raw_dist < BETA) ? ALPHA : 1.0;
 }
 
-/* ω(b): NUMA — remote priority (Eq. 9) */
 inline double w_numa(int arr, int V, int64_t baddr,
                      int64_t raw_dist, int N, int nlev) {
     if (nu_block(arr, V, baddr, N, nlev) != NU_HOME) return GAMMA;
@@ -200,32 +190,38 @@ struct BlockSet {
 };
 
 /* ============================================================
- *  Core: compute μ, Δ, σ for one NUMA domain's iteration slice
- *
- *  Two modes:
- *    omp_for:      outer ∈ [range_lo, range_hi), inner full
- *    collapse(2):  linearized lin ∈ [range_lo, range_hi),
- *                  jk = lin / N,  je = lin % N
- *                  may cut mid-row at boundaries
- *
- *  NU_HOME must be set before calling.
- *
- *  Δ: (1/T) Σ_t [ (1/|N_t|) Σ_{b∈N_t} ω_U(b)·ρ ]   (Eq. 7)
- *  σ: (1/T) Σ_t [            Σ_{b∈N_t} ω(b)·ρ   ]   (Eq. 10)
+ *  Metrics struct: all six values
  * ============================================================ */
 
-struct Metrics { double mu, delta, sigma, delta_max, mu_delta_max; int64_t T; };
+struct Metrics {
+    double mu;
+    double delta_raw;       /* Δ_raw:  (1/T) Σ (1/|N_t|) Σ ρ           */
+    double delta_uma;       /* Δ_uma:  (1/T) Σ (1/|N_t|) Σ ω_U·ρ      */
+    double delta_numa;      /* Δ_numa: (1/T) Σ (1/|N_t|) Σ ω·ρ        */
+    double mu_delta_raw;    /* (1/T) Σ Σ ρ                              */
+    double mu_delta_uma;    /* (1/T) Σ Σ ω_U·ρ                         */
+    double mu_delta_numa;   /* (1/T) Σ Σ ω·ρ       (= σ in paper)      */
+    double sigma;           /* avg element-address distance per step     */
+    double cost_uma;        /* avg access weight (UMA) per step          */
+    double cost_numa;       /* avg access weight (NUMA) per step         */
+    int64_t T;
+};
 
-/* Process one W-wide step — shared by both modes.
- * For KLON_FIRST: je varies [je0, je0+W), jk fixed.
- * For KLEV_FIRST: jk varies [jk0, jk0+W), je fixed. */
+/* ============================================================
+ *  Core: process one W-wide step
+ * ============================================================ */
+
 static inline void process_step(
     int V, int W, int N, int nlev,
     LoopOrder loop, int je0, int jk0,
     const int* cidx, const int* vidx,
     BlockSet& prev, BlockSet& curr,
-    int64_t& T, double& s_mu, double& s_delta, double& s_sigma,
-    double& s_delta_max, double& s_mu_delta_max)
+    int64_t& T,
+    double& s_mu,
+    double& s_d_raw, double& s_d_uma, double& s_d_numa,
+    double& s_md_raw, double& s_md_uma, double& s_md_numa,
+    double& s_sigma,
+    double& s_cost_uma, double& s_cost_numa)
 {
     Ref refs[NREFS];
     curr.clear();
@@ -239,46 +235,82 @@ static inline void process_step(
 
     if (T == 0) {
         int nb = curr.total();
-        s_mu          += nb;
-        s_delta       += 1.0;
-        s_sigma       += nb;
-        s_delta_max   += 1.0;
-        s_mu_delta_max += nb * 1.0;
+        s_mu        += nb;
+        s_d_raw     += 1.0;
+        s_d_uma     += 1.0;
+        s_d_numa    += 1.0;
+        s_md_raw    += nb;
+        s_md_uma    += nb;
+        s_md_numa   += nb;
+        s_sigma     += nb;        /* convention: distance 1 element */
+        s_cost_uma  += nb * ALPHA;
+        s_cost_numa += nb * ALPHA;
     } else {
-        int    nc = 0;
-        double d_uma = 0, d_numa = 0;
-        double max_uma = 0;                /* max ω_U·ρ this step */
+        int    nc       = 0;
+        double sum_raw  = 0, sum_uma  = 0, sum_numa  = 0;
+        double sum_addr = 0;      /* element-address distance       */
+        double sum_w_uma = 0, sum_w_numa = 0;  /* pure weights      */
+
         for (int a = 0; a < NUM_ARR; a++) {
           for (int64_t b : curr.a[a]) {
             if (prev.has(a, b)) continue;
             nc++;
-            int64_t best = INT64_MAX;
+
+            int64_t best_blk = INT64_MAX;
             for (int64_t bp : prev.a[a]) {
                 int64_t d = std::abs(b - bp);
-                if (d < best) best = d;
+                if (d < best_blk) best_blk = d;
             }
-            double cost_uma, cost_numa;
-            if (best == INT64_MAX) {
-                cost_uma  = 1.0;
-                cost_numa = w_numa(a, V, b, INT64_MAX, N, nlev);
+
+            if (best_blk == INT64_MAX) {
+                sum_raw    += 1.0;
+                sum_uma    += 1.0;
+                double wn   = w_numa(a, V, b, INT64_MAX, N, nlev);
+                sum_numa   += wn;
+                sum_addr   += 1.0;
+                sum_w_uma  += 1.0;
+                sum_w_numa += wn;
             } else {
-                cost_uma  = w_uma(best)                    * (double)best;
-                cost_numa = w_numa(a, V, b, best, N, nlev) * (double)best;
+                double r    = (double)best_blk;
+                double wu   = w_uma(best_blk);
+                double wn   = w_numa(a, V, b, best_blk, N, nlev);
+
+                /* block distance × weight */
+                sum_raw    += r;
+                sum_uma    += wu * r;
+                sum_numa   += wn * r;
+
+                /* element-address distance (sigma) */
+                double addr_dist = r * ((double)BLOCK_BYTES / ebytes[a]);
+                sum_addr   += addr_dist;
+
+                /* pure access cost (weight only, no distance) */
+                sum_w_uma  += wu;
+                sum_w_numa += wn;
             }
-            d_uma  += cost_uma;
-            d_numa += cost_numa;
-            if (cost_uma > max_uma) max_uma = cost_uma;
           }
         }
-        s_mu    += nc;
-        s_delta += (nc > 0) ? d_uma / nc : 0.0;
-        s_sigma += d_numa;
-        s_delta_max    += max_uma;              /* Δ_max: max distance this step */
-        s_mu_delta_max += (double)nc * max_uma; /* μ·Δ_max: blocks × max distance */
+
+        s_mu += nc;
+        if (nc > 0) {
+            s_d_raw  += sum_raw  / nc;
+            s_d_uma  += sum_uma  / nc;
+            s_d_numa += sum_numa / nc;
+        }
+        s_md_raw    += sum_raw;
+        s_md_uma    += sum_uma;
+        s_md_numa   += sum_numa;
+        s_sigma     += sum_addr;
+        s_cost_uma  += sum_w_uma;
+        s_cost_numa += sum_w_numa;
     }
     T++;
     std::swap(prev, curr);
 }
+
+/* ============================================================
+ *  Slice: one NUMA domain's iteration range
+ * ============================================================ */
 
 Metrics compute_slice(int V, int W, int N, int nlev,
                       Schedule sched,
@@ -289,8 +321,10 @@ Metrics compute_slice(int V, int W, int N, int nlev,
     BlockSet prev, curr;
 
     int64_t T = 0;
-    double s_mu = 0, s_delta = 0, s_sigma = 0;
-    double s_dmax = 0, s_mudmax = 0;
+    double s_mu = 0;
+    double s_d_raw = 0, s_d_uma = 0, s_d_numa = 0;
+    double s_md_raw = 0, s_md_uma = 0, s_md_numa = 0;
+    double s_sigma = 0, s_cost_uma = 0, s_cost_numa = 0;
 
     if (sched == SCHED_OMP_COLLAPSE2) {
         int64_t lin = range_lo;
@@ -301,9 +335,11 @@ Metrics compute_slice(int V, int W, int N, int nlev,
             int je_end = (int)(row_end - (int64_t)jk * N);
 
             for (int je0 = je_start; je0 + W <= je_end; je0 += W) {
-                process_step(V, W, N, nlev, KLON_FIRST, je0, jk, cidx, vidx,
-                             prev, curr, T, s_mu, s_delta, s_sigma,
-                             s_dmax, s_mudmax);
+                process_step(V, W, N, nlev, KLON_FIRST, je0, jk,
+                             cidx, vidx, prev, curr, T,
+                             s_mu, s_d_raw, s_d_uma, s_d_numa,
+                             s_md_raw, s_md_uma, s_md_numa,
+                             s_sigma, s_cost_uma, s_cost_numa);
             }
             lin = row_end;
         }
@@ -313,25 +349,28 @@ Metrics compute_slice(int V, int W, int N, int nlev,
             for (int inner0 = 0; inner0 + W <= inner_n; inner0 += W) {
                 int je = (loop == KLON_FIRST) ? inner0    : (int)outer;
                 int jk = (loop == KLON_FIRST) ? (int)outer : inner0;
-                process_step(V, W, N, nlev, loop, je, jk, cidx, vidx,
-                             prev, curr, T, s_mu, s_delta, s_sigma,
-                             s_dmax, s_mudmax);
+                process_step(V, W, N, nlev, loop, je, jk,
+                             cidx, vidx, prev, curr, T,
+                             s_mu, s_d_raw, s_d_uma, s_d_numa,
+                             s_md_raw, s_md_uma, s_md_numa,
+                             s_sigma, s_cost_uma, s_cost_numa);
             }
         }
     }
 
-    if (T == 0) return {0, 0, 0, 0, 0, 0};
-    return { s_mu/T, s_delta/T, s_sigma/T, s_dmax/T, s_mudmax/T, T };
+    if (T == 0) return {0,0,0,0,0,0,0,0,0,0,0};
+    return {
+        s_mu / T,
+        s_d_raw / T, s_d_uma / T, s_d_numa / T,
+        s_md_raw / T, s_md_uma / T, s_md_numa / T,
+        s_sigma / T,
+        s_cost_uma / T, s_cost_numa / T,
+        T
+    };
 }
 
 /* ============================================================
- *  Wrapper: evaluate all P_NUMA domains and average
- *
- *  omp_for:      each domain d owns outer ∈ [d·chunk, (d+1)·chunk)
- *  collapse(2):  each domain d owns lin ∈ [d·chunk, (d+1)·chunk)
- *                where total = outer_n × inner_n
- *
- *  σ differs per domain (ν₀ = d).  We average all three.
+ *  Wrapper: average over all P_NUMA domains
  * ============================================================ */
 
 Metrics compute_metrics(int V, int W, int N, int nlev,
@@ -341,9 +380,7 @@ Metrics compute_metrics(int V, int W, int N, int nlev,
     int outer_n = (loop == KLON_FIRST) ? nlev : N;
     int inner_n = (loop == KLON_FIRST) ? N    : nlev;
 
-    double tot_mu = 0, tot_delta = 0, tot_sigma = 0;
-    double tot_dmax = 0, tot_mudmax = 0;
-    int64_t tot_T = 0;
+    Metrics acc = {0,0,0,0,0,0,0,0,0,0,0};
     int n_domains = 0;
 
     if (sched == SCHED_OMP_COLLAPSE2) {
@@ -354,14 +391,21 @@ Metrics compute_metrics(int V, int W, int N, int nlev,
             int64_t lo = d * chunk;
             int64_t hi = std::min((d + 1) * chunk, total);
             if (lo >= hi) continue;
-
             NU_HOME = d;
             Metrics m = compute_slice(V, W, N, nlev, sched, cidx, vidx, lo, hi);
             if (m.T == 0) continue;
-
-            tot_mu += m.mu; tot_delta += m.delta; tot_sigma += m.sigma;
-            tot_dmax += m.delta_max; tot_mudmax += m.mu_delta_max;
-            tot_T += m.T; n_domains++;
+            acc.mu           += m.mu;
+            acc.delta_raw    += m.delta_raw;
+            acc.delta_uma    += m.delta_uma;
+            acc.delta_numa   += m.delta_numa;
+            acc.mu_delta_raw += m.mu_delta_raw;
+            acc.mu_delta_uma += m.mu_delta_uma;
+            acc.mu_delta_numa+= m.mu_delta_numa;
+            acc.sigma     += m.sigma;
+            acc.cost_uma  += m.cost_uma;
+            acc.cost_numa += m.cost_numa;
+            acc.T            += m.T;
+            n_domains++;
         }
     } else {
         int chunk = (outer_n + P_NUMA - 1) / P_NUMA;
@@ -370,27 +414,39 @@ Metrics compute_metrics(int V, int W, int N, int nlev,
             int lo = d * chunk;
             int hi = std::min((d + 1) * chunk, outer_n);
             if (lo >= hi) continue;
-
             NU_HOME = d;
             Metrics m = compute_slice(V, W, N, nlev, sched, cidx, vidx, lo, hi);
             if (m.T == 0) continue;
-
-            tot_mu += m.mu; tot_delta += m.delta; tot_sigma += m.sigma;
-            tot_dmax += m.delta_max; tot_mudmax += m.mu_delta_max;
-            tot_T += m.T; n_domains++;
+            acc.mu           += m.mu;
+            acc.delta_raw    += m.delta_raw;
+            acc.delta_uma    += m.delta_uma;
+            acc.delta_numa   += m.delta_numa;
+            acc.mu_delta_raw += m.mu_delta_raw;
+            acc.mu_delta_uma += m.mu_delta_uma;
+            acc.mu_delta_numa+= m.mu_delta_numa;
+            acc.sigma     += m.sigma;
+            acc.cost_uma  += m.cost_uma;
+            acc.cost_numa += m.cost_numa;
+            acc.T            += m.T;
+            n_domains++;
         }
     }
 
-    if (n_domains == 0) return {0, 0, 0, 0, 0, 0};
-    return { tot_mu / n_domains, tot_delta / n_domains,
-             tot_sigma / n_domains,
-             tot_dmax / n_domains, tot_mudmax / n_domains,
-             tot_T };
+    if (n_domains == 0) return {0,0,0,0,0,0,0,0,0,0,0};
+    double nd = (double)n_domains;
+    return {
+        acc.mu ,
+        acc.delta_raw , acc.delta_uma , acc.delta_numa ,
+        acc.mu_delta_raw , acc.mu_delta_uma , acc.mu_delta_numa ,
+        acc.sigma ,
+        acc.cost_uma , acc.cost_numa ,
+        acc.T 
+    };
 }
 
 /* ---- Index generation ---- */
 enum CellDist { UNIFORM=0, NORMAL1=1, NORMAL4=2, SEQUENTIAL=3 };
-static const char* dist_name[] = {"uniform","normal1","normal4","sequential"};
+static const char* dist_name[] = {"uniform","normal_var1","normal_var4","sequential"};
 
 static void gen_cell_idx(int* dst, int V, int N,
                          CellDist dist, std::mt19937& rng) {
@@ -426,33 +482,53 @@ static void gen_vert_idx(int* dst, int V, int N, std::mt19937& rng) {
 }
 
 /* ---- Targets ---- */
-struct Target { const char* name; int block_bytes; int vec_width; };
+struct Target { const char* name; const char* csv_target; int block_bytes; int vec_width; };
 static const Target targets[] = {
-    {"CPU_scalar",  64,  1}, {"CPU_NEON",   64,  2}, {"CPU_AVX512", 64,  8},
-    {"GPU_scalar", 128,  1}, {"GPU_halfw", 128, 16}, {"GPU_warp32",128, 32},
+    {"CPU scalar",  "cpu_scalar",  64,  1},
+    {"CPU AVX-512", "cpu_avx512",  64,  8},
+    {"GPU scalar",  "gpu_scalar", 128,  1},
+    {"GPU Warp32",  "gpu_warp32", 128, 32},
+    {"GPU Wave64",  "gpu_wave64", 128, 64},
 };
 static constexpr int N_TGT = sizeof(targets)/sizeof(targets[0]);
+
+/* ---- Collected result for sorting / printing ---- */
+struct Result {
+    int    V, ti, si, di;
+    const char* target_name;
+    const char* csv_target;
+    const char* sched;
+    const char* loop;
+    const char* dist;
+    int    block_bytes, vec_width;
+    Metrics m;
+};
 
 /* ---- Main ---- */
 int main(int argc, char** argv) {
     int N    = (argc>1)?atoi(argv[1]):81920;
     int nlev = (argc>2)?atoi(argv[2]):96;
-    BETA     = (argc>3)?atoi(argv[3]):(int)(sysconf(_SC_PAGESIZE)/64);
+    BETA     = (argc>3)?atoi(argv[3]):4;
     ALPHA    = (argc>4)?atof(argv[4]):0.16;
-    GAMMA    = (argc>5)?atof(argv[5]):2.0;
+    GAMMA    = (argc>5)?atof(argv[5]):7.0;
     P_NUMA   = (argc>6)?atoi(argv[6]):4;
 
     fprintf(stderr,"Cost metrics: N=%d nlev=%d β=%d α=%.3f γ=%.3f P=%d\n\n",
             N,nlev,BETA,ALPHA,GAMMA,P_NUMA);
 
-    FILE* csv = fopen("results_full.csv","w");
-    fprintf(csv,"target,block_bytes,vec_width,variant,schedule,loop_order,"
-                "dist,T,mu,delta,sigma,delta_max,mu_delta_max,"
-                "beta,alpha,gamma,P_NUMA\n");
+    /* CSV header */
+    FILE* csv = fopen("metrics.csv","w");
+    fprintf(csv,"nlev,variant,cell_dist,loop_order,target,"
+                "block_bytes,vector_width,"
+                "mu,delta_raw,delta_uma,delta_numa,"
+                "mu_delta_raw,mu_delta_uma,mu_delta_numa,"
+                "sigma,cost_uma,cost_numa,"
+                "beta,alpha,gamma,P_NUMA,T\n");
     fflush(csv);
 
-    /* Flatten: 4 variants × 2 schedules × 4 dists × N_TGT targets */
+    /* Enumerate all jobs */
     int n_jobs = 4 * 2 * 4 * N_TGT;
+    std::vector<Result> results(n_jobs);
 
     #pragma omp parallel for schedule(dynamic,1)
     for (int job = 0; job < n_jobs; job++) {
@@ -468,6 +544,18 @@ int main(int argc, char** argv) {
         int local_block_bytes = targets[ti].block_bytes;
         int W = targets[ti].vec_width;
         int inner = (loop == KLON_FIRST) ? N : nlev;
+
+        Result& r = results[job];
+        r.V = V; r.ti = ti; r.si = si; r.di = d;
+        r.target_name = targets[ti].name;
+        r.csv_target  = targets[ti].csv_target;
+        r.sched       = sched_name[si];
+        r.loop        = loop_name[loop];
+        r.dist        = dist_name[d];
+        r.block_bytes = local_block_bytes;
+        r.vec_width   = W;
+        r.m = {};
+
         if (W > inner) continue;
 
         std::mt19937 rng(42 + d);
@@ -477,31 +565,71 @@ int main(int argc, char** argv) {
 
         BLOCK_BYTES = local_block_bytes;
 
-        auto m = compute_metrics(V, W, N, nlev, sched,
-                                  cidx.data(), vidx.data());
-
-        flockfile(stderr);
-        fprintf(stderr,"  %-12s V%d %-14s %-12s %-10s  "
-                "μ=%.2f Δ=%.1f σ=%.1f Δ_max=%.1f μΔ_max=%.1f\n",
-                targets[ti].name, V, sched_name[si],
-                loop_name[loop], dist_name[d],
-                m.mu, m.delta, m.sigma, m.delta_max, m.mu_delta_max);
-        funlockfile(stderr);
-
-        flockfile(csv);
-        fprintf(csv,"%s,%d,%d,V%d,%s,%s,%s,%ld,"
-                "%.6f,%.6f,%.6f,%.6f,%.6f,"
-                "%d,%.4f,%.4f,%d\n",
-                targets[ti].name, targets[ti].block_bytes, W,
-                V, sched_name[si], loop_name[loop], dist_name[d],
-                (long)m.T,
-                m.mu, m.delta, m.sigma, m.delta_max, m.mu_delta_max,
-                BETA, ALPHA, GAMMA, P_NUMA);
-        fflush(csv);
-        funlockfile(csv);
+        r.m = compute_metrics(V, W, N, nlev, sched,
+                              cidx.data(), vidx.data());
     }
 
+    /* Write CSV */
+    for (int job = 0; job < n_jobs; job++) {
+        const Result& r = results[job];
+        if (r.m.T == 0) continue;
+        fprintf(csv,"%d,%d,%s,%s,%s,%d,%d,"
+                "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
+                "%.6f,%.6f,%.6f,"
+                "%d,%.4f,%.4f,%d,%ld\n",
+                nlev, r.V, r.dist, r.loop, r.csv_target,
+                r.block_bytes, r.vec_width,
+                r.m.mu,
+                r.m.delta_raw, r.m.delta_uma, r.m.delta_numa,
+                r.m.mu_delta_raw, r.m.mu_delta_uma, r.m.mu_delta_numa,
+                r.m.sigma, r.m.cost_uma, r.m.cost_numa,
+                BETA, ALPHA, GAMMA, P_NUMA, (long)r.m.T);
+    }
     fclose(csv);
-    fprintf(stderr,"\nWritten: results_full.csv\n");
+
+    /* ============================================================
+     *  Human-readable table on stdout
+     * ============================================================ */
+
+    printf("\n  Cost Metrics: N=%d  nlev=%d  beta=%d  alpha=%.2f  gamma=%.2f  P=%d\n\n",
+           N, nlev, BETA, ALPHA, GAMMA, P_NUMA);
+    printf("  %-4s  %-11s  %-8s  %-11s  %-10s  %8s  %8s  %8s  %8s  %8s  %8s  %8s  %8s  %8s  %8s\n",
+           "V", "Target", "Schedule", "Dist", "Loop",
+           "mu", "D_raw", "D_uma", "D_numa", "muD_raw", "muD_uma", "muD_numa",
+           "sigma", "w_uma", "w_numa");
+    printf("  %-4s  %-11s  %-8s  %-11s  %-10s  %8s  %8s  %8s  %8s  %8s  %8s  %8s  %8s  %8s  %8s\n",
+           "----", "-----------", "--------", "-----------", "----------",
+           "--------", "--------", "--------", "--------", "--------", "--------", "--------",
+           "--------", "--------", "--------");
+
+    int prev_V = -1;
+    for (int job = 0; job < n_jobs; job++) {
+        const Result& r = results[job];
+        if (r.m.T == 0) continue;
+
+        if (prev_V != -1 && r.V != prev_V) printf("\n");
+        prev_V = r.V;
+
+        auto fmt = [](double v, char* buf) {
+            if (v < 100)        snprintf(buf, 16, "%8.3f", v);
+            else if (v < 10000) snprintf(buf, 16, "%8.1f", v);
+            else                snprintf(buf, 16, "%8.0f", v);
+        };
+
+        char b_mu[16], b_dr[16], b_du[16], b_dn[16];
+        char b_mdr[16], b_mdu[16], b_mdn[16];
+        char b_sig[16], b_wu[16], b_wn[16];
+        fmt(r.m.mu, b_mu);
+        fmt(r.m.delta_raw, b_dr);  fmt(r.m.delta_uma, b_du);  fmt(r.m.delta_numa, b_dn);
+        fmt(r.m.mu_delta_raw, b_mdr); fmt(r.m.mu_delta_uma, b_mdu); fmt(r.m.mu_delta_numa, b_mdn);
+        fmt(r.m.sigma, b_sig); fmt(r.m.cost_uma, b_wu); fmt(r.m.cost_numa, b_wn);
+
+        printf("  V%-3d  %-11s  %-8s  %-11s  %-10s  %s  %s  %s  %s  %s  %s  %s  %s  %s  %s\n",
+               r.V, r.target_name, r.sched, r.dist, r.loop,
+               b_mu, b_dr, b_du, b_dn, b_mdr, b_mdu, b_mdn, b_sig, b_wu, b_wn);
+    }
+    printf("\n");
+
+    fprintf(stderr,"\nWritten: metrics.csv\n");
     return 0;
 }
