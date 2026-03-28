@@ -12,8 +12,8 @@
 # OpenMP configuration
 # -------------------------------
 export OMP_NUM_THREADS=96
-export OMP_PROC_BIND=true
-export OMP_PLACES="0:{24}:1,24:{24}:1,48:{24}:1,72:{24}:1"
+export OMP_PROC_BIND=close
+export OMP_PLACES="{0}:24:1,{24}:24:1,{48}:24:1,{72}:24:1"
 export OMP_DISPLAY_ENV=TRUE
 
 echo "Running on $(hostname)"
@@ -21,25 +21,34 @@ echo "Threads: $OMP_NUM_THREADS"
 
 set -e
 
-CFLAGS="-O3 -fopenmp -mtune=native -ftree-vectorize -fno-vect-cost-model -march=native -ffast-math -std=c++17"
+CFLAGS="-O3 -fopenmp -mtune=native -ftree-vectorize -fvect-cost-model=cheap -march=native -ffast-math -std=c++17"
 HIPFLAGS="--offload-arch=gfx942 -O3 -ffast-math -std=c++17"
 
 echo "═══ build ═══"
+echo "[1/5] bench_triad.cpp       (CPU in-place)"
+g++ $CFLAGS -o bench_triad bench_triad.cpp
 
-echo "[1/4] conjugate_inplace.cpp       (CPU in-place)"
+echo "[1/5] conjugate_inplace.cpp       (CPU in-place)"
 g++ $CFLAGS -o conj_ip_cpu conjugate_inplace.cpp
 
-echo "[2/4] conjugate.cpp               (CPU out-of-place)"
+echo "[2/5] conjugate.cpp               (CPU out-of-place)"
 g++ $CFLAGS -o conj_oop_cpu conjugate.cpp
 
-echo "[3/4] conjugate_inplace_hip.cpp   (GPU in-place)"
+echo "[3/5] conjugate_inplace_hip.cpp   (GPU in-place)"
 hipcc $HIPFLAGS -o conj_ip_gpu conjugate_inplace_hip.cpp
 
-echo "[4/4] conjugate_hip.cpp           (GPU out-of-place)"
+echo "[4/5] conjugate_hip.cpp           (GPU out-of-place)"
 hipcc $HIPFLAGS -o conj_oop_gpu conjugate_hip.cpp
+
+echo "[5/5] bench_streams.cpp           (CPU stream concurrency)"
+g++ $CFLAGS -o bench_streams bench_streams.cpp
 
 echo ""
 echo "═══ run ═══"
+
+echo "--- Triad ---"
+./bench_triad
+echo ""
 
 echo "--- CPU in-place ---"
 ./conj_ip_cpu
@@ -57,15 +66,20 @@ echo "--- GPU out-of-place ---"
 ./conj_oop_gpu
 echo ""
 
-echo "═══ CSV files ═══"
-echo "  results_cpu_ip.csv    (CPU in-place,    per-run)"
-echo "  results_cpu.csv       (CPU out-of-place, per-run)"
-echo "  results_gpu_ip.csv    (GPU in-place,    per-run)"
-echo "  results_gpu_oop.csv   (GPU out-of-place, per-run)"
-
+echo "--- CPU stream concurrency ---"
+./bench_streams
 echo ""
+
+echo "═══ CSV files ═══"
+echo "  results_cpu_ip.csv      (CPU in-place,        per-run)"
+echo "  results_cpu.csv         (CPU out-of-place,    per-run)"
+echo "  results_gpu_ip.csv      (GPU in-place,        per-run)"
+echo "  results_gpu_oop.csv     (GPU out-of-place,    per-run)"
+echo "  results_streams.csv     (CPU stream conc.,    per-run)"
+echo ""
+
 echo "═══ summary (averages) ═══"
-for f in results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.csv; do
+for f in results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.csv results_streams.csv; do
     [ -f "$f" ] || continue
     echo "[$f]"
     awk -F, 'NR>1{s[$1","$2]+=$4; g[$1","$2]+=$5; n[$1","$2]++}
@@ -74,4 +88,5 @@ for f in results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.c
     echo ""
 done
 
-move results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.csv results/beverin
+mkdir -p results/beverin
+mv results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.csv results_streams.csv results/beverin/
