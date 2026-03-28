@@ -17,7 +17,7 @@ CPU_NV_CSV  = "z_v_grad_w_cpu_daint.csv"
 
 STREAM_PEAK = {
     "MI300A Zen Cores":   811.35*1e-3,
-    "Grace Neoverse v2": 1607.62*1e-3,
+    "Grace Neoverse v2": 1700.62*1e-3,
     "MI300A":   3457.5*1e-3,
     "H200":    3720.48*1e-3,
 }
