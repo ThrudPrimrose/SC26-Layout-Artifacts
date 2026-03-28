@@ -35,10 +35,10 @@ NVFLAGS="-O3 -use_fast_math -arch=native --expt-relaxed-constexpr -std=c++17"
 echo "═══ build ═══"
 
 echo "[1/4] conjugate_inplace.cpp  (CPU in-place)"
-g++ $CFLAGS -o conj_ip_cpu conjugate_inplace.cpp
+g++ $CFLAGS -o conj_ip_cpu conjugate_inplace.cpp -lnuma
 
 echo "[2/4] conjugate.cpp           (CPU out-of-place)"
-g++ $CFLAGS -o conj_oop_cpu conjugate.cpp
+g++ $CFLAGS -o conj_oop_cpu conjugate.cpp -lnuma
 
 echo "[3/4] conjugate_inplace.cu   (GPU in-place)"
 nvcc $NVFLAGS -Xcompiler "$CFLAGS" -o conj_ip_gpu conjugate_inplace.cu
