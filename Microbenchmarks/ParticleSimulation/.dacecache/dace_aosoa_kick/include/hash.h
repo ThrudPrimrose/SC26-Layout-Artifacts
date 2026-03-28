@@ -1,1 +1,0 @@
-#define __HASH_dace_aosoa_kick "aae6e6ee2f473fe4a04e85c49c6f5a3ea378ee4d4f4f1cf2971622460d7fb9df"

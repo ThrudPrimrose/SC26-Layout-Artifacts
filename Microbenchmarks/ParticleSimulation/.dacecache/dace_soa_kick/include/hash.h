@@ -1,1 +1,0 @@
-#define __HASH_dace_soa_kick "555819520f4ffc002c6af235828ef6cb1b4acd5ed73fdbb8e4838566a5b99001"

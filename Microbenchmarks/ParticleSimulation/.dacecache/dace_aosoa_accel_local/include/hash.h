@@ -1,1 +1,0 @@
-#define __HASH_dace_aosoa_accel_local "7b0b9907402b2376252b32908c5db70252c0c324a7f2cec8691baaf4659f45e4"
