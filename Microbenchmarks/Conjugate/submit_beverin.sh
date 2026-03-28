@@ -13,7 +13,7 @@
 # -------------------------------
 export OMP_NUM_THREADS=96
 export OMP_PROC_BIND=true
-export OMP_PLACES=cores
+export OMP_PLACES="0:{24}:1,24:{24}:1,48:{24}:1,72:{24}:1"
 export OMP_DISPLAY_ENV=TRUE
 
 echo "Running on $(hostname)"
@@ -21,7 +21,7 @@ echo "Threads: $OMP_NUM_THREADS"
 
 set -e
 
-CFLAGS="-O3 -fopenmp -ftree-vectorize -fvect-cost-model=cheap -march=native -ffast-math -std=c++17"
+CFLAGS="-O3 -fopenmp -mtune=native -ftree-vectorize -fno-vect-cost-model -march=native -ffast-math -std=c++17"
 HIPFLAGS="--offload-arch=gfx942 -O3 -ffast-math -std=c++17"
 
 echo "═══ build ═══"
