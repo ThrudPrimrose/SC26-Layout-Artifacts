@@ -7,6 +7,7 @@
 #SBATCH --error=conj_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
+#SBATCH --mem-bind=local
 
 # -------------------------------
 # OpenMP configuration
@@ -21,12 +22,13 @@ echo "Threads: $OMP_NUM_THREADS"
 
 set -e
 
-CFLAGS="-O3 -fopenmp -mtune=native -ftree-vectorize -fvect-cost-model=cheap -march=native -ffast-math -std=c++17"
+CFLAGS="-O3 -fopenmp -mtune=native -ftree-vectorize -fno-vect-cost-model -march=native -ffast-math -std=c++17"
 HIPFLAGS="--offload-arch=gfx942 -O3 -ffast-math -std=c++17"
 
 echo "═══ build ═══"
-echo "[1/5] bench_triad.cpp       (CPU in-place)"
-g++ $CFLAGS -o bench_triad bench_triad.cpp
+echo "[0/5] bench_triad.cpp       (CPU in-place)"
+g++ $CFLAGS -o bench_triad bench_triad.cpp -lnuma
+g++ $CFLAGS -o bench_triad_local bench_triad_local.cpp -lnuma
 
 echo "[1/5] conjugate_inplace.cpp       (CPU in-place)"
 g++ $CFLAGS -o conj_ip_cpu conjugate_inplace.cpp
@@ -47,6 +49,7 @@ echo ""
 echo "═══ run ═══"
 
 echo "--- Triad ---"
+./bench_triad_local
 ./bench_triad
 echo ""
 

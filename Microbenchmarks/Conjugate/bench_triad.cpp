@@ -2,26 +2,76 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
+#include <algorithm>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <numaif.h>
+#include <unistd.h>
 
-constexpr int64_t N    = 1 << 27;   // 128M doubles = 1 GB per array
-constexpr int64_t RUNS = 100;
+constexpr int64_t N    = 1 << 30;   // 1B doubles = 8 GB per array
+constexpr int64_t RUNS = 10;
 constexpr double  S    = 3.0;
+
+static long PAGE_SZ;
+
+static int get_numa_node() {
+    unsigned cpu, node;
+    syscall(__NR_getcpu, &cpu, &node, nullptr);
+    return (int)node;
+}
+
+static void print_mems_allowed() {
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "Mems_allowed:", 13) == 0 ||
+            strncmp(line, "Mems_allowed_list:", 18) == 0 ||
+            strncmp(line, "Cpus_allowed_list:", 18) == 0)
+            printf("  %s", line);
+    }
+    fclose(f);
+}
 
 static void *numa_alloc(size_t bytes) {
     void *p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) { perror("mmap"); std::abort(); }
-    madvise(p, bytes, MADV_HUGEPAGE);
+    madvise(p, bytes, MADV_NOHUGEPAGE);
     return p;
 }
 static void numa_free(void *p, size_t bytes) { munmap(p, bytes); }
 
+/* Per-thread mbind(MPOL_BIND) + first-touch.
+   Each OpenMP thread binds its schedule(static) chunk to its local NUMA node,
+   then writes to fault pages locally. */
 static double *alloc_ft(int64_t n, double val) {
     size_t bytes = n * sizeof(double);
     double *p = (double *)numa_alloc(bytes);
-    #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < n; i++) p[i] = val;
+
+    #pragma omp parallel
+    {
+        int tid  = omp_get_thread_num();
+        int nthr = omp_get_num_threads();
+        /* Replicate schedule(static) partitioning */
+        int64_t chunk = (n + nthr - 1) / nthr;
+        int64_t lo = (int64_t)tid * chunk;
+        int64_t hi = std::min(lo + chunk, n);
+        if (lo < n && lo < hi) {
+            /* Page-align the byte range */
+            uintptr_t beg = (uintptr_t)p + lo * sizeof(double);
+            uintptr_t end = (uintptr_t)p + hi * sizeof(double);
+            uintptr_t pbeg = beg & ~(uintptr_t)(PAGE_SZ - 1);
+            uintptr_t pend = (end + PAGE_SZ - 1) & ~(uintptr_t)(PAGE_SZ - 1);
+
+            int node = get_numa_node();
+            unsigned long mask = 1UL << node;
+            mbind((void *)pbeg, pend - pbeg, MPOL_BIND, &mask, 37, 0);
+
+            for (int64_t i = lo; i < hi; i++) p[i] = val;
+        }
+    }
     return p;
 }
 
@@ -32,8 +82,24 @@ static double *flush_buf = nullptr;
 static void flush_init() {
     constexpr size_t bytes = FLUSH_N * sizeof(double);
     flush_buf = (double *)numa_alloc(bytes);
-    #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] = 0.0;
+    #pragma omp parallel
+    {
+        int tid  = omp_get_thread_num();
+        int nthr = omp_get_num_threads();
+        int64_t chunk = (FLUSH_N + nthr - 1) / nthr;
+        int64_t lo = (int64_t)tid * chunk;
+        int64_t hi = std::min(lo + chunk, FLUSH_N);
+        if (lo < FLUSH_N && lo < hi) {
+            uintptr_t beg = (uintptr_t)flush_buf + lo * sizeof(double);
+            uintptr_t end = (uintptr_t)flush_buf + hi * sizeof(double);
+            uintptr_t pbeg = beg & ~(uintptr_t)(PAGE_SZ - 1);
+            uintptr_t pend = (end + PAGE_SZ - 1) & ~(uintptr_t)(PAGE_SZ - 1);
+            int node = get_numa_node();
+            unsigned long mask = 1UL << node;
+            mbind((void *)pbeg, pend - pbeg, MPOL_BIND, &mask, 37, 0);
+            for (int64_t i = lo; i < hi; i++) flush_buf[i] = 0.0;
+        }
+    }
 }
 
 static void flush_caches() {
@@ -183,9 +249,9 @@ static double bw_accum(int nt, double ms) { return (double)nt * 4.0 * N * sizeof
 
 #define BENCH(label, nt, call, bw_fn) do { \
     for (int w = 0; w < 5; w++) { flush_caches(); call; } \
+    flush_caches(); \
     double times[RUNS]; \
     for (int r = 0; r < RUNS; r++) { \
-        flush_caches(); \
         double t0 = omp_get_wtime(); \
         call; \
         times[r] = (omp_get_wtime() - t0) * 1e3; \
@@ -209,14 +275,31 @@ static void free_set(TriadSet &s) {
 }
 
 int main() {
+    PAGE_SZ = sysconf(_SC_PAGESIZE);
     flush_init();
     constexpr size_t bytes = N * sizeof(double);
     csv = fopen("results_triad.csv", "w");
     fprintf(csv, "label,run,ms,gbps\n");
 
-    printf("triad: N=%lldM (%.0f MB/array)  runs=%d  threads=%d\n",
-           (long long)(N>>20), bytes/1e6, (int)RUNS, omp_get_max_threads());
-    printf("store: 3N×8/triad  accum: 4N×8/triad  |  cache flush before each run\n\n");
+    printf("triad: N=%lldM (%.0f MB/array)  runs=%d  threads=%d  page=%ld\n",
+           (long long)(N>>20), bytes/1e6, (int)RUNS, omp_get_max_threads(), PAGE_SZ);
+    printf("store: 3N×8/triad  accum: 4N×8/triad  |  cache flush before each run\n");
+    printf("NUMA: per-thread mbind(MPOL_BIND) + first-touch\n");
+    print_mems_allowed();
+
+    /* Verify thread spread */
+    {
+        int nodes[4] = {};
+        #pragma omp parallel
+        {
+            int n = get_numa_node();
+            if (n >= 0 && n < 4) {
+                #pragma omp atomic
+                nodes[n]++;
+            }
+        }
+        printf("  thread spread: N0=%d N1=%d N2=%d N3=%d\n\n", nodes[0], nodes[1], nodes[2], nodes[3]);
+    }
 
     { TriadSet s1 = make_set(0,1,2);
       BENCH("1×store  (3 arr)",  1, triad_s1(s1.a,s1.b,s1.c,S,N), bw_store);

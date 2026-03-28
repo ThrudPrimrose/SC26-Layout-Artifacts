@@ -7,6 +7,7 @@
 #SBATCH --error=nbody_daint_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=288
+#SBATCH --mem-bind=local
 
 # -------------------------------
 # OpenMP configuration
@@ -82,4 +83,5 @@ for f in results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.c
     echo ""
 done
 
-move results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.csv results/daint/
+mkdir -p results/daint
+mv results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.csv results/daint/
