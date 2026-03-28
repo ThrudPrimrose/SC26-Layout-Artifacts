@@ -4,59 +4,54 @@ analyze_metrics.py
 
 Rank-correlates cost-model metrics against measured runtime bandwidth.
 
-Required:
-    --target   e.g. cpu_scalar, gpu_scalar, cpu_avx512, gpu_warp32
-    --runtime  Runtime CSV
-
-Output (in order):
-    1. Table sorted by measured BW, each metric with its rank
-    2. Per-metric rank correlation vs BW (Spearman ρ, R², Kendall τ, Pearson r)
-    3. Best predictor summary
-    4. Scatter plots: metric (x) vs BW (y), ordered by BW on y-axis
-
+Required: --target, --runtime
 Usage:
     python analyze_metrics.py --target cpu_scalar --runtime z_v_grad_w_cpu_beverin.csv
     python analyze_metrics.py --target gpu_scalar --runtime z_v_grad_w_gpu_beverin.csv --gpu-config 1x1_32x16
 """
-import argparse
-import pandas as pd
-import numpy as np
-import sys
-import os
+import argparse, sys, warnings
+import pandas as pd, numpy as np
 from scipy.stats import spearmanr, kendalltau, pearsonr
+warnings.filterwarnings("ignore", message="An input array is constant")
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--csv", default="metrics.csv", help="Cost metrics CSV")
-parser.add_argument("--target", required=True, help="e.g. cpu_scalar, gpu_scalar")
-parser.add_argument("--runtime", required=True, help="Runtime CSV")
-parser.add_argument("--gpu-config", default="1x1_32x16", help="GPU config_label filter")
+parser.add_argument("--csv", default="metrics.csv")
+parser.add_argument("--target", required=True)
+parser.add_argument("--runtime", required=True)
+parser.add_argument("--gpu-config", default="1x1_32x16")
 parser.add_argument("--nlev", type=int, default=96)
 parser.add_argument("--no-plot", action="store_true")
 args = parser.parse_args()
 
 NPROMA = 81920
-BYTES  = (2*NPROMA*4 + 2*NPROMA*4 +
-          args.nlev*NPROMA*8 + args.nlev*NPROMA*8 + NPROMA*8 +
-          args.nlev*NPROMA*8 + args.nlev*NPROMA*8 +
-          NPROMA*8 + NPROMA*8 + args.nlev*NPROMA*8)
+BYTES = (2*NPROMA*4 + 2*NPROMA*4 +
+         args.nlev*NPROMA*8 + args.nlev*NPROMA*8 + NPROMA*8 +
+         args.nlev*NPROMA*8 + args.nlev*NPROMA*8 +
+         NPROMA*8 + NPROMA*8 + args.nlev*NPROMA*8)
 
 ALL_METRICS = [
-    ("mu",            "μ"),
-    ("delta_raw",     "Δ_raw"),
-    ("delta_uma",     "Δ_uma"),
-    ("delta_numa",    "Δ_numa"),
-    ("mu_delta_raw",  "μ·Δ_raw"),
-    ("mu_delta_uma",  "μ·Δ_uma"),
-    ("mu_delta_numa", "μ·Δ_numa"),
-    ("sigma",         "σ"),
-    ("cost_uma",      "ω_uma"),
-    ("cost_numa",     "ω_numa"),
+    ("mu",            "mu",       "cost"),
+    ("W",             "W",        "cost"),
+    ("delta_raw",     "D_min",    "cost"),
+    ("delta_max",     "D_max",    "cost"),
+    ("delta_uma",     "D_uma",    "cost"),
+    ("delta_numa",    "D_numa",   "cost"),
+    ("mu_delta_raw",  "muD_raw",  "cost"),
+    ("mu_delta_uma",  "muD_uma",  "cost"),
+    ("mu_delta_numa", "muD_numa", "cost"),
+    ("sigma",         "sigma",    "cost"),
+    ("cost_uma",      "w_uma",    "cost"),
+    ("cost_numa",     "w_numa",   "cost"),
+    ("ref_SL",        "ref_SL",   "benefit"),
+    ("ref_RL",        "ref_RL",   "cost"),
+    ("ref_SR",        "ref_SR",   "cost"),
+    ("ref_RR",        "ref_RR",   "cost"),
+    ("ref_cost",      "ref_cost", "cost"),
+    ("span",          "span",     "cost"),
+    ("W_delta",       "W*D_min",  "cost"),
 ]
 
-# ═══════════════════════════════════════════════════════════════
-#  Load cost metrics
-# ═══════════════════════════════════════════════════════════════
-
+# Load cost metrics
 cost = pd.read_csv(args.csv)
 cost = cost[cost["target"] == args.target].copy()
 if cost.empty:
@@ -64,207 +59,160 @@ if cost.empty:
     print(f"Available: {sorted(pd.read_csv(args.csv)['target'].unique())}")
     sys.exit(1)
 
-metrics = [(c, s) for c, s in ALL_METRICS if c in cost.columns]
-mcols = [c for c, _ in metrics]
-msyms = [s for _, s in metrics]
+metrics = [(c, s, d) for c, s, d in ALL_METRICS if c in cost.columns]
+print(f"Target: {args.target}  ({len(cost)} cost rows)")
+print(f"Metrics: {[s for _,s,_ in metrics]}")
 
-print(f"Cost metrics: {args.csv} → {len(cost)} rows for {args.target}")
-print(f"Metrics: {msyms}")
-print(f"Variants: {sorted(cost['variant'].unique())}")
-print(f"Dists: {sorted(cost['cell_dist'].unique())}")
-print(f"Loops: {sorted(cost['loop_order'].unique())}")
-
-# ═══════════════════════════════════════════════════════════════
-#  Load runtime → median BW per (variant, cell_dist)
-# ═══════════════════════════════════════════════════════════════
-
+# Load runtime
 rt = pd.read_csv(args.runtime)
-print(f"\nRuntime: {args.runtime} → {len(rt)} rows")
-
-# GPU filter
+rt["bw_tbs"] = BYTES / (rt["time_ms"] * 1e-3) / 1e12
 if "config_label" in rt.columns and args.gpu_config:
-    before = len(rt)
     rt = rt[rt["config_label"] == args.gpu_config]
-    print(f"  GPU filter config_label={args.gpu_config}: {before} → {len(rt)} rows")
-
-# nlev filter
 if "nlev" in rt.columns:
     rt = rt[rt["nlev"] == args.nlev]
 
-rt["bw_tbs"] = BYTES / (rt["time_ms"] * 1e-3) / 1e12
-
-# Group by (variant, cell_dist, parallelization) → median BW
 group_cols = ["variant", "cell_dist"]
 if "parallelization" in rt.columns:
     group_cols.append("parallelization")
 
-bw_agg = (rt.groupby(group_cols)["bw_tbs"]
-            .agg(bw_median="median", bw_std="std", bw_n="count")
-            .reset_index())
+bw_agg = rt.groupby(group_cols)["bw_tbs"].agg(
+    bw_median="median", bw_std="std", bw_n="count").reset_index()
 
-# Best schedule per (variant, cell_dist)
 if "parallelization" in bw_agg.columns:
     idx = bw_agg.groupby(["variant", "cell_dist"])["bw_median"].idxmax()
     bw_best = bw_agg.loc[idx].reset_index(drop=True)
 else:
     bw_best = bw_agg
 
-print(f"  Best-schedule configs: {len(bw_best)}")
+print(f"Runtime: {len(bw_best)} configs")
 
-# ═══════════════════════════════════════════════════════════════
-#  Join: runtime BW ↔ cost metrics
-# ═══════════════════════════════════════════════════════════════
-
+# Join
 rows = []
 for _, rb in bw_best.iterrows():
-    var = int(rb["variant"])
-    dist = rb["cell_dist"]
-
+    var, dist = int(rb["variant"]), rb["cell_dist"]
     mask = (cost["variant"] == var) & (cost["cell_dist"] == dist)
     crows = cost[mask]
-
-    if crows.empty:
-        print(f"  [WARN] No metric for V{var} {dist}")
-        continue
-
-    # Pick expected loop_order
+    if crows.empty: print(f"  [WARN] No metric for V{var} {dist}"); continue
     if len(crows) > 1:
         expected = "klon_first" if var <= 2 else "klev_first"
-        filtered = crows[crows["loop_order"] == expected]
-        if not filtered.empty:
-            crows = filtered
-
+        f = crows[crows["loop_order"] == expected]
+        if not f.empty: crows = f
     c = crows.iloc[0]
-    row = {
-        "variant": var, "dist": dist,
-        "loop_order": c["loop_order"],
-        "bw_median": rb["bw_median"],
-        "bw_std": rb["bw_std"],
-        "bw_n": int(rb["bw_n"]),
-    }
-    if "parallelization" in rb.index:
-        row["schedule"] = rb["parallelization"]
-    for mc, _ in metrics:
-        row[mc] = c[mc]
+    row = {"variant": var, "dist": dist, "loop_order": c["loop_order"],
+           "bw_median": rb["bw_median"], "bw_std": rb["bw_std"]}
+    if "parallelization" in rb.index: row["schedule"] = rb["parallelization"]
+    for mc, _, _ in metrics: row[mc] = c[mc]
     rows.append(row)
 
-if not rows:
-    print("\nERROR: No rows joined. Check variant/dist names match between CSVs.")
-    sys.exit(1)
+if not rows: print("ERROR: No rows joined"); sys.exit(1)
 
-J = pd.DataFrame(rows)
-
-# ═══════════════════════════════════════════════════════════════
-#  Sort by BW, assign ranks
-# ═══════════════════════════════════════════════════════════════
-
-J = J.sort_values("bw_median", ascending=False).reset_index(drop=True)
+J = pd.DataFrame(rows).sort_values("bw_median", ascending=False).reset_index(drop=True)
 J["bw_rank"] = J["bw_median"].rank(ascending=False).astype(int)
-for mc, _ in metrics:
-    J[f"{mc}_rank"] = J[mc].rank(ascending=True).astype(int)
-
 n = len(J)
 has_sched = "schedule" in J.columns
 
+# Compute ranks
+for mc, _, direction in metrics:
+    if direction == "benefit":
+        J[f"{mc}_rank"] = J[mc].rank(ascending=False).astype(int)
+    else:
+        J[f"{mc}_rank"] = J[mc].rank(ascending=True).astype(int)
+
 # ═══════════════════════════════════════════════════════════════
-#  1) TABLE: sorted by BW (best first), metrics with ranks
+#  1) RANKED TABLE
 # ═══════════════════════════════════════════════════════════════
 
 print(f"\n{'='*200}")
-print(f"  RANKED TABLE: {args.target}  (n={n}, sorted by measured BW)")
-print(f"  Higher BW = better.  Metric rank 1 = lowest metric value = predicted best.")
-print(f"  '=' after rank means metric rank matches BW rank exactly.")
+print(f"  RANKED TABLE: {args.target}  (n={n})")
 print(f"{'='*200}\n")
 
-# Header
 hdr = f"  {'#':>2} {'V':>2} {'Dist':<14}"
 if has_sched: hdr += f" {'Schedule':<18}"
-hdr += f" {'Loop':<12} {'BW TB/s':>9} {'±':>6}"
-for _, s in metrics:
-    hdr += f"  {s:>8}(rk)"
+hdr += f" {'Loop':<12} {'BW':>9} {'+-':>6}"
+for _, s, _ in metrics: hdr += f"  {s:>8}(rk)"
 print(hdr)
-print(f"  {'-' * (len(hdr) + 5)}")
+print(f"  {'-'*(len(hdr)+5)}")
 
 for _, r in J.iterrows():
     line = f"  {r['bw_rank']:>2} V{int(r['variant']):>1} {r['dist']:<14}"
     if has_sched: line += f" {r['schedule']:<18}"
     line += f" {r['loop_order']:<12} {r['bw_median']:>9.4f} {r['bw_std']:>6.4f}"
-    for mc, _ in metrics:
-        v = r[mc]
-        rk = r[f"{mc}_rank"]
-        match = "=" if rk == r["bw_rank"] else " "
-        if abs(v) < 100:
-            line += f"  {v:>7.2f}({rk:>2}{match})"
-        elif abs(v) < 100000:
-            line += f"  {v:>7.0f}({rk:>2}{match})"
-        else:
-            line += f"  {v:>7.0f}({rk:>2}{match})"
+    for mc, _, _ in metrics:
+        v, rk = r[mc], r[f"{mc}_rank"]
+        m = "=" if rk == r["bw_rank"] else " "
+        if abs(v) < 100:   line += f"  {v:>7.2f}({rk:>2}{m})"
+        else:               line += f"  {v:>7.0f}({rk:>2}{m})"
     print(line)
 
 # ═══════════════════════════════════════════════════════════════
-#  2) RANK CORRELATION QUALITY: per metric vs BW
+#  2) RANK CORRELATION
 # ═══════════════════════════════════════════════════════════════
 
-print(f"\n{'='*120}")
-print(f"  METRIC QUALITY: rank correlation vs measured BW  (n={n})")
-print(f"  Positive ρ = higher metric → lower BW (metric correctly predicts cost)")
-print(f"{'='*120}\n")
+print(f"\n{'='*130}")
+print(f"  METRIC QUALITY: rank correlation vs BW  (n={n})")
+print(f"{'='*130}\n")
 
-print(f"  {'Metric':<14} {'Spearman ρ':>10} {'ρ²':>8} {'Kendall τ':>10} "
-      f"{'Pearson r':>10} {'r²':>8} {'p(ρ)':>12} {'p(τ)':>12} {'exact':>7}")
-print(f"  {'-'*100}")
+print(f"  {'Metric':<12} {'dir':>4} {'Spearman':>10} {'rho^2':>8} {'Kendall':>10} "
+      f"{'Pearson':>10} {'r^2':>8} {'p(rho)':>12} {'p(tau)':>12} {'exact':>7}")
+print(f"  {'-'*110}")
 
-corr_results = []
 bw = J["bw_median"].values
+corr_results = []
 
-for mc, ms in metrics:
+for mc, ms, direction in metrics:
     vals = J[mc].values
     ok = np.isfinite(bw) & np.isfinite(vals)
     nok = ok.sum()
-    if nok < 3:
-        print(f"  {ms:<14} n<3")
-        continue
+    if nok < 3: print(f"  {ms:<12} {direction:>4}  n<3"); continue
+    if np.std(vals[ok]) < 1e-12: print(f"  {ms:<12} {direction:>4}  constant"); continue
 
-    rho, p_rho  = spearmanr(vals[ok], -bw[ok])
-    tau, p_tau  = kendalltau(vals[ok], -bw[ok])
-    pr, p_pr    = pearsonr(vals[ok], bw[ok])
+    if direction == "benefit":
+        rho, p_rho = spearmanr(vals[ok], bw[ok])
+        tau, p_tau = kendalltau(vals[ok], bw[ok])
+    else:
+        rho, p_rho = spearmanr(vals[ok], -bw[ok])
+        tau, p_tau = kendalltau(vals[ok], -bw[ok])
 
-    rho2 = rho**2
-    pr2  = pr**2
+    pr, _ = pearsonr(vals[ok], bw[ok])
+    rho2, pr2 = rho**2, pr**2
     n_exact = int(np.sum(J[f"{mc}_rank"].values[ok] == J["bw_rank"].values[ok]))
-
     sig = "***" if p_rho < 0.001 else "**" if p_rho < 0.01 else "*" if p_rho < 0.05 else ""
 
-    print(f"  {ms:<14} {rho:>+10.4f} {rho2:>8.4f} {tau:>+10.4f} "
+    print(f"  {ms:<12} {direction:>4} {rho:>+10.4f} {rho2:>8.4f} {tau:>+10.4f} "
           f"{pr:>+10.4f} {pr2:>8.4f} {p_rho:>12.2e} {p_tau:>12.2e} {n_exact:>3}/{nok} {sig}")
+    corr_results.append({"metric": ms, "col": mc, "dir": direction,
+                         "rho": rho, "rho2": rho2, "tau": tau,
+                         "pr": pr, "pr2": pr2, "p_rho": p_rho,
+                         "n_exact": n_exact, "n": nok})
 
-    corr_results.append({
-        "metric": ms, "col": mc,
-        "rho": rho, "rho2": rho2, "tau": tau,
-        "pr": pr, "pr2": pr2,
-        "p_rho": p_rho, "p_tau": p_tau,
-        "n_exact": n_exact, "n": nok,
-    })
-
-# Best / worst
+# ── Summary ──
 if corr_results:
-    by_rho = sorted(corr_results, key=lambda x: abs(x["rho"]), reverse=True)
-    print(f"\n  Best predictor (|ρ|):  {by_rho[0]['metric']:<14} ρ={by_rho[0]['rho']:+.4f}  ρ²={by_rho[0]['rho2']:.4f}  exact={by_rho[0]['n_exact']}/{by_rho[0]['n']}")
-    print(f"  Worst predictor (|ρ|): {by_rho[-1]['metric']:<14} ρ={by_rho[-1]['rho']:+.4f}  ρ²={by_rho[-1]['rho2']:.4f}  exact={by_rho[-1]['n_exact']}/{by_rho[-1]['n']}")
-
+    by_rho2 = sorted(corr_results, key=lambda x: x["rho2"], reverse=True)
+    by_pr2  = sorted(corr_results, key=lambda x: x["pr2"],  reverse=True)
     by_exact = sorted(corr_results, key=lambda x: x["n_exact"], reverse=True)
-    if by_exact[0]["metric"] != by_rho[0]["metric"]:
-        print(f"  Most exact matches:    {by_exact[0]['metric']:<14} exact={by_exact[0]['n_exact']}/{by_exact[0]['n']}")
+
+    print(f"\n  === SUMMARY ===")
+    print(f"  Best Spearman rho^2:  {by_rho2[0]['metric']:<12} rho={by_rho2[0]['rho']:+.4f}  rho^2={by_rho2[0]['rho2']:.4f}")
+    print(f"  Best Pearson  r^2:    {by_pr2[0]['metric']:<12}    r={by_pr2[0]['pr']:+.4f}    r^2={by_pr2[0]['pr2']:.4f}")
+    print(f"  Most exact matches:   {by_exact[0]['metric']:<12} exact={by_exact[0]['n_exact']}/{by_exact[0]['n']}")
+
+    # Top-5 table
+    print(f"\n  Top-5 by Spearman rho^2:")
+    print(f"  {'#':>3} {'Metric':<12} {'dir':>7} {'rho':>8} {'rho^2':>8} {'Pearson r^2':>12} {'exact':>7} {'p(rho)':>12}")
+    print(f"  {'-'*75}")
+    for i, r in enumerate(by_rho2[:5], 1):
+        sig = "***" if r["p_rho"] < 0.001 else "**" if r["p_rho"] < 0.01 else "*" if r["p_rho"] < 0.05 else ""
+        print(f"  {i:>3} {r['metric']:<12} {r['dir']:>7} {r['rho']:>+8.4f} {r['rho2']:>8.4f} {r['pr2']:>12.4f} "
+              f"{r['n_exact']:>3}/{r['n']} {r['p_rho']:>12.2e} {sig}")
 
 # ═══════════════════════════════════════════════════════════════
-#  3) PLOTS: metric vs BW, sorted by BW on y-axis
+#  3) PLOTS
 # ═══════════════════════════════════════════════════════════════
 
 if not args.no_plot:
     try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
+        import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+        from matplotlib.patches import Patch
 
         LOOP_COLOR = {"klon_first": "#e67e22", "klev_first": "#2980b9"}
         LOOP_MARKER = {"klon_first": "o", "klev_first": "s"}
@@ -273,55 +221,40 @@ if not args.no_plot:
         ncols = min(4, nm)
         nrows = (nm + ncols - 1) // ncols
         fig, axes = plt.subplots(nrows, ncols, figsize=(4.5*ncols, 4*nrows), squeeze=False)
-        fig.suptitle(f"Metric vs Measured BW — {args.target}", fontsize=14)
+        fig.suptitle(f"Metric vs BW - {args.target}", fontsize=14)
 
-        for mi, (mc, ms) in enumerate(metrics):
+        for mi, (mc, ms, _) in enumerate(metrics):
             ax = axes[mi // ncols, mi % ncols]
-
             for lo in ["klon_first", "klev_first"]:
                 sub = J[J["loop_order"] == lo]
                 if sub.empty: continue
                 ax.scatter(sub[mc], sub["bw_median"],
-                           c=LOOP_COLOR.get(lo, "gray"),
-                           marker=LOOP_MARKER.get(lo, "o"),
-                           s=60, alpha=0.85, edgecolors="black", linewidths=0.4,
-                           label=lo.replace("_", "-"), zorder=3)
-
+                           c=LOOP_COLOR.get(lo, "gray"), marker=LOOP_MARKER.get(lo, "o"),
+                           s=55, alpha=0.85, edgecolors="black", linewidths=0.4,
+                           label=lo.replace("_", "-"))
                 for _, r in sub.iterrows():
-                    label = f"V{int(r['variant'])}/{r['dist'][:4]}"
-                    ax.annotate(label, (r[mc], r["bw_median"]),
-                                fontsize=5, alpha=0.7, xytext=(4, 4),
-                                textcoords="offset points")
+                    ax.annotate(f"V{int(r['variant'])}", (r[mc], r["bw_median"]),
+                                fontsize=5, alpha=0.7, xytext=(3, 3), textcoords="offset points")
 
-            # Trend line (log-log if range is large)
-            ok = np.isfinite(J[mc]) & np.isfinite(J["bw_median"])
-            xv, yv = J.loc[ok, mc].values, J.loc[ok, "bw_median"].values
-            use_log = len(xv) > 0 and xv.max() / max(xv.min(), 1e-12) > 10
+            ri = [x for x in corr_results if x["col"] == mc]
+            if ri:
+                r = ri[0]
+                ax.text(0.04, 0.04,
+                        f"rho={r['rho']:+.3f} rho2={r['rho2']:.3f}\n"
+                        f"  r={r['pr']:+.3f}   r2={r['pr2']:.3f}\n"
+                        f"exact={r['n_exact']}/{r['n']}",
+                        transform=ax.transAxes, fontsize=7, va="bottom", family="monospace",
+                        bbox=dict(fc="lightyellow", alpha=0.9, pad=2))
 
-            if ok.sum() >= 3:
-                rho_i = [x for x in corr_results if x["col"] == mc]
-                if rho_i:
-                    r = rho_i[0]
-                    ax.text(0.04, 0.04,
-                            f"ρ={r['rho']:+.3f}  ρ²={r['rho2']:.3f}\n"
-                            f"τ={r['tau']:+.3f}  r={r['pr']:+.3f}\n"
-                            f"exact={r['n_exact']}/{r['n']}",
-                            transform=ax.transAxes, fontsize=7, va="bottom",
-                            family="monospace",
-                            bbox=dict(fc="lightyellow", alpha=0.9, pad=2))
-
-            ax.set_xlabel(ms, fontsize=11)
-            ax.set_ylabel("BW [TB/s]" if mi % ncols == 0 else "")
-            ax.set_title(ms, fontsize=11)
-            ax.grid(alpha=0.2)
-            if use_log:
+            ax.set_xlabel(ms); ax.set_ylabel("BW [TB/s]" if mi % ncols == 0 else "")
+            ax.set_title(ms, fontsize=11); ax.grid(alpha=0.2)
+            vals = J[mc].dropna()
+            if len(vals) > 0 and vals.max() / max(vals.min(), 1e-12) > 10:
                 ax.set_xscale("log")
-            if mi == 0:
-                ax.legend(fontsize=7, loc="upper right")
+            if mi == 0: ax.legend(fontsize=7)
 
         for mi in range(nm, nrows * ncols):
             axes[mi // ncols, mi % ncols].set_visible(False)
-
         fig.tight_layout(rect=[0, 0, 1, 0.94])
         fname = f"metric_vs_bw_{args.target}"
         fig.savefig(f"{fname}.png", dpi=180, bbox_inches="tight")
@@ -329,42 +262,54 @@ if not args.no_plot:
         plt.close(fig)
         print(f"\n  Scatter saved: {fname}.png/pdf")
 
-        # ── Bar chart: ρ² per metric ──
+        # ── Quality bar chart ──
         if corr_results:
-            fig2, ax2 = plt.subplots(figsize=(max(6, 0.8*nm), 4))
+            fig2, (ax_rho, ax_pr) = plt.subplots(2, 1, figsize=(max(10, 0.6*nm), 7))
             names = [r["metric"] for r in corr_results]
             rho2s = [r["rho2"] for r in corr_results]
-            colors = ["#2ecc71" if r["p_rho"] < 0.05 else "#e74c3c" for r in corr_results]
+            pr2s  = [r["pr2"] for r in corr_results]
 
-            bars = ax2.bar(range(len(names)), rho2s, color=colors,
-                           edgecolor="black", linewidth=0.5)
-            ax2.set_xticks(range(len(names)))
-            ax2.set_xticklabels(names, rotation=45, ha="right", fontsize=9)
-            ax2.set_ylabel("Spearman ρ²")
-            ax2.set_title(f"Metric Quality: ρ² vs BW — {args.target}")
-            ax2.set_ylim(0, 1.05)
-            ax2.axhline(y=1.0, color="gray", linestyle=":", linewidth=0.5)
-            ax2.grid(axis="y", alpha=0.3)
+            def color_bar(vals):
+                return ["#2ecc71" if v > 0.5 else "#f39c12" if v > 0.2 else "#e74c3c" for v in vals]
 
-            # Annotate bars
+            # Spearman
+            bars = ax_rho.bar(range(len(names)), rho2s, color=color_bar(rho2s),
+                              edgecolor="black", linewidth=0.5)
+            ax_rho.set_xticks(range(len(names)))
+            ax_rho.set_xticklabels(names, rotation=45, ha="right", fontsize=8)
+            ax_rho.set_ylabel("Spearman rho^2"); ax_rho.set_ylim(0, 1.1)
+            ax_rho.set_title(f"Rank Correlation (Spearman) - {args.target}")
+            ax_rho.axhline(y=1.0, color="gray", linestyle=":", linewidth=0.5)
+            ax_rho.grid(axis="y", alpha=0.3)
             for i, (b, r) in enumerate(zip(bars, corr_results)):
-                ax2.text(i, b.get_height() + 0.02,
-                         f"ρ={r['rho']:+.2f}\n{r['n_exact']}/{r['n']}",
-                         ha="center", va="bottom", fontsize=7)
+                ax_rho.text(i, b.get_height() + 0.02,
+                            f"{r['rho']:+.2f}", ha="center", va="bottom", fontsize=6)
 
-            # Legend: green = significant, red = not
-            from matplotlib.patches import Patch
-            ax2.legend(handles=[
-                Patch(facecolor="#2ecc71", edgecolor="black", label="p < 0.05"),
-                Patch(facecolor="#e74c3c", edgecolor="black", label="p ≥ 0.05"),
-            ], fontsize=8, loc="upper right")
+            # Pearson
+            bars2 = ax_pr.bar(range(len(names)), pr2s, color=color_bar(pr2s),
+                              edgecolor="black", linewidth=0.5)
+            ax_pr.set_xticks(range(len(names)))
+            ax_pr.set_xticklabels(names, rotation=45, ha="right", fontsize=8)
+            ax_pr.set_ylabel("Pearson r^2"); ax_pr.set_ylim(0, 1.1)
+            ax_pr.set_title(f"Linear Correlation (Pearson) - {args.target}")
+            ax_pr.axhline(y=1.0, color="gray", linestyle=":", linewidth=0.5)
+            ax_pr.grid(axis="y", alpha=0.3)
+            for i, (b, r) in enumerate(zip(bars2, corr_results)):
+                ax_pr.text(i, b.get_height() + 0.02,
+                            f"{r['pr']:+.2f}", ha="center", va="bottom", fontsize=6)
+
+            ax_pr.legend(handles=[
+                Patch(facecolor="#2ecc71", edgecolor="black", label="r^2 > 0.5"),
+                Patch(facecolor="#f39c12", edgecolor="black", label="0.2 < r^2 < 0.5"),
+                Patch(facecolor="#e74c3c", edgecolor="black", label="r^2 < 0.2"),
+            ], fontsize=7, loc="upper right")
 
             fig2.tight_layout()
             fname2 = f"metric_quality_{args.target}"
             fig2.savefig(f"{fname2}.png", dpi=180, bbox_inches="tight")
             fig2.savefig(f"{fname2}.pdf", dpi=180, bbox_inches="tight")
             plt.close(fig2)
-            print(f"  Quality bar saved: {fname2}.png/pdf")
+            print(f"  Quality saved: {fname2}.png/pdf")
 
     except ImportError:
         print("\n  [WARN] matplotlib not available")
