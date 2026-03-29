@@ -1,0 +1,106 @@
+Running on nid002760
+Threads: 96
+NUMA latency + bandwidth probe
+  pinned to core 0 (node 0) for latency tests
+  local node  = 0
+  remote node = 3
+  array       = 4194304 CL = 256 MB
+  BW threads  = 96
+  NUMA nodes  = 4
+
+  ╔══════════════════════════════════════════════════════════╗
+  ║  PART A: LATENCY (single-threaded, ns/CL)              ║
+  ╚══════════════════════════════════════════════════════════╝
+
+  Test                                      Local(ns) Remote(ns)      Ratio
+  ----                                      --------- ----------      -----
+  pointer chase (random)                        216.3      390.2       1.80
+
+  stride  1 CL (  64 B)                           2.7        3.9       1.46
+  stride  2 CL ( 128 B)                          10.5       15.7       1.49
+  stride  4 CL ( 256 B)                          10.6       16.5       1.56
+  stride  8 CL ( 512 B)                          11.8       21.1       1.79
+  stride 16 CL (1024 B)                          12.4       22.4       1.80
+  stride 32 CL (2048 B)                          13.9       25.2       1.81
+
+  ═══ Latency-derived cost model parameters ═══
+
+  ALPHA_LAT = lat_stream / lat_random  (local)
+            = 2.7 / 216.3 = 0.0124
+
+  GAMMA_LAT (random)  = 390.2 / 216.3 = 1.8044
+  GAMMA_LAT (stream)  = 3.9 / 2.7 = 1.4642
+
+  BETA_LAT (stride where latency > 2× streaming):
+    stride  1 CL:    2.7 ns  below  (threshold=5.4)
+    stride  2 CL:   10.5 ns  ABOVE  (threshold=5.4)
+    stride  4 CL:   10.6 ns  ABOVE  (threshold=5.4)
+    stride  8 CL:   11.8 ns  ABOVE  (threshold=5.4)
+    stride 16 CL:   12.4 ns  ABOVE  (threshold=5.4)
+    stride 32 CL:   13.9 ns  ABOVE  (threshold=5.4)
+  BETA_LAT = 1
+
+  ╔══════════════════════════════════════════════════════════╗
+  ║  PART B: BANDWIDTH (96 threads, GB/s)                  ║
+  ╚══════════════════════════════════════════════════════════╝
+
+  Test                                          Local     Remote      Ratio
+  ----                                         ------     ------      -----
+  streaming read (stride 1 CL)                 3232.6     3165.1       1.02
+  random gather                                2200.6     2174.6       1.01
+
+  stride  1 CL (  64 B)                        2874.9     2949.5       0.97
+  stride  2 CL ( 128 B)                         141.3      140.8       1.00
+  stride  4 CL ( 256 B)                         454.5      640.4       0.71
+  stride  8 CL ( 512 B)                         450.3      328.7       1.37
+  stride 16 CL (1024 B)                         220.4      293.2       0.75
+  stride 32 CL (2048 B)                         128.8      133.4       0.97
+
+  ═══ Bandwidth-derived cost model parameters ═══
+
+  ALPHA_BW = BW_stream / BW_random  (local, higher = bigger penalty)
+           = 3232.6 / 2200.6 = 1.4689
+
+  GAMMA_BW (stream)  = BW_local / BW_remote
+           = 3232.6 / 3165.1 = 1.0213
+  GAMMA_BW (random)  = BW_local / BW_remote
+           = 2200.6 / 2174.6 = 1.0120
+
+  BETA_BW (stride where BW < 50% of streaming):
+    stride  1 CL: 2874.9 GB/s  above  (threshold=1616.3)
+    stride  2 CL:  141.3 GB/s  BELOW  (threshold=1616.3)
+    stride  4 CL:  454.5 GB/s  BELOW  (threshold=1616.3)
+    stride  8 CL:  450.3 GB/s  BELOW  (threshold=1616.3)
+    stride 16 CL:  220.4 GB/s  BELOW  (threshold=1616.3)
+    stride 32 CL:  128.8 GB/s  BELOW  (threshold=1616.3)
+  BETA_BW = 1
+
+  ╔══════════════════════════════════════════════════════════╗
+  ║  SUMMARY: Latency vs Bandwidth derived parameters      ║
+  ╚══════════════════════════════════════════════════════════╝
+
+  Parameter                 Latency    Bandwidth
+  ---------                 -------    ---------
+  ALPHA                      0.0124       1.4689
+  BETA  (CL)                      1            1
+  GAMMA (stream)             1.4642       1.0213
+  GAMMA (random)             1.8044       1.0120
+  P_NUMA                          4            4
+
+  ═══ Cross-NUMA pointer chase latency matrix (ns) ═══
+
+   from\to  node0     node1     node2     node3   
+  node0        214.2     296.7     413.0     398.2
+  node1        359.9     143.8     402.5     383.0
+  node2        449.9     391.4     145.3     332.3
+  node3        465.7     370.6     333.7     145.6
+
+  ═══ Cross-NUMA streaming BW matrix (GB/s, 96 threads) ═══
+
+   from\to  node0     node1     node2     node3   
+  node0       3091.8    3207.8    3215.9    3082.6
+  node1         24.2      23.9      23.9      24.5
+  node2         24.0      24.1      24.3      44.3
+  node3         23.8      24.1      23.9      24.0
+
+  wrote results_numa_latency.csv

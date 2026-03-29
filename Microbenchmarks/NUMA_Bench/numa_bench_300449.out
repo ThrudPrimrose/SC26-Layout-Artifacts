@@ -1,0 +1,54 @@
+Running on nid002760
+Threads: 96
+NUMA latency probe: pinned to core 0 (node 0)
+  local node  = 0
+  remote node = 3
+  array       = 4194304 cache lines = 256 MB
+  NUMA nodes  = 4 (4 available)
+
+  Test                                      Local(ns) Remote(ns)      Ratio
+  ----                                      --------- ----------      -----
+  pointer chase (random)                        183.9      427.9       2.33
+
+  stride  1 CL (  64 B)                           2.2        4.5       2.03
+  stride  2 CL ( 128 B)                           8.1       16.8       2.08
+  stride  4 CL ( 256 B)                           8.2       17.4       2.12
+  stride  8 CL ( 512 B)                          12.5       21.3       1.71
+  stride 16 CL (1024 B)                          12.7       20.1       1.59
+  stride 32 CL (2048 B)                          14.5       21.7       1.49
+
+  ═══ Derived cost model parameters ═══
+
+  ALPHA  = lat_stream_local / lat_random_local
+         = 2.2 / 183.9 = 0.0119
+
+  GAMMA  (random)  = lat_random_remote / lat_random_local
+         = 427.9 / 183.9 = 2.3271
+  GAMMA  (stream)  = lat_stream_remote / lat_stream_local
+         = 4.5 / 2.2 = 2.0265
+
+  BETA determination (stride where latency > 2× streaming):
+    stride  1 CL:    2.2 ns  below  (threshold=4.4)
+    stride  2 CL:    8.1 ns  ABOVE  (threshold=4.4)
+    stride  4 CL:    8.2 ns  ABOVE  (threshold=4.4)
+    stride  8 CL:   12.5 ns  ABOVE  (threshold=4.4)
+    stride 16 CL:   12.7 ns  ABOVE  (threshold=4.4)
+    stride 32 CL:   14.5 ns  ABOVE  (threshold=4.4)
+
+  BETA   = 1  (largest stride still below threshold)
+
+  ═══ Summary for cost_metrics.cpp ═══
+  ALPHA = 0.0119
+  BETA  = 1
+  GAMMA = 2.3271  (use random ratio)
+  P_NUMA = 4
+
+  ═══ Cross-NUMA pointer chase latency matrix (ns) ═══
+
+   from\to  node0     node1     node2     node3   
+  node0        185.6     385.5     471.4     424.9
+  node1        328.3     177.9     446.8     437.5
+  node2        403.7     450.8     176.7     350.4
+  node3        396.9     446.9     363.2     179.2
+
+  wrote results_numa_latency.csv
