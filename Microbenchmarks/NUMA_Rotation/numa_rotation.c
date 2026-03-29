@@ -26,14 +26,15 @@
 #include <string.h>
 #include <math.h>
 #include <omp.h>
+#include <sys/mman.h>
 
 #ifndef NO_LIBNUMA
 #include <numa.h>
 #endif
 
 /* ─── defaults ─── */
-#define DEFAULT_N      (1 << 24)   /* 16M doubles = 128 MiB per array */
-#define DEFAULT_ITERS  50
+#define DEFAULT_N      (1 << 28)   /* 1G doubles = 8 GiB per array */
+#define DEFAULT_ITERS  100
 #define DEFAULT_CSV    "numa_rotation.csv"
 #define SCALAR         3.141592653589793
 #define WARMUP         5
@@ -62,6 +63,17 @@ static int thread_to_domain(int tid, int nth, int P_N) {
     return (d < P_N) ? d : P_N - 1;
 }
 
+static double* mmap_alloc(size_t n) {
+    void *p = mmap(NULL, n * sizeof(double), PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) { perror("mmap"); exit(1); }
+    return (double *)p;
+}
+
+static void mmap_free(double *p, size_t n) {
+    munmap(p, n * sizeof(double));
+}
+
 /* ─── Allocation with first-touch placement ─── */
 
 typedef struct {
@@ -70,14 +82,15 @@ typedef struct {
     int    domain;      /* owning NUMA domain */
 } DomainArrays;
 
+
 static DomainArrays* alloc_domain_arrays(int P_N, size_t N, int nth) {
     DomainArrays *da = (DomainArrays *)calloc(P_N, sizeof(DomainArrays));
     for (int d = 0; d < P_N; d++) {
         da[d].N = N;
         da[d].domain = d;
-        da[d].A = (double *)malloc(N * sizeof(double));
-        da[d].B = (double *)malloc(N * sizeof(double));
-        da[d].C = (double *)malloc(N * sizeof(double));
+        da[d].A = mmap_alloc(N);
+        da[d].B = mmap_alloc(N);
+        da[d].C = mmap_alloc(N);
     }
 
     /* First-touch: each domain's arrays touched by that domain's threads */
@@ -108,7 +121,9 @@ static DomainArrays* alloc_domain_arrays(int P_N, size_t N, int nth) {
 
 static void free_domain_arrays(DomainArrays *da, int P_N) {
     for (int d = 0; d < P_N; d++) {
-        free(da[d].A); free(da[d].B); free(da[d].C);
+        mmap_free(da[d].A, da[d].N);
+        mmap_free(da[d].B, da[d].N);
+        mmap_free(da[d].C, da[d].N);
     }
     free(da);
 }

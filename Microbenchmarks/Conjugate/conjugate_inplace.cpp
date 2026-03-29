@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <type_traits>
 
-constexpr int64_t N    = 1 << 27;
+constexpr int64_t N    = 1 << 28;
 constexpr int64_t RUNS = 100;
 
 struct C2 { double re, im; };
@@ -18,7 +18,7 @@ template<int VL> struct C2V { double re[VL], im[VL]; };
 
 static_assert(sizeof(C2) == 2 * sizeof(double), "");
 #define CHECK_C2V(VL) static_assert(sizeof(C2V<VL>) == 2*(VL)*sizeof(double), "");
-CHECK_C2V(2) CHECK_C2V(4) CHECK_C2V(8) CHECK_C2V(16) CHECK_C2V(32) CHECK_C2V(64)
+CHECK_C2V(2) CHECK_C2V(4) CHECK_C2V(8) CHECK_C2V(16) CHECK_C2V(32) CHECK_C2V(64) CHECK_C2V(128) CHECK_C2V(256) CHECK_C2V(512)
 #undef CHECK_C2V
 
 static long PAGE_SZ;
@@ -243,7 +243,9 @@ int main() {
     bench_aosoa<16>("AoSoA-16");
     bench_aosoa<32>("AoSoA-32");
     bench_aosoa<64>("AoSoA-64");
-
+    bench_aosoa<128>("AoSoA-128");
+    bench_aosoa<256>("AoSoA-256");
+    bench_aosoa<512>("AoSoA-512");
     fclose(csv);
     flush_free();
     printf("\nwrote results_cpu_inplace.csv\n");

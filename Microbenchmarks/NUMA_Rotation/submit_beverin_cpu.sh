@@ -73,7 +73,8 @@ gcc -O3 -std=c11 \
     -march=native \
     -mtune=native \
     -ffast-math \
-    -o numa_rotation numa_rotation.c 
+    -DNO_LIBNUMA \
+    -o numa_rotation numa_rotation.c
 
 
 ./numa_rotation

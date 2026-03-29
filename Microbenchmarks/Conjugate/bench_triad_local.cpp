@@ -5,8 +5,8 @@
 #include <algorithm>
 #include <sys/mman.h>
 
-constexpr int64_t N    = 1 << 30;   // 1B doubles = 8 GB per array
-constexpr int64_t RUNS = 10;
+constexpr int64_t N    = 1 << 28;   // 1B doubles = 8 GB per array
+constexpr int64_t RUNS = 100;
 constexpr double  S    = 3.0;
 
 /* ═══ Cache flush ═══ */

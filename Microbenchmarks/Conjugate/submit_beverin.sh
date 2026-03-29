@@ -31,10 +31,10 @@ g++ $CFLAGS -o bench_triad bench_triad.cpp -lnuma
 g++ $CFLAGS -o bench_triad_local bench_triad_local.cpp -lnuma
 
 echo "[1/5] conjugate_inplace.cpp       (CPU in-place)"
-g++ $CFLAGS -o conj_ip_cpu conjugate_inplace.cpp
+g++ $CFLAGS -o conj_ip_cpu conjugate_inplace.cpp -lnuma
 
 echo "[2/5] conjugate.cpp               (CPU out-of-place)"
-g++ $CFLAGS -o conj_oop_cpu conjugate.cpp
+g++ $CFLAGS -o conj_oop_cpu conjugate.cpp -lnuma
 
 echo "[3/5] conjugate_inplace_hip.cpp   (GPU in-place)"
 hipcc $HIPFLAGS -o conj_ip_gpu conjugate_inplace_hip.cpp
@@ -92,4 +92,8 @@ for f in results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.c
 done
 
 mkdir -p results/beverin
-mv results_cpu_ip.csv results_cpu.csv results_gpu_ip.csv results_gpu_oop.csv results_streams.csv results/beverin/
+mv results_cpu_ip.csv results/beverin/
+mv results_cpu.csv results/beverin/
+mv results_gpu_ip.csv results/beverin/
+mv results_gpu_oop.csv results/beverin/
+mv results_streams.csv results/beverin/
