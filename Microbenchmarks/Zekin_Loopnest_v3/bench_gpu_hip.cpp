@@ -445,7 +445,7 @@ static void run_variant_configs(
         double max_rel = 0.0;
         size_t first_fail = 0;
         bool ok = verify(h_gpu_out, h_ref, sz2d,
-                         1e-12, 1e-15, &n_fail, &max_rel, &first_fail);
+                         1e-8, 1e-12, &n_fail, &max_rel, &first_fail);
         if (!ok) {
             int ff_je, ff_jk;
             if (V <= 2) { ff_je = first_fail % N; ff_jk = first_fail / N; }

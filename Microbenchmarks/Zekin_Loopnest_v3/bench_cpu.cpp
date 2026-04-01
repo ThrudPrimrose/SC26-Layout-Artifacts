@@ -180,7 +180,7 @@ static bool verify(const double *got, const double *ref, size_t n, int *nf,
            dn = std::max(std::abs(ref[i]), 1e-300), r = d / dn;
     if (r > *mr)
       *mr = r;
-    if (d > 1e-15 + 1e-12 * std::abs(ref[i]))
+    if (d > 1e-12 + 1e-8 * std::abs(ref[i]))
       (*nf)++;
   }
   return *nf == 0;

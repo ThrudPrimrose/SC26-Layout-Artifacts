@@ -2,7 +2,7 @@
 #SBATCH --job-name=zekin_d_c
 #SBATCH --nodes=1
 #SBATCH --partition=normal
-#SBATCH --time=00:30:00
+#SBATCH --time=01:30:00
 #SBATCH --output=zekin_d_%j.out
 #SBATCH --error=zekin_d_%j.err
 #SBATCH --ntasks=1
