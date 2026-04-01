@@ -1,7 +1,14 @@
 /*
  * cost_metrics.cpp -- Cost metrics for z_v_grad_w stencil
  *
- * 4 metrics: mu, mu*Delta, mu*Delta_numa, Delta_max
+ * 5 metrics:
+ *   mu              = avg new-block count per step
+ *   mu*Delta        = avg sum of min-distance over new blocks (unweighted)
+ *   mu*Delta_numa   = avg sum of NUMA-weighted min-distance
+ *   Delta_max       = avg block distance using max (worst-case reuse)
+ *   Delta_min_numa  = avg NUMA-weighted min-distance per new block
+ *                     (= per-step mean, not product-of-averages)
+ *
  * Supports unblocked (V1-V4) + blocked (B=8..128) + exact ICON dist
  *
  * Compile: g++ -O3 -std=c++17 -fopenmp -o cost_metrics cost_metrics.cpp
@@ -25,7 +32,6 @@ static double ALPHA = 0.012, GAMMA = 1.8;
 static int P_NUMA = 4, BLOCK_BYTES_G = 64, L1_BYTES = 32768;
 #pragma omp threadprivate(BLOCK_BYTES_G)
 
-/* ---- Index functions ---- */
 inline int IC_v(int V, int je, int jk, int N, int nl) {
   return (V <= 2) ? je + jk * N : jk + je * nl;
 }
@@ -66,7 +72,6 @@ inline LoopOrder iter_order(Schedule s, int V) {
   return (V <= 2) ? KLON_FIRST : KLEV_FIRST;
 }
 
-/* ---- NUMA ---- */
 static Schedule G_SCHED;
 #pragma omp threadprivate(G_SCHED)
 static int NU_HOME = 0;
@@ -170,7 +175,6 @@ inline double wn_b(int a, int B, int64_t ba, int64_t rd, int N, int nl) {
   return (rd < BETA) ? ALPHA : 1.0;
 }
 
-/* ---- Refs ---- */
 static constexpr int NR = 14;
 struct Ref {
   int a;
@@ -243,14 +247,14 @@ struct BS {
 };
 
 struct Metrics {
-  double mu, mu_d, mu_dn, dmax;
+  double mu, mu_d, mu_dn, dmax, dn_avg;
   int64_t T;
 };
 
 static inline void step(int W, int N, int nl, LoopOrder lo, int je0, int jk0,
                         const int *ci, const int *vi, BS &prev, BS &curr,
                         int64_t &T, double &smu, double &smd, double &smdn,
-                        double &sdm, int V, int B) {
+                        double &sdm, double &sdna, int V, int B) {
   curr.clear();
   for (int w = 0; w < W; w++) {
     int je = (lo == KLON_FIRST) ? je0 + w : je0;
@@ -270,6 +274,7 @@ static inline void step(int W, int N, int nl, LoopOrder lo, int je0, int jk0,
     smd += nb;
     smdn += nb;
     sdm += 1.0;
+    sdna += 1.0;
   } else {
     int nc = 0;
     double sm = 0, sx = 0, sn = 0;
@@ -303,8 +308,10 @@ static inline void step(int W, int N, int nl, LoopOrder lo, int je0, int jk0,
     smu += nc;
     smd += sm;
     smdn += sn;
-    if (nc > 0)
+    if (nc > 0) {
       sdm += sx / nc;
+      sdna += sn / nc;
+    }
   }
   T++;
   std::swap(prev, curr);
@@ -316,12 +323,12 @@ Metrics compute_slice(int V, int B, int W, int N, int nl, Schedule sc,
   LoopOrder lp = (V > 0) ? iter_order(sc, V) : KLON_FIRST;
   BS prev, curr;
   int64_t T = 0;
-  double smu = 0, smd = 0, smdn = 0, sdm = 0;
+  double smu = 0, smd = 0, smdn = 0, sdm = 0, sdna = 0;
   if (B > 0) {
     for (int64_t jb = lo; jb < hi; jb++)
       for (int jk = 0; jk < nl; jk++)
         step(B, N, nl, KLON_FIRST, (int)jb * B, jk, ci, vi, prev, curr, T, smu,
-             smd, smdn, sdm, 0, B);
+             smd, smdn, sdm, sdna, 0, B);
   } else if (sc == SCHED_OMP_COLLAPSE2) {
     int64_t ln = lo;
     while (ln < hi) {
@@ -331,7 +338,7 @@ Metrics compute_slice(int V, int B, int W, int N, int nl, Schedule sc,
       int je_end = (int)(re - (int64_t)jk * N);
       for (int j = js; j + W <= je_end; j += W)
         step(W, N, nl, KLON_FIRST, j, jk, ci, vi, prev, curr, T, smu, smd, smdn,
-             sdm, V, 0);
+             sdm, sdna, V, 0);
       ln = re;
     }
   } else {
@@ -341,13 +348,13 @@ Metrics compute_slice(int V, int B, int W, int N, int nl, Schedule sc,
         int je = (lp == KLON_FIRST) ? i : (int)o;
         int jk = (lp == KLON_FIRST) ? (int)o : i;
         step(W, N, nl, lp, je, jk, ci, vi, prev, curr, T, smu, smd, smdn, sdm,
-             V, 0);
+             sdna, V, 0);
       }
   }
   if (!T)
     return {};
   double d = (double)T;
-  return {smu / d, smd / d, smdn / d, sdm / d, T};
+  return {smu / d, smd / d, smdn / d, sdm / d, sdna / d, T};
 }
 
 Metrics compute_metrics(int V, int B, int W, int N, int nl, Schedule sc,
@@ -367,6 +374,7 @@ Metrics compute_metrics(int V, int B, int W, int N, int nl, Schedule sc,
     ac.mu_d += m.mu_d;
     ac.mu_dn += m.mu_dn;
     ac.dmax += m.dmax;
+    ac.dn_avg += m.dn_avg;
     ac.T += m.T;
     nd++;
   };
@@ -395,10 +403,10 @@ Metrics compute_metrics(int V, int B, int W, int N, int nl, Schedule sc,
   if (!nd)
     return {};
   double dn = (double)nd;
-  return {ac.mu / dn, ac.mu_d / dn, ac.mu_dn / dn, ac.dmax / dn, ac.T};
+  return {ac.mu / dn,   ac.mu_d / dn,   ac.mu_dn / dn,
+          ac.dmax / dn, ac.dn_avg / dn, ac.T};
 }
 
-/* ---- Distributions ---- */
 enum CellDist { UNIFORM = 0, NORMAL1 = 1, NORMAL4 = 2, SEQUENTIAL = 3 };
 static const char *dname[] = {"uniform", "normal_var1", "normal_var4",
                               "sequential", "exact"};
@@ -514,7 +522,6 @@ static const Tgt tgts[] = {{"CPU_scalar", "cpu_scalar", 64, 1},
 static constexpr int NT = 4;
 static const int BSZ[] = {8, 16, 32, 64, 128};
 static constexpr int NB = 5;
-
 struct Res {
   const char *tgt, *sch, *dist;
   int V, B, bb, w;
@@ -524,7 +531,7 @@ struct Res {
 
 int main(int argc, char **argv) {
   int N = (argc > 1) ? atoi(argv[1]) : 81920,
-      nl = (argc > 2) ? atoi(argv[2]) : 96;
+      nl = (argc > 2) ? atoi(argv[2]) : 90;
   BETA = (argc > 3) ? atoi(argv[3]) : 1;
   ALPHA = (argc > 4) ? atof(argv[4]) : 0.012;
   GAMMA = (argc > 5) ? atof(argv[5]) : 1.8;
@@ -542,7 +549,7 @@ int main(int argc, char **argv) {
   FILE *csv = fopen("metrics.csv", "w");
   fprintf(csv, "nlev,variant,blocking,cell_dist,schedule,target,block_bytes,"
                "vector_width,"
-               "mu,mu_delta,mu_delta_numa,delta_max,l1_ratio,"
+               "mu,mu_delta,mu_delta_numa,delta_max,delta_min_numa,l1_ratio,"
                "beta,alpha,gamma,P_NUMA,T\n");
 
   int ndists = hex ? 5 : 4;
@@ -627,15 +634,14 @@ int main(int argc, char **argv) {
     res.insert(res.end(), loc.begin(), loc.end());
   }
 
-  /* CSV + table */
   for (auto &r : res) {
     if (!r.m.T)
       continue;
     fprintf(csv,
-            "%d,%d,%d,%s,%s,%s,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%.4f,%.4f,%d,%"
-            "ld\n",
+            "%d,%d,%d,%s,%s,%s,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%.4f,%."
+            "4f,%d,%ld\n",
             nl, r.V, r.B, r.dist, r.sch, r.tgt, r.bb, r.w, r.m.mu, r.m.mu_d,
-            r.m.mu_dn, r.m.dmax, r.l1r, BETA, ALPHA, GAMMA, P_NUMA,
+            r.m.mu_dn, r.m.dmax, r.m.dn_avg, r.l1r, BETA, ALPHA, GAMMA, P_NUMA,
             (long)r.m.T);
   }
   fclose(csv);
@@ -650,23 +656,25 @@ int main(int argc, char **argv) {
   };
   printf("\n  N=%d nl=%d beta=%d alpha=%.4f gamma=%.3f P=%d L1=%d\n\n", N, nl,
          BETA, ALPHA, GAMMA, P_NUMA, L1_BYTES);
-  printf("  %-4s %4s %-11s %-8s %-11s %8s %8s %8s %8s %8s\n", "V", "B",
-         "Target", "Sched", "Dist", "mu", "mu*D", "mu*Dn", "D_max", "L1%");
-  printf("  %-4s %4s %-11s %-8s %-11s %8s %8s %8s %8s %8s\n", "----", "----",
-         "-----------", "--------", "-----------", "--------", "--------",
-         "--------", "--------", "--------");
+  printf("  %-4s %4s %-11s %-8s %-11s %8s %8s %8s %8s %8s %8s\n", "V", "B",
+         "Target", "Sched", "Dist", "mu", "mu*D", "mu*Dn", "D_max", "Dn_avg",
+         "L1%");
+  printf("  %-4s %4s %-11s %-8s %-11s %8s %8s %8s %8s %8s %8s\n", "----",
+         "----", "-----------", "--------", "-----------", "--------",
+         "--------", "--------", "--------", "--------", "--------");
   for (auto &r : res) {
     if (!r.m.T)
       continue;
-    char b[5][16];
+    char b[6][16];
     fmt(r.m.mu, b[0]);
     fmt(r.m.mu_d, b[1]);
     fmt(r.m.mu_dn, b[2]);
     fmt(r.m.dmax, b[3]);
+    fmt(r.m.dn_avg, b[4]);
     if (r.B > 0)
-      snprintf(b[4], 16, "%7.1f%%", r.l1r * 100);
+      snprintf(b[5], 16, "%7.1f%%", r.l1r * 100);
     else
-      snprintf(b[4], 16, "%8s", "n/a");
+      snprintf(b[5], 16, "%8s", "n/a");
     char vl[8], bl[8];
     if (r.V > 0)
       snprintf(vl, 8, "V%d", r.V);
@@ -676,8 +684,8 @@ int main(int argc, char **argv) {
       snprintf(bl, 8, "%d", r.B);
     else
       snprintf(bl, 8, "-");
-    printf("  %-4s %4s %-11s %-8s %-11s %s %s %s %s %s\n", vl, bl, r.tgt, r.sch,
-           r.dist, b[0], b[1], b[2], b[3], b[4]);
+    printf("  %-4s %4s %-11s %-8s %-11s %s %s %s %s %s %s\n", vl, bl, r.tgt,
+           r.sch, r.dist, b[0], b[1], b[2], b[3], b[4], b[5]);
   }
   printf("\n");
   if (hex)
