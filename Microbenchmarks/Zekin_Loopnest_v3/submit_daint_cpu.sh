@@ -41,6 +41,8 @@ export LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$CUTENSOR_HOME/lib/12:$CUDA_HOME
 export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$CUTENSOR_HOME/lib/12:$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 export PATH=$SCRATCH/bin:$CUTENSOR_HOME/bin:$PATH
 
+export ICON_DATA_PATH=/capstor/scratch/cscs/ybudanaz/icon-artifacts/velocity/data_r02b05
+
 g++ -O3 -std=c++17 \
     -march=native \
     -fopenmp \

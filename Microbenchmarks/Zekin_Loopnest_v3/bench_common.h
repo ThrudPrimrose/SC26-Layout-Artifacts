@@ -39,7 +39,11 @@ static constexpr int N_BLOCK_SIZES = 5;
 #ifdef __CUDACC__
 #define HD __host__ __device__ __forceinline__
 #else
+#ifdef __HIP_PLATFORM_AMD__
+#define HD __host__ __device__ __forceinline__
+#else
 #define HD inline
+#endif
 #endif
 
 /* ================================================================ */
