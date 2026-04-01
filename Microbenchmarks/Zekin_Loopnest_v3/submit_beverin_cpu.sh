@@ -13,8 +13,6 @@
 # -------------------------------
 
 
-
-
 export OMP_DISPLAY_ENV=TRUE
 
 echo "Running on $(hostname)"
@@ -71,6 +69,8 @@ export OMP_PROC_BIND=close
 # Strong pinning via Slurm
 export SLURM_CPU_BIND=cores
 
+export ICON_DATA_PATH=/capstor/scratch/cscs/ybudanaz/beverin/icon-artifacts/velocity/data_r02b05
+
 ARCH=${HIP_ARCH:-gfx942}
 echo "Building for $ARCH"
 g++ -O3 -std=c++17 \
@@ -80,6 +80,6 @@ g++ -O3 -std=c++17 \
     -mtune=native \
     -fno-vect-cost-model \
     -ftree-vectorize \
-    -o bench_cpu bench_cpu.cpp
+    -o bench_cpu_a bench_cpu.cpp
 
-./bench_cpu
+./bench_cpu_a

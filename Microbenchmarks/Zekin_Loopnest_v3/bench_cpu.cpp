@@ -82,7 +82,6 @@ static void cpu_blocked_for(
   int nblocks = N / B;
 #pragma omp parallel for schedule(static)
   for (int jb = 0; jb < nblocks; jb++) {
-#pragma omp unroll
     for (int jk = 0; jk < nlev; jk++) {
 #pragma omp simd
       for (int jl = 0; jl < B; jl++) {
@@ -103,7 +102,6 @@ static void cpu_blocked_col(
   int nblocks = N / B;
 #pragma omp parallel for schedule(static)
   for (int jb = 0; jb < nblocks; jb++) {
-#pragma omp unroll
     for (int jk = 0; jk < nlev; jk++) {
 #pragma omp simd
       for (int jl = 0; jl < B; jl++) {

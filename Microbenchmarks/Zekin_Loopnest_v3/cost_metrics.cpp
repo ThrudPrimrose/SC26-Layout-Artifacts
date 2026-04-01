@@ -619,7 +619,10 @@ int main(int argc, char **argv) {
             BLOCK_BYTES_G = tgts[ti].bb;
             Metrics m =
                 compute_metrics(0, B, Wv, cN, nl, sc, ci.data(), vi.data());
-            double ws = ((double)B * (8 * 8 + 4 * 4)) / (double)L1_BYTES;
+            int num_2d = 8; // OUT, VN_IE, W×2, Z_VT_IE, Z_W_V×2 (scattered indirect)
+            int num_1d = 4; // cell_idx×2, vert_idx×2
+            double ws = ((double)num_2d * B * 8 + (double)num_1d * B * 4)
+                        / (double)L1_BYTES;
             loc.push_back({tgts[ti].c, sched_name[si], dname[di], 0, B,
                            tgts[ti].bb, Wv, ws, m});
           }

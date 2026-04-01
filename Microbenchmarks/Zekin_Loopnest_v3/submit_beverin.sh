@@ -70,6 +70,8 @@ export OMP_PLACES="{0}:24:1,{24}:24:1,{48}:24:1,{72}:24:1"
 export OMP_SCHEDULE=static
 export OMP_PROC_BIND=close
 
+export ICON_DATA_PATH=/capstor/scratch/cscs/ybudanaz/beverin/icon-artifacts/velocity/data_r02b05
+
 ARCH=${HIP_ARCH:-gfx942}
 echo "Building for $ARCH"
 hipcc -O3 -std=c++17 \
@@ -84,7 +86,7 @@ hipcc -O3 -std=c++17 \
     -fgpu-flush-denormals-to-zero \
     -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
     -ffast-math --offload-arch=$ARCH -fopenmp \
-    -o bench_gpu_hip bench_gpu_hip.cpp
+    -o bench_gpu_a bench_gpu_hip.cpp
 
 
-./bench_gpu_hip
+./bench_gpu_a
