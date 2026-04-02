@@ -6,6 +6,7 @@
 #SBATCH --output=beverin_gpu_transpose_%j.out
 #SBATCH --error=beverin_gpu_transpose_%j.err
 #SBATCH --ntasks=1
+#SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=192
 #SBATCH --exclusive
 
