@@ -12,9 +12,8 @@
 # OpenMP configuration
 # -------------------------------
 export OMP_NUM_THREADS=288
-export OMP_PROC_BIND=true
+export OMP_PROC_BIND="{0}:72:1,{72}:72:1,{144}:72:1,{216}:72:1"
 export OMP_PLACES=cores
-
 # Optional: better NUMA behavior
 export OMP_DISPLAY_ENV=TRUE
 

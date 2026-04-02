@@ -6,14 +6,13 @@
 #SBATCH --output=beverin_gpu_transpose_%j.out
 #SBATCH --error=beverin_gpu_transpose_%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=128
+#SBATCH --cpus-per-task=192
+#SBATCH --exclusive
 
-# -------------------------------
-# OpenMP configuration
-# -------------------------------
-export OMP_NUM_THREADS=64
+export OMP_NUM_THREADS=96
+export OMP_PLACES="{0}:24:1,{24}:24:1,{48}:24:1,{72}:24:1"
+export OMP_SCHEDULE=static
 export OMP_PROC_BIND=close
-export OMP_PLACES=threads
 
 # Strong pinning via Slurm
 export SLURM_CPU_BIND=cores

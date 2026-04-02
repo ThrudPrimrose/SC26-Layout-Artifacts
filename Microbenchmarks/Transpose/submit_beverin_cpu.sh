@@ -8,12 +8,12 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-task=0
 #SBATCH --cpus-per-task=192
-# -------------------------------
-# OpenMP configuration
-# -------------------------------
+#SBATCH --exclusive
+
 export OMP_NUM_THREADS=96
+export OMP_PLACES="{0}:24:1,{24}:24:1,{48}:24:1,{72}:24:1"
+export OMP_SCHEDULE=static
 export OMP_PROC_BIND=close
-export OMP_PLACES=threads
 
 # Strong pinning via Slurm
 export SLURM_CPU_BIND=cores
