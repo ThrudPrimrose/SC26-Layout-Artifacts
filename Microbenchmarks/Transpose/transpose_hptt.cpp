@@ -4,10 +4,10 @@
  *  Plans are pre-created outside the timed region.
  *
  *  Variants:
- *    0 = hptt             full N×N 2D transpose, ESTIMATE
- *    1 = hptt_blk         blocked layout as 4D tensor [NB,NB,SB,SB], perm {1,0,3,2}
- *    2 = hptt_rm_tiled    row-major tiled, serial loop over per-tile 2D plans
- *    3 = hptt_patient     full N×N 2D transpose, PATIENT auto-tune
+ *    0 = hptt               full N×N 2D transpose, ESTIMATE
+ *    1 = hptt_blk           blocked layout as 4D tensor [NB,NB,SB,SB], perm {1,0,3,2}, ESTIMATE
+ *    2 = hptt_patient       full N×N 2D transpose, PATIENT auto-tune
+ *    3 = hptt_patient_blk   blocked layout as 4D tensor, PATIENT auto-tune
  *
  *  Build:
  *    g++ -O3 -march=native -fopenmp -I<hptt>/include -L<hptt>/lib \
@@ -151,10 +151,11 @@ static void parallel_init(float *p, size_t n, float val) {
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 static const char *V_NAMES[] = {
-    "hptt", "hptt_blk", "hptt_rm_tiled", "hptt_patient",
+    "hptt", "hptt_blk", "hptt_patient", "hptt_patient_blk",
 };
 static const int N_VARIANTS = 4;
-static bool is_blocked(int var) { return var == 1; }
+static bool is_blocked(int var) { return var == 1 || var == 3; }
+static bool is_patient(int var) { return var == 2 || var == 3; }
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  Plan factories — all use HPTT-internal threading
@@ -187,21 +188,6 @@ static Plan make_blocked_plan(const float *src, float *dst,
     return hptt::create_plan(perm, 4, alpha, src, size, nullptr,
                              beta, dst, nullptr,
                              method, numThreads, nullptr, true);
-}
-
-/* 2D tile plan: transpose a th×tw sub-matrix at (r0,c0) within N×N row-major */
-static Plan make_tile_plan(const float *in, float *out, int N,
-                           int r0, int c0, int th, int tw, int numThreads) {
-    int perm[2] = {1, 0};
-    int size[2] = {th, tw};
-    int outerA[2] = {N, N};
-    int outerB[2] = {N, N};
-    float alpha = 1.0f, beta = 0.0f;
-    return hptt::create_plan(perm, 2, alpha,
-                             in + r0 * N + c0, size, outerA,
-                             beta,
-                             out + c0 * N + r0, outerB,
-                             hptt::ESTIMATE, numThreads, nullptr, true);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -245,10 +231,10 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Usage: %s <N> <variant> <csv> [SB=32] [WARMUP=3] [REPS=20] [THREADS=0]\n"
                 "\n"
-                "  0 = hptt           full N×N 2D, ESTIMATE\n"
-                "  1 = hptt_blk       blocked 4D [NB,NB,SB,SB], perm {1,0,3,2}\n"
-                "  2 = hptt_rm_tiled  row-major tiled, per-tile 2D plans\n"
-                "  3 = hptt_patient   full N×N 2D, PATIENT auto-tune\n",
+                "  0 = hptt               full N×N 2D, ESTIMATE\n"
+                "  1 = hptt_blk           blocked 4D [NB,NB,SB,SB], ESTIMATE\n"
+                "  2 = hptt_patient       full N×N 2D, PATIENT auto-tune\n"
+                "  3 = hptt_patient_blk   blocked 4D [NB,NB,SB,SB], PATIENT auto-tune\n",
                 argv[0]);
         return 1;
     }
@@ -285,8 +271,11 @@ int main(int argc, char **argv) {
     size_t elems = (size_t)N * N;
     size_t bytes = elems * sizeof(float);
 
-    printf("  %s N=%d SB=%d thr=%d hptt_thr=%d numa_nodes=%d\n",
-           V_NAMES[VAR], N, SB, nthreads, hptt_threads, D);
+    hptt::SelectionMethod method = is_patient(VAR) ? hptt::PATIENT : hptt::ESTIMATE;
+    const char *method_str = is_patient(VAR) ? "PATIENT" : "ESTIMATE";
+
+    printf("  %s N=%d SB=%d thr=%d hptt_thr=%d numa_nodes=%d method=%s\n",
+           V_NAMES[VAR], N, SB, nthreads, hptt_threads, D, method_str);
 
     /* ── Allocate with NUMA binding ───────────────────────────────── */
     float *h_in, *h_out, *h_row, *h_ref;
@@ -339,57 +328,20 @@ int main(int argc, char **argv) {
 
     parallel_init(h_out, elems, 0.0f);
 
-    /* ── Pre-create plans (all use hptt_threads) ──────────────────── */
-    Plan main_plan;
-    std::vector<Plan> tile_plans;
-    int NT = 0;
-
-    printf("  Creating plans...\n");
+    /* ── Pre-create plan (all use hptt_threads, single plan) ──────── */
+    printf("  Creating plan (%s)...\n", method_str);
     double pt0 = omp_get_wtime();
 
-    switch (VAR) {
-    case 0:
-        main_plan = make_full_plan(h_in, h_out, N, hptt_threads, hptt::ESTIMATE);
-        break;
-    case 1:
-        main_plan = make_blocked_plan(h_in, h_out, N, SB, hptt_threads, hptt::ESTIMATE);
-        break;
-    case 2: {
-        NT = (N + SB - 1) / SB;
-        tile_plans.resize(NT * NT);
-        for (int tr = 0; tr < NT; tr++)
-            for (int tc = 0; tc < NT; tc++) {
-                int r0 = tr * SB, c0 = tc * SB;
-                int th = std::min(SB, N - r0), tw = std::min(SB, N - c0);
-                tile_plans[tr * NT + tc] =
-                    make_tile_plan(h_in, h_out, N, r0, c0, th, tw, hptt_threads);
-            }
-        break;
-    }
-    case 3:
-        printf("  PATIENT auto-tuning...\n");
-        main_plan = make_full_plan(h_in, h_out, N, hptt_threads, hptt::PATIENT);
-        break;
-    }
+    Plan plan;
+    if (is_blocked(VAR))
+        plan = make_blocked_plan(h_in, h_out, N, SB, hptt_threads, method);
+    else
+        plan = make_full_plan(h_in, h_out, N, hptt_threads, method);
 
-    printf("  Plans: %.3f s (%d plans)\n",
-           omp_get_wtime() - pt0,
-           VAR == 2 ? (int)tile_plans.size() : 1);
+    printf("  Plan: %.3f s\n", omp_get_wtime() - pt0);
 
-    /* ── Launch (HPTT parallelizes internally) ────────────────────── */
-    auto launch = [&]() {
-        switch (VAR) {
-        case 0:
-        case 1:
-        case 3:
-            main_plan->execute();
-            break;
-        case 2:
-            for (int i = 0; i < NT * NT; i++)
-                tile_plans[i]->execute();
-            break;
-        }
-    };
+    /* ── Launch ───────────────────────────────────────────────────── */
+    auto launch = [&]() { plan->execute(); };
 
     for (int i = 0; i < WARMUP; i++)
         launch();

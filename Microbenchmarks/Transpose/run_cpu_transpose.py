@@ -35,9 +35,8 @@ KERN_NAMES = {
 LIB_NAMES_MAP = {
     0: "hptt",
     1: "hptt_blk",
-    2: "hptt_blk_omp",
-    3: "hptt_rm_omp",
-    4: "hptt_patient",
+    2: "hptt_patient",
+    3: "hptt_patient_blk",
 }
 LIB_NAMES = set(LIB_NAMES_MAP.values())
 
@@ -62,8 +61,8 @@ LOCBUF_BLK_VARIANTS = [14, 15, 16, 17]
 RM_BLK_VARIANTS    = [20, 21]
 RM_BLK_MT_VARIANTS = [22, 23]
 
-# HPTT: sweep SB for tiled variants
-LIB_SB_VALS = [16, 32, 64, 128, 256]
+# HPTT: sweep SB for blocked variants
+LIB_SB_VALS = [16, 32, 64, 128, 256, 512]
 
 # NUMA policies to sweep (0=none, 1=contig, 2=cyclic, 3=transpose)
 NUMA_POLICIES = [0, 1]   # Add 2, 3 for blocked variants
@@ -286,30 +285,33 @@ def sweep_kernels():
 
 
 def sweep_hptt():
-    """Sweep HPTT library variants."""
+    """Sweep all HPTT library variants (all use HPTT-internal threading)."""
     if not Path(BINARY_LIB).exists():
         return
     print(f"\n  -- Library: HPTT --")
     # transpose_hptt args: N variant csv SB WARMUP REPS THREADS
 
-    # V0: full matrix, ESTIMATE
-    run_one(BINARY_LIB, [N, 0, CSV_RAW, 32, WARMUP, REPS, THREADS], "hptt ESTIMATE")
+    # V0: hptt — full 2D, ESTIMATE (SB irrelevant, run once)
+    run_one(BINARY_LIB, [N, 0, CSV_RAW, 32, WARMUP, REPS, THREADS],
+            "hptt ESTIMATE")
 
-    # V4: full matrix, PATIENT
-    run_one(BINARY_LIB, [N, 4, CSV_RAW, 32, WARMUP, REPS, THREADS], "hptt PATIENT")
+    # V2: hptt_patient — full 2D, PATIENT (SB irrelevant, run once)
+    run_one(BINARY_LIB, [N, 2, CSV_RAW, 32, WARMUP, REPS, THREADS],
+            "hptt_patient PATIENT")
 
-    # V3: row-major tiled, OMP — sweep SB
+    # V1: hptt_blk — blocked 4D, ESTIMATE — sweep SB
     for sb in LIB_SB_VALS:
-        run_one(BINARY_LIB, [N, 3, CSV_RAW, sb, WARMUP, REPS, THREADS],
-                f"hptt_rm_omp SB={sb}")
+        if N % sb != 0:
+            continue
+        run_one(BINARY_LIB, [N, 1, CSV_RAW, sb, WARMUP, REPS, THREADS],
+                f"hptt_blk SB={sb}")
 
-    # V1, V2: blocked — sweep SB
-    for var in (1, 2):
-        for sb in LIB_SB_VALS:
-            if N % sb != 0:
-                continue
-            label = f"{LIB_NAMES_MAP[var]} SB={sb}"
-            run_one(BINARY_LIB, [N, var, CSV_RAW, sb, WARMUP, REPS, THREADS], label)
+    # V3: hptt_patient_blk — blocked 4D, PATIENT — sweep SB
+    for sb in LIB_SB_VALS:
+        if N % sb != 0:
+            continue
+        run_one(BINARY_LIB, [N, 3, CSV_RAW, sb, WARMUP, REPS, THREADS],
+                f"hptt_patient_blk SB={sb}")
 
 
 # ══════════════════════════════════════════════════════════════════════
