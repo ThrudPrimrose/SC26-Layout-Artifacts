@@ -1,0 +1,62 @@
+Running on nid005524
+Threads: 288
+Layout-conflict benchmark (CPU)
+  M=16384  N=16384  reps=100  warmup=5
+  threads=288  page=65536 B  NUMA=yes
+  A: row-major   B: col-major   C: row-major
+  cache line = 64 B  ->  8 doubles/line
+
+Initializing row-major arrays (NUMA bind+touch) ...
+
+=== Naive schedules ===
+  row_major                    T=0     median   161.5 GB/s  [  145.6 ..   165.0]  PASS
+  col_major                    T=0     median    73.9 GB/s  [   64.5 ..    76.3]  PASS
+  all_rowmajor                 T=0     median   658.1 GB/s  [  229.7 ..   665.5]  PASS
+
+=== Tiled schedules (stack-local B transpose) ===
+  tiled                        T=8     median   469.4 GB/s  [  283.2 ..   483.7]  PASS
+  tiled                        T=16    median   452.0 GB/s  [  214.9 ..   462.7]  PASS
+  tiled                        T=32    median   428.4 GB/s  [  303.9 ..   434.5]  PASS
+  tiled                        T=64    median   352.2 GB/s  [  250.0 ..   363.5]  PASS
+  tiled                        T=128   median   308.7 GB/s  [  176.9 ..   318.1]  PASS
+
+=== Blocked storage (SB×SB contiguous blocks) ===
+
+  --- Blocked SB=8 ---
+  blk_all_rm                   T=8     median  1141.9 GB/s  [  555.6 ..  1165.8]  PASS
+  blk_conflict                 T=8     median  1148.3 GB/s  [  557.5 ..  1166.5]  PASS
+
+  --- Blocked SB=16 ---
+  blk_all_rm                   T=16    median  1189.6 GB/s  [  271.5 ..  1212.4]  PASS
+  blk_conflict                 T=16    median  1168.7 GB/s  [  547.2 ..  1209.3]  PASS
+
+  --- Blocked SB=32 ---
+  blk_all_rm                   T=32    median  1175.4 GB/s  [  575.8 ..  1202.1]  PASS
+  blk_conflict                 T=32    median  1221.6 GB/s  [  617.1 ..  1244.8]  PASS
+
+  --- Blocked SB=64 ---
+  blk_all_rm                   T=64    median  1439.8 GB/s  [  629.8 ..  1470.0]  PASS
+  blk_conflict                 T=64    median  1499.5 GB/s  [  261.6 ..  1551.1]  PASS
+
+  --- Blocked SB=128 ---
+  blk_all_rm                   T=128   median  1558.2 GB/s  [  642.8 ..  1589.1]  PASS
+  blk_conflict                 T=128   median  1504.4 GB/s  [  624.2 ..  1551.3]  PASS
+
+Wrote 1800 records to madd_daint_cpu.csv
+
+=== Summary ===
+  Row-major schedules:
+    best tiled:     469.4 GB/s
+    row_major:      161.5 GB/s  (2.9x vs tiled)
+    col_major:       73.9 GB/s  (6.4x vs tiled)
+    all_rowmajor:   658.1 GB/s  (peak control)
+  Blocked storage:
+    blk_all_rm:    1558.2 GB/s  SB=128  (236.8% of all_rowmajor)
+    blk_conflict:  1504.4 GB/s  SB=128  (96.5% of blk_all_rm)
+  Conflict cost absorbed by blocking:
+    row_major conflict:  4.1x slowdown vs all_rowmajor
+    blocked conflict:    1.0x slowdown vs blk_all_rm
+
+=== Model (B_eff=8) ===
+  row_major predicted:  3.3x  (cost 10 vs 3)
+  col_major predicted:  5.7x  (cost 17 vs 3)
