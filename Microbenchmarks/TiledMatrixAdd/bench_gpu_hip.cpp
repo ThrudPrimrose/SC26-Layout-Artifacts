@@ -629,7 +629,7 @@ int main(int argc, char** argv)
         printf("  Best control    : %.3f ms  (%.2fx vs tiled)  — all row-major\n",
                best_ctrl, best_ctrl / best_tiled);
 
-    const double data_bytes = (double)total * sizeof(double) * 4.0;  /* 2R + 1RW (C+=) */
+    const double data_bytes = (double)total * sizeof(double) * 3.0;  /* 2R + 1W (C=) */
     printf("\n  Peak BW (best control): %.1f GB/s\n",
            data_bytes / (best_ctrl * 1e-3) / 1e9);
     printf("  Tiled recovery:         %.1f GB/s\n",
