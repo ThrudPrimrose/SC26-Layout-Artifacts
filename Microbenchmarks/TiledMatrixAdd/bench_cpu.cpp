@@ -57,6 +57,10 @@ static const int N = N_DIM;
 #define NREP    100
 #define NWARMUP 5
 
+#ifndef NOHUGEPAGE
+#define NOHUGEPAGE 1
+#endif
+
 /* ── index helpers ────────────────────────────────────────────────── */
 static inline int idx_rm(int i, int j) { return i * N + j; }
 static inline int idx_cm(int i, int j) { return j * M + i; }
@@ -95,7 +99,11 @@ static void *numa_alloc(size_t bytes) {
     void *p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) { perror("mmap"); std::abort(); }
+#if NOHUGEPAGE
+    madvise(p, bytes, MADV_NOHUGEPAGE);
+#else
     madvise(p, bytes, MADV_HUGEPAGE);
+#endif
     return p;
 }
 
@@ -213,7 +221,7 @@ static void kernel_row_major(const double *__restrict__ A,
                              double *__restrict__ C) {
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < M; i++)
-        #pragma omp simd nontemporal(C)
+        #pragma omp simd 
         for (int j = 0; j < N; j++)
             C[idx_rm(i, j)] += A[idx_rm(i, j)] + B[idx_cm(i, j)];
 }
@@ -223,7 +231,7 @@ static void kernel_col_major(const double *__restrict__ A,
                              double *__restrict__ C) {
     #pragma omp parallel for schedule(static)
     for (int j = 0; j < N; j++)
-        #pragma omp simd nontemporal(C)
+        #pragma omp simd 
         for (int i = 0; i < M; i++)
             C[idx_rm(i, j)] += A[idx_rm(i, j)] + B[idx_cm(i, j)];
 }
@@ -248,7 +256,7 @@ static void kernel_tiled(const double *__restrict__ A,
                     b_local[(i - ii) * T + (j - jj)] = B[idx_cm(i, j)];
 
             for (int i = ii; i < iend; i++)
-                #pragma omp simd nontemporal(C)
+                #pragma omp simd 
                 for (int j = jj; j < jend; j++)
                     C[idx_rm(i, j)] += A[idx_rm(i, j)]
                                     + b_local[(i - ii) * T + (j - jj)];
@@ -261,7 +269,7 @@ static void kernel_all_rowmajor(const double *__restrict__ A,
                                 double *__restrict__ C) {
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < M; i++)
-        #pragma omp simd nontemporal(C)
+        #pragma omp simd 
         for (int j = 0; j < N; j++)
             C[idx_rm(i, j)] += A[idx_rm(i, j)] + B_rm[idx_rm(i, j)];
 }

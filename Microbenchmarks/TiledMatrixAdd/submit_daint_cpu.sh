@@ -59,6 +59,6 @@ export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LD_LIBRARY_PATH
 export PATH=$SCRATCH/bin:$PATH
 export BEVERIN=0
 
-g++ -O3 -march=native -mtune=native -fopenmp -ffast-math -fno-vect-cost-model  -fprefetch-loop-arrays -funroll-loops -ftree-loop-distribution -falign-loops=64 -std=c++17 -o bench_cpu bench_cpu.cpp -lnuma
+g++ -DNOHUGEPAGE=1 -O3 -march=native -mtune=native -fopenmp -ffast-math -fno-vect-cost-model  -fprefetch-loop-arrays -funroll-loops -ftree-loop-distribution -falign-loops=64 -std=c++17 -o bench_cpu bench_cpu.cpp -lnuma
 
-./bench_cpu "madd_daint_gpu.csv"
+./bench_cpu "madd_daint_cpu.csv"
