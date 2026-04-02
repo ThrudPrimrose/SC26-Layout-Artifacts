@@ -144,9 +144,9 @@ void coop_store(const double* __restrict__ smem,
         int gi = bi + li, gj = bj + lj;
         if (gi < Md && gj < Nd) {
             if constexpr (L == ROW_MAJOR)
-                gmem[gi * Nd + gj] = smem[li * STRIDE + lj];
+                gmem[gi * Nd + gj] += smem[li * STRIDE + lj];
             else
-                gmem[gj * Md + gi] = smem[li * STRIDE + lj];
+                gmem[gj * Md + gi] += smem[li * STRIDE + lj];
         }
     }
 }
@@ -175,7 +175,7 @@ kernel_direct(const double* __restrict__ A,
         for (int dx = 0; dx < TX; dx++) {
             int j = base_j + dx * BX;
             if (i < Md && j < Nd)
-                C[i * Nd + j] = A[i * Nd + j] + B[j * Md + i];
+                C[i * Nd + j] += A[i * Nd + j] + B[j * Md + i];
         }
     }
 }
@@ -203,7 +203,7 @@ kernel_direct_T(const double* __restrict__ A,
         for (int dy = 0; dy < TY; dy++) {
             int j = base_j + dy * BY;
             if (i < Md && j < Nd)
-                C[i * Nd + j] = A[i * Nd + j] + B[j * Md + i];
+                C[i * Nd + j] += A[i * Nd + j] + B[j * Md + i];
         }
     }
 }
@@ -629,7 +629,7 @@ int main(int argc, char** argv)
         printf("  Best control    : %.3f ms  (%.2fx vs tiled)  — all row-major\n",
                best_ctrl, best_ctrl / best_tiled);
 
-    const double data_bytes = (double)total * sizeof(double) * 3.0;  /* 2R + 1W (C=) */
+    const double data_bytes = (double)total * sizeof(double) * 4.0;  /* 2R + 1RW (C+=) */
     printf("\n  Peak BW (best control): %.1f GB/s\n",
            data_bytes / (best_ctrl * 1e-3) / 1e9);
     printf("  Tiled recovery:         %.1f GB/s\n",
