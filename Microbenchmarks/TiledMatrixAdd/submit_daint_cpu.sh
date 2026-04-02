@@ -1,12 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=madd_daint
+#SBATCH --job-name=madd_cpu_daint
 #SBATCH --nodes=1
-#SBATCH --partition=debug
-#SBATCH --time=00:30:00
+#SBATCH --partition=normal
+#SBATCH --time=01:30:00
 #SBTACH --account g177-1
-#SBATCH --output=madd_daint_%j.out
-#SBATCH --error=madd_daint_%j.err
+#SBATCH --output=madd_cpu_daint_%j.out
+#SBATCH --error=madd_cpu_daint_%j.err
 #SBATCH --ntasks=1
+#SBATCH --account=g177-1
 #SBATCH --cpus-per-task=288
 
 # -------------------------------
