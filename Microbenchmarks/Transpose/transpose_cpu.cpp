@@ -90,12 +90,36 @@ static void bind_by_map(void *base, int NB2, size_t bb, const std::vector<int> &
         }
     }
 }
+/* Bind columns [d*N/D, (d+1)*N/D) to NUMA node d.
+ * In row-major, each page within a row is bound to the domain owning its column range. */
+static void bind_by_cols(void *base, int N, int D) {
+    size_t ps = pagesz();
+    size_t esz = sizeof(float);
+    size_t cols_per_d = (size_t)N / D;
+    size_t total_bytes = (size_t)N * N * esz;
+    size_t total_pages = (total_bytes + ps - 1) / ps;
+    size_t elems_per_page = ps / esz;
+
+    for (size_t pg = 0; pg < total_pages; pg++) {
+        size_t byte_off = pg * ps;
+        size_t elem0 = byte_off / esz;
+        size_t col0 = elem0 % (size_t)N;
+        int domain = std::min((int)(col0 / cols_per_d), D - 1);
+        size_t len = std::min(ps, total_bytes - byte_off);
+        bind_pages((char *)base + byte_off, len, domain);
+    }
+}
+
 static void apply_numa(void *ptr, size_t tot, int N, int SB, bool blk, bool is_out, NumaPolicy pol,
                        int D) {
     if (D <= 1 || pol == NP_NONE)
         return;
     if (!blk) {
-        bind_contiguous(ptr, tot, D);
+        /* Row-major: input by rows, output by columns */
+        if (is_out)
+            bind_by_cols(ptr, N, D);
+        else
+            bind_contiguous(ptr, tot, D);
         return;
     }
     int NB = N / SB, NB2 = NB * NB;
@@ -121,11 +145,20 @@ static void apply_numa(void *ptr, size_t tot, int N, int SB, bool blk, bool is_o
     bind_by_map(ptr, NB2, bb, nm);
 }
 /* Block-row NUMA binding for row-major data with blocked schedule.
- * Binds rows [br*SB, (br+1)*SB) as a unit to a NUMA domain. */
+ * Input: binds rows [br*SB, (br+1)*SB) as a unit to a NUMA domain.
+ * Output: binds columns to NUMA domains (transpose target locality). */
 static void apply_numa_rm_blk(void *ptr, size_t /*tot*/, int N, int SB, bool is_out, NumaPolicy pol,
                               int D) {
     if (D <= 1 || pol == NP_NONE)
         return;
+
+    /* Output: column-based binding (same as row-major output) */
+    if (is_out) {
+        bind_by_cols(ptr, N, D);
+        return;
+    }
+
+    /* Input: block-row-based binding */
     int NB = N / SB;
     size_t row_bytes = (size_t)N * sizeof(float);
     size_t blk_row_bytes = (size_t)SB * row_bytes;
@@ -138,7 +171,7 @@ static void apply_numa_rm_blk(void *ptr, size_t /*tot*/, int N, int SB, bool is_
             domain = std::min(br / per, D - 1);
         else if (pol == NP_CYCLIC)
             domain = br % D;
-        else /* NP_TRANSPOSE: for row-major, input br→d, output uses same mapping */
+        else
             domain = std::min(br / per, D - 1);
 
         size_t lo = (size_t)br * blk_row_bytes;
@@ -163,7 +196,6 @@ static void parallel_zero(float *p, size_t n) {
 static void tr_naive(const float *__restrict__ i, float *__restrict__ o, int N) {
 #pragma omp parallel for schedule(static)
     for (int r = 0; r < N; r++)
-#pragma omp simd nontemporal(o)
         for (int c = 0; c < N; c++)
             o[c * N + r] = i[r * N + c];
 }
@@ -182,13 +214,16 @@ static void tr_tiled(const float *__restrict__ in, float *__restrict__ out, int 
     for (int tr = 0; tr < NT; tr++)
         for (int tc = 0; tc < NT; tc++) {
             int r0 = tr * TB, c0 = tc * TB;
-            int bh = std::min(TB, N - r0), bw = std::min(TB, N - c0);
 #pragma unroll
-            for (int lr = 0; lr < bh; lr++) {
+            for (int lr = 0; lr < TB; lr++) {
                 int r = r0 + lr;
-#pragma omp simd nontemporal(out)
-                for (int lc = 0; lc < bw; lc++) {
+                if (r >= N)
+                    break;
+#pragma unroll
+                for (int lc = 0; lc < TB; lc++) {
                     int c = c0 + lc;
+                    if (c >= N)
+                        break;
                     out[c * N + r] = in[r * N + c];
                 }
             }
@@ -201,13 +236,16 @@ static void tr_tiled_c2(const float *__restrict__ in, float *__restrict__ out, i
     for (int tr = 0; tr < NT; tr++)
         for (int tc = 0; tc < NT; tc++) {
             int r0 = tr * TB, c0 = tc * TB;
-            int bh = std::min(TB, N - r0), bw = std::min(TB, N - c0);
 #pragma unroll
-            for (int lr = 0; lr < bh; lr++) {
+            for (int lr = 0; lr < TB; lr++) {
                 int r = r0 + lr;
-#pragma omp simd nontemporal(out)
-                for (int lc = 0; lc < bw; lc++) {
+                if (r >= N)
+                    break;
+#pragma unroll
+                for (int lc = 0; lc < TB; lc++) {
                     int c = c0 + lc;
+                    if (c >= N)
+                        break;
                     out[c * N + r] = in[r * N + c];
                 }
             }
@@ -220,7 +258,6 @@ static void tr_blk_naive(const float *__restrict__ in, float *__restrict__ out, 
     int NB = N / SB;
 #pragma omp parallel for schedule(static)
     for (int r = 0; r < N; r++)
-#pragma omp simd nontemporal(out)
         for (int c = 0; c < N; c++) {
             int si = (r / SB * NB + c / SB) * SB * SB + (r % SB) * SB + c % SB;
             int di = (c / SB * NB + r / SB) * SB * SB + (c % SB) * SB + r % SB;
@@ -248,7 +285,6 @@ static void tr_blk_tiled(const float *__restrict__ in, float *__restrict__ out, 
         for (int tc = 0; tc < NT; tc++) {
             int r0 = tr * TB, c0 = tc * TB;
             for (int r = r0; r < std::min(r0 + TB, N); r++)
-#pragma omp simd nontemporal(out)
                 for (int c = c0; c < std::min(c0 + TB, N); c++) {
                     int si = (r / SB * NB + c / SB) * SB * SB + (r % SB) * SB + c % SB;
                     int di = (c / SB * NB + r / SB) * SB * SB + (c % SB) * SB + r % SB;
@@ -264,7 +300,6 @@ static void tr_blk_tiled_c2(const float *__restrict__ in, float *__restrict__ ou
         for (int tc = 0; tc < NT; tc++) {
             int r0 = tr * TB, c0 = tc * TB;
             for (int r = r0; r < std::min(r0 + TB, N); r++)
-#pragma omp simd nontemporal(out)
                 for (int c = c0; c < std::min(c0 + TB, N); c++) {
                     int si = (r / SB * NB + c / SB) * SB * SB + (r % SB) * SB + c % SB;
                     int di = (c / SB * NB + r / SB) * SB * SB + (c % SB) * SB + r % SB;
@@ -284,7 +319,7 @@ static void tr_blk_aligned(const float *__restrict__ in, float *__restrict__ out
             float *d = out + (bc * NB + br) * SB * SB;
 #pragma unroll
             for (int lr = 0; lr < SB; lr++)
-#pragma omp simd nontemporal(d)
+#pragma unroll
                 for (int lc = 0; lc < SB; lc++)
                     d[lc * SB + lr] = s[lr * SB + lc];
         }
@@ -299,7 +334,7 @@ static void tr_blk_aligned_c2(const float *__restrict__ in, float *__restrict__ 
             float *d = out + (bc * NB + br) * SB * SB;
 #pragma unroll
             for (int lr = 0; lr < SB; lr++)
-#pragma omp simd nontemporal(d)
+#pragma unroll
                 for (int lc = 0; lc < SB; lc++)
                     d[lc * SB + lr] = s[lr * SB + lc];
         }
@@ -320,7 +355,7 @@ static void tr_blk_aligned_mt(const float *__restrict__ in, float *__restrict__ 
                 for (int lc0 = 0; lc0 < SB; lc0 += MT) {
 #pragma unroll
                     for (int lr = lr0; lr < lr0 + MT; lr++)
-#pragma omp simd nontemporal(d)
+#pragma unroll
                         for (int lc = lc0; lc < lc0 + MT; lc++)
                             d[lc * SB + lr] = s[lr * SB + lc];
                 }
@@ -340,7 +375,7 @@ static void tr_blk_aligned_mt_c2(const float *__restrict__ in, float *__restrict
                 for (int lc0 = 0; lc0 < SB; lc0 += MT) {
 #pragma unroll
                     for (int lr = lr0; lr < lr0 + MT; lr++)
-#pragma omp simd nontemporal(d)
+#pragma unroll
                         for (int lc = lc0; lc < lc0 + MT; lc++)
                             d[lc * SB + lr] = s[lr * SB + lc];
                 }
@@ -358,14 +393,14 @@ static void tr_locbuf(const float *__restrict__ in, float *__restrict__ out, int
             int r0 = tr * TB, c0 = tc * TB, bh = std::min(TB, N - r0), bw = std::min(TB, N - c0);
             for (int lr = 0; lr < bh; lr++) {
                 const float *row = in + (r0 + lr) * N + c0;
-#pragma omp simd
+#pragma unroll
                 for (int lc = 0; lc < TB; lc++)
                     if (lc < bw)
                         buf[lr][lc] = row[lc];
             }
             for (int lc = 0; lc < bw; lc++) {
                 float *dr = out + (c0 + lc) * N + r0;
-#pragma omp simd nontemporal(dr)
+#pragma unroll
                 for (int lr = 0; lr < TB; lr++)
                     if (lr < bh)
                         dr[lr] = buf[lr][lc];
@@ -383,14 +418,14 @@ static void tr_locbuf_c2(const float *__restrict__ in, float *__restrict__ out, 
             int r0 = tr * TB, c0 = tc * TB, bh = std::min(TB, N - r0), bw = std::min(TB, N - c0);
             for (int lr = 0; lr < bh; lr++) {
                 const float *row = in + (r0 + lr) * N + c0;
-#pragma omp simd
+#pragma unroll
                 for (int lc = 0; lc < TB; lc++)
                     if (lc < bw)
                         buf[lr][lc] = row[lc];
             }
             for (int lc = 0; lc < bw; lc++) {
                 float *dr = out + (c0 + lc) * N + r0;
-#pragma omp simd nontemporal(dr)
+#pragma unroll
                 for (int lr = 0; lr < TB; lr++)
                     if (lr < bh)
                         dr[lr] = buf[lr][lc];
@@ -410,13 +445,13 @@ static void tr_locbuf_blk(const float *__restrict__ in, float *__restrict__ out,
             float *d = out + (bc * NB + br) * SB * SB;
 #pragma unroll
             for (int lr = 0; lr < SB; lr++)
-#pragma omp simd
+#pragma unroll
                 for (int lc = 0; lc < SB; lc++)
                     buf[lr][lc] = s[lr * SB + lc];
 #pragma unroll
             for (int lc = 0; lc < SB; lc++) {
                 float *dr = d + lc * SB;
-#pragma omp simd nontemporal(dr)
+#pragma unroll
                 for (int lr = 0; lr < SB; lr++)
                     dr[lr] = buf[lr][lc];
             }
@@ -434,13 +469,13 @@ static void tr_locbuf_blk_c2(const float *__restrict__ in, float *__restrict__ o
             float *d = out + (bc * NB + br) * SB * SB;
 #pragma unroll
             for (int lr = 0; lr < SB; lr++)
-#pragma omp simd
+#pragma unroll
                 for (int lc = 0; lc < SB; lc++)
                     buf[lr][lc] = s[lr * SB + lc];
 #pragma unroll
             for (int lc = 0; lc < SB; lc++) {
                 float *dr = d + lc * SB;
-#pragma omp simd nontemporal(dr)
+#pragma unroll
                 for (int lr = 0; lr < SB; lr++)
                     dr[lr] = buf[lr][lc];
             }
@@ -459,7 +494,7 @@ static void tr_locbuf_blk_mt(const float *__restrict__ in, float *__restrict__ o
             float *d = out + (bc * NB + br) * SB * SB;
 #pragma unroll
             for (int lr = 0; lr < SB; lr++)
-#pragma omp simd
+#pragma unroll
                 for (int lc = 0; lc < SB; lc++)
                     buf[lr][lc] = s[lr * SB + lc];
 #pragma unroll
@@ -469,7 +504,7 @@ static void tr_locbuf_blk_mt(const float *__restrict__ in, float *__restrict__ o
 #pragma unroll
                     for (int lc = lc0; lc < lc0 + MT; lc++) {
                         float *dr = d + lc * SB + lr0;
-#pragma omp simd nontemporal(dr)
+#pragma unroll
                         for (int lr = lr0; lr < lr0 + MT; lr++)
                             dr[lr - lr0] = buf[lr][lc];
                     }
@@ -488,7 +523,7 @@ static void tr_locbuf_blk_mt_c2(const float *__restrict__ in, float *__restrict_
             float *d = out + (bc * NB + br) * SB * SB;
 #pragma unroll
             for (int lr = 0; lr < SB; lr++)
-#pragma omp simd
+#pragma unroll
                 for (int lc = 0; lc < SB; lc++)
                     buf[lr][lc] = s[lr * SB + lc];
 #pragma unroll
@@ -498,7 +533,7 @@ static void tr_locbuf_blk_mt_c2(const float *__restrict__ in, float *__restrict_
 #pragma unroll
                     for (int lc = lc0; lc < lc0 + MT; lc++) {
                         float *dr = d + lc * SB + lr0;
-#pragma omp simd nontemporal(dr)
+#pragma unroll
                         for (int lr = lr0; lr < lr0 + MT; lr++)
                             dr[lr - lr0] = buf[lr][lc];
                     }
@@ -527,7 +562,6 @@ static void tr_locbuf_2buf(const float *__restrict__ in, float *__restrict__ out
                     bwr[lc][lr] = brd[lr][lc];
             for (int lc = 0; lc < bw; lc++) {
                 float *dr = out + (c0 + lc) * N + r0;
-#pragma omp simd nontemporal(dr)
                 for (int lr = 0; lr < bh; lr++)
                     dr[lr] = bwr[lc][lr];
             }
@@ -554,7 +588,6 @@ static void tr_locbuf_2buf_c2(const float *__restrict__ in, float *__restrict__ 
                     bwr[lc][lr] = brd[lr][lc];
             for (int lc = 0; lc < bw; lc++) {
                 float *dr = out + (c0 + lc) * N + r0;
-#pragma omp simd nontemporal(dr)
                 for (int lr = 0; lr < bh; lr++)
                     dr[lr] = bwr[lc][lr];
             }
@@ -576,7 +609,7 @@ static void tr_rm_blk(const float *__restrict__ in, float *__restrict__ out, int
         for (int bc = 0; bc < NB; bc++) {
 #pragma unroll
             for (int lr = 0; lr < SB; lr++)
-#pragma omp simd nontemporal(out)
+#pragma unroll
                 for (int lc = 0; lc < SB; lc++)
                     out[(bc * SB + lc) * N + br * SB + lr] = in[(br * SB + lr) * N + bc * SB + lc];
         }
@@ -589,7 +622,7 @@ static void tr_rm_blk_c2(const float *__restrict__ in, float *__restrict__ out, 
         for (int bc = 0; bc < NB; bc++) {
 #pragma unroll
             for (int lr = 0; lr < SB; lr++)
-#pragma omp simd nontemporal(out)
+#pragma unroll
                 for (int lc = 0; lc < SB; lc++)
                     out[(bc * SB + lc) * N + br * SB + lr] = in[(br * SB + lr) * N + bc * SB + lc];
         }
@@ -606,7 +639,7 @@ static void tr_rm_blk_mt(const float *__restrict__ in, float *__restrict__ out, 
                 for (int lc0 = 0; lc0 < SB; lc0 += MT) {
 #pragma unroll
                     for (int lr = lr0; lr < lr0 + MT; lr++)
-#pragma omp simd nontemporal(out)
+#pragma unroll
                         for (int lc = lc0; lc < lc0 + MT; lc++)
                             out[(bc * SB + lc) * N + br * SB + lr] =
                                 in[(br * SB + lr) * N + bc * SB + lc];
@@ -625,7 +658,7 @@ static void tr_rm_blk_mt_c2(const float *__restrict__ in, float *__restrict__ ou
                 for (int lc0 = 0; lc0 < SB; lc0 += MT) {
 #pragma unroll
                     for (int lr = lr0; lr < lr0 + MT; lr++)
-#pragma omp simd nontemporal(out)
+#pragma unroll
                         for (int lc = lc0; lc < lc0 + MT; lc++)
                             out[(bc * SB + lc) * N + br * SB + lr] =
                                 in[(br * SB + lr) * N + bc * SB + lc];

@@ -56,5 +56,5 @@ export LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LIBRARY_PATH
 export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LD_LIBRARY_PATH
 export PATH=$SCRATCH/bin:$PATH
 export BEVERIN=0
-
+export HPTT_ROOT=$SCRATCH
 python run_cpu_transpose.py --compile

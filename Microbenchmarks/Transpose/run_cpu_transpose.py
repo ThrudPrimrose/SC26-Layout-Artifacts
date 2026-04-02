@@ -10,7 +10,6 @@ BINARY_KERN = "./transpose_cpu"
 BINARY_LIB  = "./transpose_hptt"
 CSV_RAW     = "transpose_cpu_raw.csv"
 CSV_AGG     = "transpose_cpu_results.csv"
-CPU_OPT_FLAGS="-O3 -march=native -mtune=native -fopenmp -ffast-math -fno-vect-cost-model  -fprefetch-loop-arrays -funroll-loops -ftree-loop-distribution -falign-loops=64"
 
 
 N       = int(os.environ.get("CPU_TR_N", 8192*2))
@@ -161,7 +160,7 @@ def compile_kernels(force=False):
     if Path(BINARY_KERN).exists() and not force:
         print(f"  {BINARY_KERN} exists, skipping (use --compile to force)")
         return True
-    cmd = f"g++ {CPU_OPT_FLAGS} -o {BINARY_KERN} transpose_cpu.cpp -lnuma"
+    cmd = f"g++ -O3 -march=native -fopenmp -o {BINARY_KERN} transpose_cpu.cpp"
     print(f"  Compiling kernels: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode != 0:
@@ -196,7 +195,7 @@ def compile_hptt(force=False):
                 hptt_flags = f"-I{inc_dir}"
             break
 
-    cmd = (f"g++ {CPU_OPT_FLAGS} {hptt_flags} "
+    cmd = (f"g++ -O3 -march=native -fopenmp {hptt_flags} "
            f"-o {BINARY_LIB} transpose_hptt.cpp -lhptt")
     print(f"  Compiling HPTT: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -441,7 +440,8 @@ def report(cpu_info, emp_bw, rows):
 # ══════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    force = "--compile" in sys.argv
+    force     = "--compile" in sys.argv
+    hptt_only = "--hptt-only" in sys.argv
 
     print("-- System info --")
     cpu_info = get_cpu_info()
@@ -453,15 +453,33 @@ if __name__ == "__main__":
     print(f"  Empirical BW: {emp_bw:.1f} GB/s")
 
     print("\n-- Compile --")
-    if not compile_kernels(force):
-        sys.exit(1)
-    has_lib = compile_hptt(force)
+    if not hptt_only:
+        if not compile_kernels(force):
+            sys.exit(1)
+    has_lib = compile_hptt(force or hptt_only)
 
-    print(f"\n-- Sweep: N={N} reps={REPS} warmup={WARMUP} threads={THREADS or 'auto'} --")
-    open(CSV_RAW, "w").close()  # truncate
-    sweep_kernels()
-    if has_lib:
-        sweep_hptt()
+    if hptt_only:
+        # Append mode: strip old hptt rows, then run fresh HPTT
+        if os.path.exists(CSV_RAW):
+            with open(CSV_RAW) as f:
+                lines = [l for l in f if not l.startswith("hptt")]
+            with open(CSV_RAW, "w") as f:
+                f.writelines(lines)
+            print(f"  Stripped old HPTT rows from {CSV_RAW} "
+                  f"({len(lines)} kernel rows kept)")
+        print(f"\n-- HPTT-only sweep (appending to {CSV_RAW}): "
+              f"N={N} reps={REPS} warmup={WARMUP} threads={THREADS or 'auto'} --")
+        if has_lib:
+            sweep_hptt()
+        else:
+            print("  [ERROR] HPTT not available"); sys.exit(1)
+    else:
+        # Full sweep: truncate CSV and run everything
+        print(f"\n-- Sweep: N={N} reps={REPS} warmup={WARMUP} threads={THREADS or 'auto'} --")
+        open(CSV_RAW, "w").close()  # truncate
+        sweep_kernels()
+        if has_lib:
+            sweep_hptt()
 
     print(f"\n-- Aggregate --")
     rows = aggregate(emp_bw)
