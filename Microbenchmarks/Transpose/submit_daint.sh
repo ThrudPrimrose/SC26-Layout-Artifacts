@@ -6,6 +6,7 @@
 #SBATCH --output=transpose_daint_%j.out
 #SBATCH --error=transpose_daint_%j.err
 #SBATCH --ntasks=1
+#SBATCH --account=g177-1
 #SBATCH --cpus-per-task=288
 
 # -------------------------------
