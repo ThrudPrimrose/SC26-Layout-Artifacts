@@ -1,0 +1,94 @@
+Running on nid002926
+Threads: 96
+Architecture: x86_64 CPU op-mode(s): 32-bit, 64-bit Address sizes: 48 bits physical, 48 bits virtual Byte Order: Little Endian CPU(s): 192 On-line CPU(s) list: 0-191 Vendor ID: AuthenticAMD Model name: AMD Instinct MI300A Accelerator CPU family: 25 Model: 144 Thread(s) per core: 2 Core(s) per socket: 24 Socket(s): 4 Stepping: 1 Frequency boost: enabled CPU(s) scaling MHz: 98% CPU max MHz: 3700.0000 CPU min MHz: 1500.0000 BogoMIPS: 7399.65 Flags: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 pcid sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd amd_ppin cppc amd_ibpb_ret arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid overflow_recov succor smca fsrm flush_l1d Virtualization: AMD-V L1d cache: 3 MiB (96 instances) L1i cache: 3 MiB (96 instances) L2 cache: 96 MiB (96 instances) L3 cache: 384 MiB (12 instances) NUMA node(s): 4 NUMA node0 CPU(s): 0-23,96-119 NUMA node1 CPU(s): 24-47,120-143 NUMA node2 CPU(s): 48-71,144-167 NUMA node3 CPU(s): 72-95,168-191 Vulnerability Gather data sampling: Not affected Vulnerability Itlb multihit: Not affected Vulnerability L1tf: Not affected Vulnerability Mds: Not affected Vulnerability Meltdown: Not affected Vulnerability Mmio stale data: Not affected Vulnerability Reg file data sampling: Not affected Vulnerability Retbleed: Not affected Vulnerability Spec rstack overflow: Mitigation; Safe RET Vulnerability Spec store bypass: Mitigation; Speculative Store Bypass disabled via prctl Vulnerability Spectre v1: Mitigation; usercopy/swapgs barriers and __user pointer sanitization Vulnerability Spectre v2: Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP always-on; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected Vulnerability Srbds: Not affected Vulnerability Tsx async abort: Not affected
+Layout-conflict benchmark (CPU) -- per-thread PMC
+  M=16384  N=16384  reps=100  warmup=5  threads=96  page=4096
+  NUMA=yes
+  PMC: ACTIVE — 5 events x 96 threads = 480 counters
+
+Init arrays ...
+
+=== Naive schedules ===
+  row_major                T=0     med    59.8 GB/s  [   55.8..   60.1]  PASS
+  col_major                T=0     med    39.7 GB/s  [   32.4..   42.3]  PASS
+  all_rowmajor             T=0     med   645.7 GB/s  [  495.7..  806.7]  PASS
+
+=== Tiled ===
+  tiled                    T=8     med   330.1 GB/s  [  217.2..  334.1]  PASS
+  tiled                    T=16    med   318.4 GB/s  [  301.1..  346.2]  PASS
+  tiled                    T=32    med   340.4 GB/s  [  297.0..  352.4]  PASS
+  tiled                    T=64    med   260.6 GB/s  [  218.5..  297.3]  PASS
+  tiled                    T=128   med   303.3 GB/s  [  253.5..  334.2]  PASS
+
+=== Blocked storage ===
+
+  --- Blocked SB=8 ---
+  blk_all_rm               T=8     med   645.9 GB/s  [  580.2..  747.4]  PASS
+  blk_conflict             T=8     med   737.6 GB/s  [  612.4..  796.2]  PASS
+
+  --- Blocked SB=16 ---
+  blk_all_rm               T=16    med   597.6 GB/s  [  563.9..  819.3]  PASS
+  blk_conflict             T=16    med   804.5 GB/s  [  745.8..  816.5]  PASS
+
+  --- Blocked SB=32 ---
+  blk_all_rm               T=32    med   618.9 GB/s  [  557.4..  822.5]  PASS
+  blk_conflict             T=32    med   237.7 GB/s  [  195.2..  768.3]  PASS
+
+  --- Blocked SB=64 ---
+  blk_all_rm               T=64    med   620.1 GB/s  [  569.5..  728.2]  PASS
+  blk_conflict             T=64    med   719.6 GB/s  [  528.8..  739.4]  PASS
+
+  --- Blocked SB=128 ---
+  blk_all_rm               T=128   med   591.2 GB/s  [  345.0..  818.2]  PASS
+  blk_conflict             T=128   med   649.0 GB/s  [  420.3..  693.4]  PASS
+
+=============================================================================================================
+  PMC Summary (per-element = sum_all_threads / (M*N*NREP),  M=16384  N=16384  NREP=100  threads=96)
+=============================================================================================================
+  variant                 T    GB/s |       cycles/el | instructions/el |   cache-refs/el | cache-misses/el | L1d-load-miss/el
+  -------------------- ---- ------- | --------------- | --------------- | --------------- | --------------- | ---------------
+  row_major               -    59.8 |        194.3393 |          3.6790 |         13.7854 |          5.0686 |         10.6977
+  col_major               -    39.7 |        257.6221 |          6.6997 |         15.0362 |          7.2336 |         13.2765
+  all_rowmajor            -   645.7 |         23.5079 |          2.0889 |          0.8434 |          0.0510 |          0.4496
+  tiled                   8   330.1 |         40.7479 |          5.7037 |          1.8744 |          0.3641 |          1.2716
+  tiled                  16   318.4 |         37.8129 |          5.3527 |          2.0275 |          0.2594 |          1.0226
+  tiled                  32   340.4 |         38.8007 |          4.7635 |          2.4600 |          0.3021 |          1.1532
+  tiled                  64   260.6 |         46.1284 |          4.5427 |          2.1588 |          0.2572 |          1.0693
+  tiled                 128   303.3 |         42.6804 |          4.7662 |          3.6374 |          0.3551 |          2.7804
+  blk_all_rm              8   645.9 |         23.7042 |          2.0579 |          0.9720 |          0.0222 |          0.4951
+  blk_conflict            8   737.6 |         21.9267 |          9.4068 |          2.4284 |          0.0013 |          1.5010
+  blk_all_rm             16   597.6 |         24.5956 |          2.0872 |          0.9945 |          0.0320 |          0.4905
+  blk_conflict           16   804.5 |         20.7294 |          9.6860 |          1.5526 |          0.0013 |          0.9071
+  blk_all_rm             32   618.9 |         23.4411 |          1.8853 |          1.0209 |          0.0260 |          0.4921
+  blk_conflict           32   237.7 |         26.1085 |          9.7066 |          1.3169 |          0.0567 |          0.6505
+  blk_all_rm             64   620.1 |         24.2375 |          1.8804 |          1.0113 |          0.0193 |          0.4836
+  blk_conflict           64   719.6 |         22.1972 |          9.2255 |          1.6592 |          0.0311 |          0.6401
+  blk_all_rm            128   591.2 |         24.4075 |          1.8392 |          0.9676 |          0.0511 |          0.4806
+  blk_conflict          128   649.0 |         23.7580 |          9.1835 |          3.2805 |          0.0176 |          1.5541
+=============================================================================================================
+
+  all_rowmajor vs blk_all_rm(T=8):  646 vs 646 GB/s
+    cycles            0.99x
+    instructions      1.02x
+    cache-refs        0.87x  <-- LESS
+    cache-misses      2.30x  <-- MORE
+    L1d-load-miss     0.91x
+
+  row_major vs all_rowmajor(T=0):  60 vs 646 GB/s
+    cycles            8.27x  <-- MORE
+    instructions      1.76x  <-- MORE
+    cache-refs        16.34x  <-- MORE
+    cache-misses      99.39x  <-- MORE
+    L1d-load-miss     23.79x  <-- MORE
+
+  Sanity: all_rowmajor instructions/elem = 2.1 (expect ~4-8 for vectorized add+store)
+
+Wrote 1800 records to profile_madd_beverin_cpu.csv
+
+=== Summary ===
+  Row-major:  tiled=340  row=60(5.7x)  col=40(8.6x)  ctrl=646 GB/s
+  Blocked:    all_rm=646(SB=8)  conflict=805(SB=16)  ratio=1.25
+
+=== Model (B_eff=8, C+=A+B -> 4 streams) ===
+  row_major:  cost=3+8=11   predicted 2.8x
+  col_major:  cost=1+3*8=25  predicted 6.2x

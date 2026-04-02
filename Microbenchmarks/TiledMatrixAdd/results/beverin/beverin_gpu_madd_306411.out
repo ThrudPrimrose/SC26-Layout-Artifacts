@@ -1,0 +1,48 @@
+Running on nid002666
+Threads: 96
+Layout-conflict benchmark (GPU: AMD Instinct MI300A)
+  M=16384  N=16384  reps=100
+  A: row-major   B: col-major   C: row-major
+  Warp=32  L2-line=128B → 16 doubles/txn
+
+Kernel                                                                Median          BW
+------------------------------------------------------------------------------------------------
+  direct        BX=32  BY=1   TX=1  TY=1   tile=1x32                 8.259 ms    1040.0 GB/s  OK
+  direct        BX=32  BY=1   TX=4  TY=1   tile=1x128                7.336 ms    1171.0 GB/s  OK
+  direct        BX=128 BY=1   TX=1  TY=1   tile=1x128                7.617 ms    1127.8 GB/s  OK
+  direct        BX=256 BY=1   TX=1  TY=1   tile=1x256                7.864 ms    1092.3 GB/s  OK
+  direct        BX=16  BY=16  TX=1  TY=1   tile=16x16                2.575 ms    3335.5 GB/s  OK
+  direct        BX=32  BY=8   TX=1  TY=1   tile=8x32                 2.788 ms    3080.7 GB/s  OK
+  direct        BX=32  BY=8   TX=2  TY=2   tile=16x64                2.878 ms    2985.1 GB/s  OK
+  direct        BX=32  BY=4   TX=4  TY=4   tile=16x128               3.817 ms    2250.4 GB/s  OK
+  direct        BX=32  BY=8   TX=4  TY=4   tile=32x128               3.237 ms    2653.6 GB/s  OK
+  direct_T      BX=32  BY=1   TX=1  TY=1   tile=32x1                14.419 ms     595.7 GB/s  OK
+  direct_T      BX=128 BY=1   TX=1  TY=1   tile=128x1               14.596 ms     588.5 GB/s  OK
+  direct_T      BX=16  BY=16  TX=1  TY=1   tile=16x16                3.242 ms    2649.5 GB/s  OK
+  direct_T      BX=32  BY=8   TX=1  TY=1   tile=32x8                 4.955 ms    1733.5 GB/s  OK
+  direct_T      BX=32  BY=8   TX=2  TY=2   tile=64x16                5.252 ms    1635.6 GB/s  OK
+  tiled+smem    BX=16  BY=16  TX=1  TY=1   tile=16x16                2.331 ms    3685.5 GB/s  OK
+  tiled+smem    BX=16  BY=16  TX=2  TY=2   tile=32x32                3.496 ms    2457.1 GB/s  OK
+  tiled+smem    BX=32  BY=1   TX=1  TY=32  tile=32x32               16.975 ms     506.0 GB/s  OK
+  tiled+smem    BX=32  BY=8   TX=1  TY=1   tile=8x32                 2.583 ms    3325.3 GB/s  OK
+  tiled+smem    BX=32  BY=8   TX=2  TY=2   tile=16x64                3.538 ms    2428.2 GB/s  OK
+  tiled+smem    BX=32  BY=8   TX=2  TY=4   tile=32x64                5.167 ms    1662.5 GB/s  OK
+  tiled+smem    BX=32  BY=4   TX=2  TY=8   tile=32x64                9.122 ms     941.6 GB/s  OK
+  tiled+smem    BX=32  BY=8   TX=4  TY=4   tile=32x128            SKIP (smem 99072 > 65536)
+  tiled+smem    BX=16  BY=16  TX=4  TY=4   tile=64x64             SKIP (smem 99840 > 65536)
+  tiled+smem    BX=32  BY=8   TX=4  TY=8   tile=64x128            SKIP (smem 198144 > 65536)
+  tiled+smem    BX=32  BY=8   TX=8  TY=8   tile=64x256            SKIP (smem 394752 > 65536)
+  tiled+smem    BX=32  BY=4   TX=8  TY=16  tile=64x256            SKIP (smem 394752 > 65536)
+  all_rowmajor  BX=32  BY=8   TX=1  TY=1   (control)                 2.023 ms    4246.3 GB/s  OK
+  all_rowmajor  BX=32  BY=8   TX=4  TY=4   (control)                 2.072 ms    4146.2 GB/s  OK
+
+=== Summary (best of each category) ===
+  Best tiled+smem : 2.331 ms  (baseline)
+  Best direct     : 2.575 ms  (1.1x vs tiled)  — B uncoalesced
+  Best direct_T   : 3.242 ms  (1.4x vs tiled)  — A,C uncoalesced
+  Best control    : 2.023 ms  (0.87x vs tiled)  — all row-major
+
+  Peak BW (best control): 4246.3 GB/s
+  Tiled recovery:         3685.5 GB/s
+
+Wrote 2300 records to madd_beverin_gpu.csv

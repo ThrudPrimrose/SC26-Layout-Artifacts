@@ -1,0 +1,63 @@
+Running on nid002926
+Threads: 96
+Architecture: x86_64 CPU op-mode(s): 32-bit, 64-bit Address sizes: 48 bits physical, 48 bits virtual Byte Order: Little Endian CPU(s): 192 On-line CPU(s) list: 0-191 Vendor ID: AuthenticAMD Model name: AMD Instinct MI300A Accelerator CPU family: 25 Model: 144 Thread(s) per core: 2 Core(s) per socket: 24 Socket(s): 4 Stepping: 1 Frequency boost: enabled CPU(s) scaling MHz: 100% CPU max MHz: 3700.0000 CPU min MHz: 1500.0000 BogoMIPS: 7399.65 Flags: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 pcid sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd amd_ppin cppc amd_ibpb_ret arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid overflow_recov succor smca fsrm flush_l1d Virtualization: AMD-V L1d cache: 3 MiB (96 instances) L1i cache: 3 MiB (96 instances) L2 cache: 96 MiB (96 instances) L3 cache: 384 MiB (12 instances) NUMA node(s): 4 NUMA node0 CPU(s): 0-23,96-119 NUMA node1 CPU(s): 24-47,120-143 NUMA node2 CPU(s): 48-71,144-167 NUMA node3 CPU(s): 72-95,168-191 Vulnerability Gather data sampling: Not affected Vulnerability Itlb multihit: Not affected Vulnerability L1tf: Not affected Vulnerability Mds: Not affected Vulnerability Meltdown: Not affected Vulnerability Mmio stale data: Not affected Vulnerability Reg file data sampling: Not affected Vulnerability Retbleed: Not affected Vulnerability Spec rstack overflow: Mitigation; Safe RET Vulnerability Spec store bypass: Mitigation; Speculative Store Bypass disabled via prctl Vulnerability Spectre v1: Mitigation; usercopy/swapgs barriers and __user pointer sanitization Vulnerability Spectre v2: Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP always-on; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected Vulnerability Srbds: Not affected Vulnerability Tsx async abort: Not affected
+Layout-conflict benchmark (CPU)
+  M=16384  N=16384  reps=100  warmup=5
+  threads=96  page=4096 B  NUMA=yes
+  A: row-major   B: col-major   C: row-major
+  cache line = 64 B  ->  8 doubles/line
+
+Initializing row-major arrays (NUMA bind+touch) ...
+
+=== Naive schedules ===
+  row_major                    T=0     median    60.5 GB/s  [   55.8 ..    60.9]  PASS
+  col_major                    T=0     median    41.3 GB/s  [   33.5 ..    44.6]  PASS
+  all_rowmajor                 T=0     median   746.3 GB/s  [  705.8 ..   784.5]  PASS
+
+=== Tiled schedules (stack-local B transpose) ===
+  tiled                        T=8     median   359.2 GB/s  [  231.4 ..   372.1]  PASS
+  tiled                        T=16    median   352.5 GB/s  [  236.5 ..   365.0]  PASS
+  tiled                        T=32    median   422.4 GB/s  [  258.6 ..   429.9]  PASS
+  tiled                        T=64    median   322.3 GB/s  [  222.0 ..   325.0]  PASS
+  tiled                        T=128   median   332.7 GB/s  [  325.0 ..   333.4]  PASS
+
+=== Blocked storage (SB×SB contiguous blocks) ===
+
+  --- Blocked SB=8 ---
+  blk_all_rm                   T=8     median   769.6 GB/s  [  718.3 ..   784.3]  PASS
+  blk_conflict                 T=8     median   694.8 GB/s  [  415.8 ..   746.1]  PASS
+
+  --- Blocked SB=16 ---
+  blk_all_rm                   T=16    median   774.8 GB/s  [  369.0 ..   799.8]  PASS
+  blk_conflict                 T=16    median   779.9 GB/s  [  624.6 ..   815.9]  PASS
+
+  --- Blocked SB=32 ---
+  blk_all_rm                   T=32    median   767.5 GB/s  [  373.0 ..   815.9]  PASS
+  blk_conflict                 T=32    median   435.7 GB/s  [  361.5 ..   456.5]  PASS
+
+  --- Blocked SB=64 ---
+  blk_all_rm                   T=64    median   783.7 GB/s  [  390.3 ..   818.2]  PASS
+  blk_conflict                 T=64    median   765.1 GB/s  [  723.4 ..   787.9]  PASS
+
+  --- Blocked SB=128 ---
+  blk_all_rm                   T=128   median   760.8 GB/s  [  534.4 ..   771.0]  PASS
+  blk_conflict                 T=128   median   721.3 GB/s  [  346.2 ..   735.5]  PASS
+
+Wrote 1800 records to madd_beverin_cpu.csv
+
+=== Summary ===
+  Row-major schedules:
+    best tiled:     422.4 GB/s
+    row_major:       60.5 GB/s  (7.0x vs tiled)
+    col_major:       41.3 GB/s  (10.2x vs tiled)
+    all_rowmajor:   746.3 GB/s  (peak control)
+  Blocked storage:
+    blk_all_rm:     783.7 GB/s  SB=64  (105.0% of all_rowmajor)
+    blk_conflict:   779.9 GB/s  SB=16  (99.5% of blk_all_rm)
+  Conflict cost absorbed by blocking:
+    row_major conflict:  12.3x slowdown vs all_rowmajor
+    blocked conflict:    1.0x slowdown vs blk_all_rm
+
+=== Model (B_eff=8) ===
+  row_major predicted:  3.3x  (cost 10 vs 3)
+  col_major predicted:  5.7x  (cost 17 vs 3)
