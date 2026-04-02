@@ -16,7 +16,7 @@ from collections import defaultdict
 
 STREAM_PEAK = {
     "MI300A Zen Cores": 1160.35, "Grace CPU": 1700.62,
-    "MI300A": 4300,  "GH200":  3720.48,
+    "MI300A": 4271,  "GH200":  3720.48,
 }
 
 VCOL = {"naive": "#e67e22", "tiled": "#27ae60", "perm": "#2980b9", "blk": "#9b59b6"}
@@ -24,14 +24,14 @@ VCOL = {"naive": "#e67e22", "tiled": "#27ae60", "perm": "#2980b9", "blk": "#9b59
 XLABEL_CPU = {
     "naive": "Naive 1D",
     "tiled": "2D Tiled",
-    "perm":  "Permuted\n (All Row-Major)",
+    "perm":  "Permuted",
     "blk":   "Blocked",
 }
 XLABEL_GPU = {
     "naive": "Naive 1D",
     "tiled": "2D Tiled",
-    "perm":  "Permuted\n (All Row-Major)",
-    "blk":   "Tiled w.\nShrmem",
+    "perm":  "Permuted",
+    "blk":   "Blocked",
 }
 
 OUT_STEM = "addition_paper"
@@ -200,10 +200,10 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
     # separator
     if sep_x is not None:
         ax.axvline(x=sep_x, color="gray", ls="--", lw=1.5, alpha=0.6)
-        ax.text(sep_x - 0.12, top * 0.125, "Schedule\nOnly",
+        ax.text(sep_x - 0.3, top * 0.128, "Schedule\nOnly",
                 ha="right", va="top", fontsize=9, color="gray",
                 fontweight="bold")
-        ax.text(sep_x + 1.05, top * 0.125, "With Layout\nTransformation",
+        ax.text(sep_x + 0.9, top * 0.128, "With Layout\nTransformations",
                 ha="left", va="top", fontsize=9, color="gray",
                 fontweight="bold")
 
@@ -216,7 +216,7 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
 
     # STREAM
     if peak:
-        ax.text(0.03, 0.97, f"STREAM {peak:.0f} GB/s",
+        ax.text(0.03, 0.97, f"STREAM peak {peak:.0f} GB/s",
                 transform=ax.transAxes, ha="left", va="top",
                 fontsize=9, color="dimgray")
         if add_peak:
@@ -255,13 +255,13 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
         mid_y = (y_tiled + y_perm) / 2
 
         if gpu:
-            ax.text(arrow_x + 0.08, mid_y - 0.182*ymax,
-                    "Gap between\nbest schedule\nand layout fix",
+            ax.text(arrow_x + 0.08, mid_y - 0.21*ymax,
+                    "Gap between\nbest schedule\nand best layout",
                     fontsize=9.25, color="#555555", va="center", ha="left",
                     style="italic")
         else:
-            ax.text(arrow_x + 0.08, mid_y - 0.042*ymax,
-                    "Gap between\nbest schedule and layout fix",
+            ax.text(arrow_x + 0.08, mid_y - 0.12*ymax,
+                    "Gap between\nbest schedule\nand best layout",
                     fontsize=9.25, color="#555555", va="center", ha="left",
                     style="italic")
 
@@ -301,7 +301,7 @@ def main():
         print("No data."); return
 
     ncols = len(panels)
-    fig, axes = plt.subplots(1, ncols, figsize=(5.2 * ncols, 3.5), squeeze=False)
+    fig, axes = plt.subplots(1, ncols, figsize=(4.2 * ncols, 3.5), squeeze=False)
 
     for ci, (title, cats, peak, is_gpu) in enumerate(panels):
         ax = axes[0, ci]
@@ -310,8 +310,8 @@ def main():
         draw_panel(ax, cats, title, peak, args.add_peak, xmap, is_gpu)
         if ci == 0: ax.set_ylabel("Bandwidth [GB/s]", fontsize=12)
 
-    fig.suptitle("Addition ($C[:] += A[:] + B[:]$) with Conflicting Layouts",
-                fontsize=13, y=0.88)
+    fig.suptitle("Addition ($C[:] += A[:] + B[:]$) with Suboptimal Layouts",
+                fontsize=14, y=0.88)
 
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     sfx = "_w_peak" if args.add_peak else ""
