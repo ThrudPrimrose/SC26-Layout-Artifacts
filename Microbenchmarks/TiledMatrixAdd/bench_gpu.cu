@@ -32,10 +32,10 @@
 
 /* ---- dimensions ---- */
 #ifndef M_DIM
-#define M_DIM 8192
+#define M_DIM 16384
 #endif
 #ifndef N_DIM
-#define N_DIM 8192
+#define N_DIM 16384
 #endif
 
 static constexpr int Md = M_DIM;
