@@ -39,7 +39,7 @@ OUT_STEM  = "transpose_violins_smem"
 # ── Four categories ──
 # Each maps fmt -> set of variant names.
 CATEGORIES = {
-    "lib":      {"cpu": {"openblas"},
+    "lib":      {"cpu": {"hptt", "hptt_patient", "hptt_rm_omp", "openblas"},
                  "gpu": {"cutensor", "hiptensor", "cublas", "hipblas"}},
     "smem":     {"cpu": {"naive", "naive_c2", "tiled", "tiled_c2",
                          "locbuf", "locbuf_c2", "locbuf_2buf", "locbuf_2buf_c2"},

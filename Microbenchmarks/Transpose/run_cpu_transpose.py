@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU matrix transpose sweep: custom kernels + OpenBLAS somatcopy, with STREAM-like roofline."""
+"""CPU matrix transpose sweep: custom kernels + HPTT library, with STREAM-like roofline."""
 import subprocess, sys, os, csv, platform, re
 from collections import defaultdict
 import numpy as np
@@ -7,9 +7,10 @@ from pathlib import Path
 
 # ── Paths ──
 BINARY_KERN = "./transpose_cpu"
-BINARY_BLAS = "./transpose_openblas"
+BINARY_LIB  = "./transpose_hptt"
 CSV_RAW     = "transpose_cpu_raw.csv"
 CSV_AGG     = "transpose_cpu_results.csv"
+CPU_OPT_FLAGS="-O3 -march=native -mtune=native -fopenmp -ffast-math -fno-vect-cost-model  -fprefetch-loop-arrays -funroll-loops -ftree-loop-distribution -falign-loops=64"
 
 
 N       = int(os.environ.get("CPU_TR_N", 8192*2))
@@ -29,9 +30,17 @@ KERN_NAMES = {
     14: "locbuf_blk",        15: "locbuf_blk_c2",
     16: "locbuf_blk_mt",     17: "locbuf_blk_mt_c2",
     18: "locbuf_2buf",       19: "locbuf_2buf_c2",
+    20: "rm_blk",            21: "rm_blk_c2",
+    22: "rm_blk_mt",         23: "rm_blk_mt_c2",
 }
-BLAS_NAMES = {0: "openblas", 1: "openblas_blk", 2: "openblas_blk_omp"}
-LIB_NAMES  = set(BLAS_NAMES.values())
+LIB_NAMES_MAP = {
+    0: "hptt",
+    1: "hptt_blk",
+    2: "hptt_blk_omp",
+    3: "hptt_rm_omp",
+    4: "hptt_patient",
+}
+LIB_NAMES = set(LIB_NAMES_MAP.values())
 
 # ── Sweep configs ──
 # (variant, TB, SB, MT)
@@ -50,8 +59,15 @@ LOCBUF_RM_VARIANTS = [12, 13, 18, 19]
 # Locbuf blocked: sweep SB, MT
 LOCBUF_BLK_VARIANTS = [14, 15, 16, 17]
 
-# OpenBLAS blocked: sweep SB
-BLAS_BLK_SB_VALS = [8, 16, 32, 64]
+# RM blocked-schedule variants: sweep SB, MT
+RM_BLK_VARIANTS    = [20, 21]
+RM_BLK_MT_VARIANTS = [22, 23]
+
+# HPTT: sweep SB for tiled variants
+LIB_SB_VALS = [16, 32, 64, 128, 256]
+
+# NUMA policies to sweep (0=none, 1=contig, 2=cyclic, 3=transpose)
+NUMA_POLICIES = [0, 1]   # Add 2, 3 for blocked variants
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -120,7 +136,7 @@ def measure_bandwidth(threads):
     bbin = cache / "stream_copy"
 
     src.write_text(STREAM_SRC)
-    cmd = f"g++ -O3 -march=native -fopenmp -o {bbin} {src} -lnuma"
+    cmd = f"g++ -O3 -march=native -fopenmp -o {bbin} {src}"
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode != 0:
         print(f"  [ERROR] STREAM compile failed:\n{r.stderr.strip()}")
@@ -145,7 +161,7 @@ def compile_kernels(force=False):
     if Path(BINARY_KERN).exists() and not force:
         print(f"  {BINARY_KERN} exists, skipping (use --compile to force)")
         return True
-    cmd = f"g++ -O3 -march=native -fopenmp -o {BINARY_KERN} transpose_cpu.cpp -lnuma"
+    cmd = f"g++ {CPU_OPT_FLAGS} -o {BINARY_KERN} transpose_cpu.cpp -lnuma"
     print(f"  Compiling kernels: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode != 0:
@@ -154,30 +170,40 @@ def compile_kernels(force=False):
     return True
 
 
-def compile_openblas(force=False):
-    if Path(BINARY_BLAS).exists() and not force:
-        print(f"  {BINARY_BLAS} exists, skipping")
+def compile_hptt(force=False):
+    if Path(BINARY_LIB).exists() and not force:
+        print(f"  {BINARY_LIB} exists, skipping")
         return True
 
-    # Try common OpenBLAS locations
-    blas_flags = ""
-    for prefix in ["/usr", "/usr/local", "/opt/OpenBLAS"]:
-        inc = Path(prefix) / "include" / "cblas.h"
+    # Try to find HPTT
+    hptt_flags = ""
+    for prefix in ["/usr", "/usr/local", os.environ.get("HPTT_ROOT", ""),
+                   os.path.expanduser("~/hptt"), "./hptt"]:
+        if not prefix:
+            continue
+        inc = Path(prefix) / "include" / "hptt.h"
         if not inc.exists():
-            inc = Path(prefix) / "include" / "openblas" / "cblas.h"
+            inc = Path(prefix) / "include" / "hptt" / "hptt.h"
         if inc.exists():
             inc_dir = str(inc.parent)
-            lib_dir = str(Path(prefix) / "lib")
-            blas_flags = f"-I{inc_dir} -L{lib_dir}"
+            # lib could be in lib, lib64, or build
+            for libdir in ["lib", "lib64", "build"]:
+                lp = Path(prefix) / libdir
+                if (lp / "libhptt.so").exists() or (lp / "libhptt.a").exists():
+                    hptt_flags = f"-I{inc_dir} -L{lp} -Wl,-rpath,{lp}"
+                    break
+            if not hptt_flags:
+                hptt_flags = f"-I{inc_dir}"
             break
 
-    cmd = (f"g++ -O3 -march=native -fopenmp {blas_flags} "
-           f"-o {BINARY_BLAS} transpose_openblas.cpp -lopenblas -lnuma")
-    print(f"  Compiling OpenBLAS: {cmd}")
+    cmd = (f"g++ {CPU_OPT_FLAGS} {hptt_flags} "
+           f"-o {BINARY_LIB} transpose_hptt.cpp -lhptt")
+    print(f"  Compiling HPTT: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode != 0:
-        print(f"  [WARN] OpenBLAS compile failed: {r.stderr.strip()[:200]}")
-        print(f"  OpenBLAS benchmark will be skipped.")
+        print(f"  [WARN] HPTT compile failed: {r.stderr.strip()[:200]}")
+        print(f"  HPTT benchmark will be skipped.")
+        print(f"  To fix: install HPTT and set HPTT_ROOT, or pass -I/-L flags.")
         return False
     return True
 
@@ -203,59 +229,88 @@ def run_one(binary, args, label=""):
 
 def sweep_kernels():
     """Sweep all transpose_cpu variants."""
-    # transpose_cpu args: N variant csv TB SB MT WARMUP REPS THREADS
+    # transpose_cpu args: N variant csv TB SB MT WARMUP REPS THREADS NUMA
 
-    # Row-major variants: only TB matters
-    for var in RM_VARIANTS:
-        tbs = TB_VALS if var in (2, 3) else [64]  # naive doesn't use TB
-        for tb in tbs:
-            label = f"{KERN_NAMES[var]} TB={tb}"
-            run_one(BINARY_KERN, [N, var, CSV_RAW, tb, 32, 8, WARMUP, REPS, THREADS], label)
+    for npol in NUMA_POLICIES:
+        pol_label = ["", "_nd", "_nc", "_nt"][npol]
 
-    # Blocked variants (non-locbuf)
-    for var in BLK_VARIANTS:
-        for sb in SB_VALS:
-            if N % sb != 0:
-                continue
-            mts = MT_VALS if var in (10, 11) else [8]  # only _mt variants use MT
-            for mt in mts:
-                label = f"{KERN_NAMES[var]} SB={sb} MT={mt}"
-                run_one(BINARY_KERN, [N, var, CSV_RAW, 64, sb, mt, WARMUP, REPS, THREADS], label)
+        # Row-major variants: only TB matters (NUMA=contiguous only)
+        if npol <= 1:
+            for var in RM_VARIANTS:
+                tbs = TB_VALS if var in (2, 3) else [64]
+                for tb in tbs:
+                    label = f"{KERN_NAMES[var]}{pol_label} TB={tb}"
+                    run_one(BINARY_KERN, [N, var, CSV_RAW, tb, 32, 8, WARMUP, REPS, THREADS, npol], label)
 
-    # Locbuf row-major
-    for var in LOCBUF_RM_VARIANTS:
-        for tb in TB_VALS:
-            label = f"{KERN_NAMES[var]} TB={tb}"
-            run_one(BINARY_KERN, [N, var, CSV_RAW, tb, 32, 8, WARMUP, REPS, THREADS], label)
+        # Blocked variants (non-locbuf)
+        for var in BLK_VARIANTS:
+            for sb in SB_VALS:
+                if N % sb != 0:
+                    continue
+                mts = MT_VALS if var in (10, 11) else [8]
+                for mt in mts:
+                    label = f"{KERN_NAMES[var]}{pol_label} SB={sb} MT={mt}"
+                    run_one(BINARY_KERN, [N, var, CSV_RAW, 64, sb, mt, WARMUP, REPS, THREADS, npol], label)
 
-    # Locbuf blocked
-    for var in LOCBUF_BLK_VARIANTS:
-        for sb in SB_VALS:
-            if N % sb != 0:
-                continue
-            mts = MT_VALS if var in (16, 17) else [8]
-            for mt in mts:
-                label = f"{KERN_NAMES[var]} SB={sb} MT={mt}"
-                run_one(BINARY_KERN, [N, var, CSV_RAW, 64, sb, mt, WARMUP, REPS, THREADS], label)
+        # Locbuf row-major (NUMA=contiguous only)
+        if npol <= 1:
+            for var in LOCBUF_RM_VARIANTS:
+                for tb in TB_VALS:
+                    label = f"{KERN_NAMES[var]}{pol_label} TB={tb}"
+                    run_one(BINARY_KERN, [N, var, CSV_RAW, tb, 32, 8, WARMUP, REPS, THREADS, npol], label)
+
+        # Locbuf blocked
+        for var in LOCBUF_BLK_VARIANTS:
+            for sb in SB_VALS:
+                if N % sb != 0:
+                    continue
+                mts = MT_VALS if var in (16, 17) else [8]
+                for mt in mts:
+                    label = f"{KERN_NAMES[var]}{pol_label} SB={sb} MT={mt}"
+                    run_one(BINARY_KERN, [N, var, CSV_RAW, 64, sb, mt, WARMUP, REPS, THREADS, npol], label)
+
+        # RM blocked-schedule variants
+        for var in RM_BLK_VARIANTS:
+            for sb in SB_VALS:
+                if N % sb != 0:
+                    continue
+                label = f"{KERN_NAMES[var]}{pol_label} SB={sb}"
+                run_one(BINARY_KERN, [N, var, CSV_RAW, 64, sb, 8, WARMUP, REPS, THREADS, npol], label)
+
+        for var in RM_BLK_MT_VARIANTS:
+            for sb in SB_VALS:
+                if N % sb != 0:
+                    continue
+                for mt in MT_VALS:
+                    label = f"{KERN_NAMES[var]}{pol_label} SB={sb} MT={mt}"
+                    run_one(BINARY_KERN, [N, var, CSV_RAW, 64, sb, mt, WARMUP, REPS, THREADS, npol], label)
 
 
-def sweep_openblas():
-    """Sweep OpenBLAS somatcopy variants."""
-    if not Path(BINARY_BLAS).exists():
+def sweep_hptt():
+    """Sweep HPTT library variants."""
+    if not Path(BINARY_LIB).exists():
         return
-    print(f"\n  -- Library: OpenBLAS --")
-    # transpose_openblas args: N variant csv SB WARMUP REPS THREADS
+    print(f"\n  -- Library: HPTT --")
+    # transpose_hptt args: N variant csv SB WARMUP REPS THREADS
 
-    # V0: row-major
-    run_one(BINARY_BLAS, [N, 0, CSV_RAW, 32, WARMUP, REPS, THREADS], "openblas row-major")
+    # V0: full matrix, ESTIMATE
+    run_one(BINARY_LIB, [N, 0, CSV_RAW, 32, WARMUP, REPS, THREADS], "hptt ESTIMATE")
 
-    # V1, V2: blocked per SB
+    # V4: full matrix, PATIENT
+    run_one(BINARY_LIB, [N, 4, CSV_RAW, 32, WARMUP, REPS, THREADS], "hptt PATIENT")
+
+    # V3: row-major tiled, OMP — sweep SB
+    for sb in LIB_SB_VALS:
+        run_one(BINARY_LIB, [N, 3, CSV_RAW, sb, WARMUP, REPS, THREADS],
+                f"hptt_rm_omp SB={sb}")
+
+    # V1, V2: blocked — sweep SB
     for var in (1, 2):
-        for sb in BLAS_BLK_SB_VALS:
+        for sb in LIB_SB_VALS:
             if N % sb != 0:
                 continue
-            label = f"{BLAS_NAMES[var]} SB={sb}"
-            run_one(BINARY_BLAS, [N, var, CSV_RAW, sb, WARMUP, REPS, THREADS], label)
+            label = f"{LIB_NAMES_MAP[var]} SB={sb}"
+            run_one(BINARY_LIB, [N, var, CSV_RAW, sb, WARMUP, REPS, THREADS], label)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -369,7 +424,8 @@ def report(cpu_info, emp_bw, rows):
         "Blocked aligned":      lambda r: r["variant"].startswith("blk_aligned"),
         "Locbuf row-major":     lambda r: r["variant"] in ("locbuf", "locbuf_c2", "locbuf_2buf", "locbuf_2buf_c2"),
         "Locbuf blocked":       lambda r: r["variant"].startswith("locbuf_blk"),
-        "OpenBLAS":             lambda r: r["variant"].startswith("openblas"),
+        "RM blk schedule":      lambda r: r["variant"].startswith("rm_blk"),
+        "HPTT":                 lambda r: r["variant"].startswith("hptt"),
     }
     print(f"\n Per-category bests:")
     for cat, pred in categories.items():
@@ -399,13 +455,13 @@ if __name__ == "__main__":
     print("\n-- Compile --")
     if not compile_kernels(force):
         sys.exit(1)
-    has_blas = compile_openblas(force)
+    has_lib = compile_hptt(force)
 
     print(f"\n-- Sweep: N={N} reps={REPS} warmup={WARMUP} threads={THREADS or 'auto'} --")
     open(CSV_RAW, "w").close()  # truncate
     sweep_kernels()
-    if has_blas:
-        sweep_openblas()
+    if has_lib:
+        sweep_hptt()
 
     print(f"\n-- Aggregate --")
     rows = aggregate(emp_bw)

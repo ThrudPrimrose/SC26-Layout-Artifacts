@@ -19,6 +19,7 @@ import numpy as np
 
 # ── Library variant names (used to tag rows in the table) ──
 LIB_NAMES = {"openblas", "openblas_blk", "openblas_blk_omp",
+             "hptt", "hptt_blk", "hptt_blk_omp", "hptt_rm_omp", "hptt_patient",
              "cublas", "cutensor", "cutlass"}
 
 # NUMA suffixes appended by transpose_cpu
@@ -251,6 +252,8 @@ def print_table(title, rows, peak_bw=0.0):
             "Locbuf row-major": lambda r: strip_numa(r["variant"]) in (
                 "locbuf", "locbuf_c2", "locbuf_2buf", "locbuf_2buf_c2"),
             "Locbuf blocked":   lambda r: r["variant"].startswith("locbuf_blk"),
+            "RM blk schedule":  lambda r: strip_numa(r["variant"]).startswith("rm_blk"),
+            "HPTT":             lambda r: r["variant"].startswith("hptt"),
             "OpenBLAS":         lambda r: r["variant"].startswith("openblas"),
         }
     any_cat = False

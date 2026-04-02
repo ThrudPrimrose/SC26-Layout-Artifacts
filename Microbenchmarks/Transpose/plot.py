@@ -53,7 +53,7 @@ ROW_MAJOR_VARIANTS = {
 }
 
 LIBRARY_VARIANTS = {
-    "cpu": {"openblas"},
+    "cpu": {"hptt", "hptt_patient", "hptt_rm_omp", "openblas"},
     "gpu": {"cutensor", "hiptensor", "cublas", "hipblas"},
 }
 
@@ -62,7 +62,9 @@ BLOCKED_VARIANTS = {
             "blk_aligned", "blk_aligned_c2",
             "blk_aligned_mt", "blk_aligned_mt_c2",
             "locbuf_blk", "locbuf_blk_c2",
-            "locbuf_blk_mt", "locbuf_blk_mt_c2"},
+            "locbuf_blk_mt", "locbuf_blk_mt_c2",
+            "rm_blk", "rm_blk_c2", "rm_blk_mt", "rm_blk_mt_c2",
+            "hptt_blk", "hptt_blk_omp"},
     "gpu": {"blocked", "smem_blk", "blk_swiz"},
 }
 
