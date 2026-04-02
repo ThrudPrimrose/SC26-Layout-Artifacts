@@ -351,13 +351,24 @@ int main(int argc, char *argv[]) {
   vd.init(N, rng);
   int *cell_logical = new int[N * 2];
 
+  /* ---- load ICON exact data ----
+   * Read nproma from global data, then load p_patch with correct nproma.
+   */
+  std::string gp = icon_global_path(icon_step);
   std::string pp = icon_patch_path(icon_step);
-  printf("Loading ICON: %s\n", pp.c_str());
+
+  int icon_nproma = icon_read_nproma(gp.c_str());
+  if (icon_nproma <= 0)
+    fprintf(stderr, "WARNING: could not read nproma from '%s'\n", gp.c_str());
+
+  printf("Loading ICON: %s  (nproma=%d)\n", pp.c_str(), icon_nproma);
+
   IconEdgeData ied;
-  bool have_exact = icon_load_patch(pp.c_str(), ied);
+  bool have_exact = (icon_nproma > 0) &&
+                    icon_load_patch(pp.c_str(), icon_nproma, ied);
   if (have_exact)
-    printf("ICON: Ne=%d Nc=%d Nv=%d\n", ied.n_edges_valid, ied.n_cells,
-           ied.n_verts);
+    printf("ICON: nproma=%d  n_edges=%d (valid=%d)  n_cells=%d  n_verts=%d\n",
+           ied.nproma, ied.n_edges, ied.n_edges_valid, ied.n_cells, ied.n_verts);
 
   printf("OMP threads: %d  L1: %d bytes\n", omp_get_max_threads(), L1_bytes);
   for (int bi = 0; bi < N_BLOCK_SIZES; bi++)
@@ -393,33 +404,40 @@ int main(int argc, char *argv[]) {
 
     /* -- Unblocked exact -- */
     if (have_exact) {
-      int Ne = ied.n_edges_valid;
-      BenchData bd;
-      bd.alloc(Ne, nlev);
-      bd.fill(nlev);
-      double *hr = numa_alloc_unfaulted<double>(bd.sz2d);
+      const int Ne = ied.n_edges; /* nproma * nblks_e */
+
+      if (ied.n_cells > Ne || ied.n_verts > Ne) {
+        fprintf(stderr, "WARNING: n_cells=%d or n_verts=%d > Ne=%d; "
+                "skipping exact for nlev=%d\n",
+                ied.n_cells, ied.n_verts, Ne, nlev);
+      } else {
+        BenchData bd;
+        bd.alloc(Ne, nlev);
+        bd.fill(nlev);
+        double *hr = numa_alloc_unfaulted<double>(bd.sz2d);
 #pragma omp parallel for schedule(static)
-      for (size_t i = 0; i < bd.sz2d; i++)
-        hr[i] = 0;
-      int *ecl = new int[Ne * 2], *evl = new int[Ne * 2];
-      for (int i = 0; i < Ne * 2; i++) {
-        ecl[i] = ied.cell_idx[i];
-        evl[i] = ied.vert_idx[i];
+        for (size_t i = 0; i < bd.sz2d; i++)
+          hr[i] = 0;
+        int *ecl = new int[Ne * 2], *evl = new int[Ne * 2];
+        for (int i = 0; i < Ne * 2; i++) {
+          ecl[i] = ied.cell_idx[i];
+          evl[i] = ied.vert_idx[i];
+        }
+        for (int je = 0; je < Ne; je++) {
+          bd.inv_dual[je] = ied.inv_dual[je];
+          bd.inv_primal[je] = ied.inv_primal[je];
+          bd.tangent_o[je] = ied.tangent_o[je];
+        }
+        for (int V = 1; V <= 4; V++) {
+          bd.set_variant(V, ecl, evl, sched_for_par_for(V));
+          run_unblocked(fcsv, V, Ne, nlev, "exact", bd, hr);
+          fflush(fcsv);
+        }
+        delete[] ecl;
+        delete[] evl;
+        numa_dealloc(hr, bd.sz2d);
+        bd.free_all();
       }
-      for (int je = 0; je < Ne; je++) {
-        bd.inv_dual[je] = ied.inv_dual[je];
-        bd.inv_primal[je] = ied.inv_primal[je];
-        bd.tangent_o[je] = ied.tangent_o[je];
-      }
-      for (int V = 1; V <= 4; V++) {
-        bd.set_variant(V, ecl, evl, sched_for_par_for(V));
-        run_unblocked(fcsv, V, Ne, nlev, "exact", bd, hr);
-        fflush(fcsv);
-      }
-      delete[] ecl;
-      delete[] evl;
-      numa_dealloc(hr, bd.sz2d);
-      bd.free_all();
     }
 
     /* -- Blocked synthetic -- */
@@ -450,38 +468,45 @@ int main(int argc, char *argv[]) {
 
     /* -- Blocked exact -- */
     if (have_exact) {
-      int Ne = ied.n_edges_valid;
-      int *ecl = new int[Ne * 2], *evl = new int[Ne * 2];
-      for (int i = 0; i < Ne * 2; i++) {
-        ecl[i] = ied.cell_idx[i];
-        evl[i] = ied.vert_idx[i];
-      }
-      for (int bi = 0; bi < N_BLOCK_SIZES; bi++) {
-        int B = BLOCK_SIZES[bi];
-        if (Ne % B != 0) {
-          printf("SKIP B=%d !| Ne=%d\n", B, Ne);
-          continue;
+      const int Ne = ied.n_edges; /* nproma * nblks_e */
+
+      if (ied.n_cells > Ne || ied.n_verts > Ne) {
+        fprintf(stderr, "WARNING: n_cells=%d or n_verts=%d > Ne=%d; "
+                "skipping blocked exact for nlev=%d\n",
+                ied.n_cells, ied.n_verts, Ne, nlev);
+      } else {
+        int *ecl = new int[Ne * 2], *evl = new int[Ne * 2];
+        for (int i = 0; i < Ne * 2; i++) {
+          ecl[i] = ied.cell_idx[i];
+          evl[i] = ied.vert_idx[i];
         }
-        BenchData bd;
-        bd.alloc(Ne, nlev);
-        bd.fill(nlev);
-        for (int je = 0; je < Ne; je++) {
-          bd.inv_dual[je] = ied.inv_dual[je];
-          bd.inv_primal[je] = ied.inv_primal[je];
-          bd.tangent_o[je] = ied.tangent_o[je];
-        }
-        double *hr = numa_alloc_unfaulted<double>(bd.sz2d);
+        for (int bi = 0; bi < N_BLOCK_SIZES; bi++) {
+          int B = BLOCK_SIZES[bi];
+          if (Ne % B != 0) {
+            printf("SKIP B=%d !| Ne=%d\n", B, Ne);
+            continue;
+          }
+          BenchData bd;
+          bd.alloc(Ne, nlev);
+          bd.fill(nlev);
+          for (int je = 0; je < Ne; je++) {
+            bd.inv_dual[je] = ied.inv_dual[je];
+            bd.inv_primal[je] = ied.inv_primal[je];
+            bd.tangent_o[je] = ied.tangent_o[je];
+          }
+          double *hr = numa_alloc_unfaulted<double>(bd.sz2d);
 #pragma omp parallel for schedule(static)
-        for (size_t i = 0; i < bd.sz2d; i++)
-          hr[i] = 0;
-        bd.set_variant_blocked(B, ecl, evl, SCHED_JE_OUTER);
-        run_blocked(fcsv, bi, Ne, nlev, "exact", bd, hr);
-        fflush(fcsv);
-        numa_dealloc(hr, bd.sz2d);
-        bd.free_all();
+          for (size_t i = 0; i < bd.sz2d; i++)
+            hr[i] = 0;
+          bd.set_variant_blocked(B, ecl, evl, SCHED_JE_OUTER);
+          run_blocked(fcsv, bi, Ne, nlev, "exact", bd, hr);
+          fflush(fcsv);
+          numa_dealloc(hr, bd.sz2d);
+          bd.free_all();
+        }
+        delete[] ecl;
+        delete[] evl;
       }
-      delete[] ecl;
-      delete[] evl;
     }
   }
 

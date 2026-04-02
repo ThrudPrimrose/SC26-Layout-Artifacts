@@ -1,4 +1,5 @@
 #include "hip/hip_runtime.h"
+#include "hip/hip_runtime.h"
 /*
  * bench_gpu.cu -- GPU-only z_v_grad_w stencil benchmark
  *
@@ -209,32 +210,84 @@ __global__ void gpu_kernel_jk_first(
 }
 
 /* ================================================================ */
-/*  GPU config table                                                 */
+/*  GPU config table  (69 configs)                                   */
 /* ================================================================ */
 struct GpuCfg { int tx, ty, bx, by; const char* label; };
 static constexpr GpuCfg GCFG[] = {
-    {1, 1, 256, 1, "1x1_256x1"},
-    {1, 1, 128, 1, "1x1_128x1"},
-    {2, 1, 128, 1, "2x1_128x1"},
-    {4, 1, 128, 1, "4x1_128x1"},
-    {4, 1, 64,  1, "4x1_64x1"},
-    {1, 2, 256, 1, "1x2_256x1"},
-    {1, 4, 256, 1, "1x4_256x1"},
-    {2, 2, 128, 1, "2x2_128x1"},
-    {2, 4, 128, 1, "2x4_128x1"},
-    {4, 2, 64,  1, "4x2_64x1"},
-    {1, 1, 32, 16, "1x1_32x16"},
-    {1, 1, 32,  8, "1x1_32x8"},
-    {1, 1, 32,  4, "1x1_32x4"},
-    {2, 1, 32, 16, "2x1_32x16"},
-    {2, 1, 32,  8, "2x1_32x8"},
-    {2, 1, 32,  4, "2x1_32x4"},
-    {1, 2, 32, 16, "1x2_32x16"},
-    {1, 2, 32,  8, "1x2_32x8"},
-    {1, 2, 32,  4, "1x2_32x4"},
-    {2, 2, 32,  8, "2x2_32x8"},
-    {2, 2, 32,  4, "2x2_32x4"},
-    {4, 2, 32,  4, "4x2_32x4"},
+    /* ---- 1-D blocks (BY=1) ---- */
+    {1, 1, 256,  1, "1x1_256x1"},
+    {1, 1, 128,  1, "1x1_128x1"},
+    {1, 1,  64,  1, "1x1_64x1"},
+    {2, 1, 256,  1, "2x1_256x1"},
+    {2, 1, 128,  1, "2x1_128x1"},
+    {4, 1, 256,  1, "4x1_256x1"},
+    {4, 1, 128,  1, "4x1_128x1"},
+    {4, 1,  64,  1, "4x1_64x1"},
+    {8, 1, 128,  1, "8x1_128x1"},
+    {8, 1,  64,  1, "8x1_64x1"},
+    {1, 2, 256,  1, "1x2_256x1"},
+    {1, 2, 128,  1, "1x2_128x1"},
+    {1, 4, 256,  1, "1x4_256x1"},
+    {1, 4, 128,  1, "1x4_128x1"},
+    {1, 8, 128,  1, "1x8_128x1"},
+    {2, 2, 256,  1, "2x2_256x1"},
+    {2, 2, 128,  1, "2x2_128x1"},
+    {2, 4, 128,  1, "2x4_128x1"},
+    {4, 2, 128,  1, "4x2_128x1"},
+    {4, 2,  64,  1, "4x2_64x1"},
+    {4, 4,  64,  1, "4x4_64x1"},
+    /* ---- 2-D blocks: 32xBY ---- */
+    {1, 1,  32, 32, "1x1_32x32"},
+    {1, 1,  32, 16, "1x1_32x16"},
+    {1, 1,  32,  8, "1x1_32x8"},
+    {1, 1,  32,  4, "1x1_32x4"},
+    {2, 1,  32, 16, "2x1_32x16"},
+    {2, 1,  32,  8, "2x1_32x8"},
+    {2, 1,  32,  4, "2x1_32x4"},
+    {4, 1,  32, 16, "4x1_32x16"},
+    {4, 1,  32,  8, "4x1_32x8"},
+    {4, 1,  32,  4, "4x1_32x4"},
+    {1, 2,  32, 16, "1x2_32x16"},
+    {1, 2,  32,  8, "1x2_32x8"},
+    {1, 2,  32,  4, "1x2_32x4"},
+    {1, 4,  32, 16, "1x4_32x16"},
+    {1, 4,  32,  8, "1x4_32x8"},
+    {1, 4,  32,  4, "1x4_32x4"},
+    {2, 2,  32, 16, "2x2_32x16"},
+    {2, 2,  32,  8, "2x2_32x8"},
+    {2, 2,  32,  4, "2x2_32x4"},
+    {2, 4,  32,  8, "2x4_32x8"},
+    {2, 4,  32,  4, "2x4_32x4"},
+    {4, 2,  32,  8, "4x2_32x8"},
+    {4, 2,  32,  4, "4x2_32x4"},
+    /* ---- 2-D blocks: 64xBY ---- */
+    {1, 1,  64,  8, "1x1_64x8"},
+    {1, 1,  64,  4, "1x1_64x4"},
+    {1, 1,  64,  2, "1x1_64x2"},
+    {2, 1,  64,  8, "2x1_64x8"},
+    {2, 1,  64,  4, "2x1_64x4"},
+    {2, 1,  64,  2, "2x1_64x2"},
+    {4, 1,  64,  4, "4x1_64x4"},
+    {4, 1,  64,  2, "4x1_64x2"},
+    {1, 2,  64,  8, "1x2_64x8"},
+    {1, 2,  64,  4, "1x2_64x4"},
+    {1, 4,  64,  4, "1x4_64x4"},
+    {2, 2,  64,  4, "2x2_64x4"},
+    {2, 2,  64,  2, "2x2_64x2"},
+    /* ---- 2-D blocks: 128xBY ---- */
+    {1, 1, 128,  4, "1x1_128x4"},
+    {1, 1, 128,  2, "1x1_128x2"},
+    {2, 1, 128,  4, "2x1_128x4"},
+    {2, 1, 128,  2, "2x1_128x2"},
+    {1, 2, 128,  4, "1x2_128x4"},
+    {1, 2, 128,  2, "1x2_128x2"},
+    /* ---- 2-D blocks: 16xBY ---- */
+    {1, 1,  16, 16, "1x1_16x16"},
+    {2, 1,  16, 16, "2x1_16x16"},
+    {1, 2,  16, 16, "1x2_16x16"},
+    {2, 2,  16, 16, "2x2_16x16"},
+    {4, 1,  16, 16, "4x1_16x16"},
+    {4, 2,  16, 16, "4x2_16x16"},
 };
 static constexpr int N_GCFG = sizeof(GCFG) / sizeof(GCFG[0]);
 
@@ -276,28 +329,80 @@ static void launch_gpu(int cfg,
     } while(0)
 
     switch (cfg) {
+        /* ---- 1-D blocks (BY=1) ---- */
         case  0: LG(1,1,256,1);  break;
         case  1: LG(1,1,128,1);  break;
-        case  2: LG(2,1,128,1);  break;
-        case  3: LG(4,1,128,1);  break;
-        case  4: LG(4,1,64,1);   break;
-        case  5: LG(1,2,256,1);  break;
-        case  6: LG(1,4,256,1);  break;
-        case  7: LG(2,2,128,1);  break;
-        case  8: LG(2,4,128,1);  break;
-        case  9: LG(4,2,64,1);   break;
-        case 10: LG(1,1,32,16);  break;
-        case 11: LG(1,1,32,8);   break;
-        case 12: LG(1,1,32,4);   break;
-        case 13: LG(2,1,32,16);  break;
-        case 14: LG(2,1,32,8);   break;
-        case 15: LG(2,1,32,4);   break;
-        case 16: LG(1,2,32,16);  break;
-        case 17: LG(1,2,32,8);   break;
-        case 18: LG(1,2,32,4);   break;
-        case 19: LG(2,2,32,8);   break;
-        case 20: LG(2,2,32,4);   break;
-        case 21: LG(4,2,32,4);   break;
+        case  2: LG(1,1,64,1);   break;
+        case  3: LG(2,1,256,1);  break;
+        case  4: LG(2,1,128,1);  break;
+        case  5: LG(4,1,256,1);  break;
+        case  6: LG(4,1,128,1);  break;
+        case  7: LG(4,1,64,1);   break;
+        case  8: LG(8,1,128,1);  break;
+        case  9: LG(8,1,64,1);   break;
+        case 10: LG(1,2,256,1);  break;
+        case 11: LG(1,2,128,1);  break;
+        case 12: LG(1,4,256,1);  break;
+        case 13: LG(1,4,128,1);  break;
+        case 14: LG(1,8,128,1);  break;
+        case 15: LG(2,2,256,1);  break;
+        case 16: LG(2,2,128,1);  break;
+        case 17: LG(2,4,128,1);  break;
+        case 18: LG(4,2,128,1);  break;
+        case 19: LG(4,2,64,1);   break;
+        case 20: LG(4,4,64,1);   break;
+        /* ---- 2-D blocks: 32xBY ---- */
+        case 21: LG(1,1,32,32);  break;
+        case 22: LG(1,1,32,16);  break;
+        case 23: LG(1,1,32,8);   break;
+        case 24: LG(1,1,32,4);   break;
+        case 25: LG(2,1,32,16);  break;
+        case 26: LG(2,1,32,8);   break;
+        case 27: LG(2,1,32,4);   break;
+        case 28: LG(4,1,32,16);  break;
+        case 29: LG(4,1,32,8);   break;
+        case 30: LG(4,1,32,4);   break;
+        case 31: LG(1,2,32,16);  break;
+        case 32: LG(1,2,32,8);   break;
+        case 33: LG(1,2,32,4);   break;
+        case 34: LG(1,4,32,16);  break;
+        case 35: LG(1,4,32,8);   break;
+        case 36: LG(1,4,32,4);   break;
+        case 37: LG(2,2,32,16);  break;
+        case 38: LG(2,2,32,8);   break;
+        case 39: LG(2,2,32,4);   break;
+        case 40: LG(2,4,32,8);   break;
+        case 41: LG(2,4,32,4);   break;
+        case 42: LG(4,2,32,8);   break;
+        case 43: LG(4,2,32,4);   break;
+        /* ---- 2-D blocks: 64xBY ---- */
+        case 44: LG(1,1,64,8);   break;
+        case 45: LG(1,1,64,4);   break;
+        case 46: LG(1,1,64,2);   break;
+        case 47: LG(2,1,64,8);   break;
+        case 48: LG(2,1,64,4);   break;
+        case 49: LG(2,1,64,2);   break;
+        case 50: LG(4,1,64,4);   break;
+        case 51: LG(4,1,64,2);   break;
+        case 52: LG(1,2,64,8);   break;
+        case 53: LG(1,2,64,4);   break;
+        case 54: LG(1,4,64,4);   break;
+        case 55: LG(2,2,64,4);   break;
+        case 56: LG(2,2,64,2);   break;
+        /* ---- 2-D blocks: 128xBY ---- */
+        case 57: LG(1,1,128,4);  break;
+        case 58: LG(1,1,128,2);  break;
+        case 59: LG(2,1,128,4);  break;
+        case 60: LG(2,1,128,2);  break;
+        case 61: LG(1,2,128,4);  break;
+        case 62: LG(1,2,128,2);  break;
+        /* ---- 2-D blocks: 16xBY ---- */
+        case 63: LG(1,1,16,16);  break;
+        case 64: LG(2,1,16,16);  break;
+        case 65: LG(1,2,16,16);  break;
+        case 66: LG(2,2,16,16);  break;
+        case 67: LG(4,1,16,16);  break;
+        case 68: LG(4,2,16,16);  break;
     }
     #undef LG
     #undef LG_JE
@@ -510,24 +615,35 @@ int main(int argc, char* argv[]) {
      *
      * ICON_DATA_PATH env var -> directory (default: the primrose path)
      * argv[1] -> timestep (default: 9)
+     *
+     * We first read nproma from the global data file (authoritative source),
+     * then load the p_patch with correct nproma for linearisation.
      */
     int icon_step = 9;
     if (argc >= 2) icon_step = atoi(argv[1]);
 
-    std::string patch_path = icon_patch_path(icon_step);
-    printf("Loading ICON data from: %s\n", patch_path.c_str());
+    std::string global_path = icon_global_path(icon_step);
+    std::string patch_path  = icon_patch_path(icon_step);
+
+    int icon_nproma = icon_read_nproma(global_path.c_str());
+    if (icon_nproma <= 0) {
+        fprintf(stderr, "WARNING: could not read nproma from '%s'\n",
+                global_path.c_str());
+    }
+    printf("Loading ICON data from: %s  (nproma=%d)\n",
+           patch_path.c_str(), icon_nproma);
 
     IconEdgeData icon_ed;
-    bool have_exact = icon_load_patch(patch_path.c_str(), icon_ed);
+    bool have_exact = (icon_nproma > 0) &&
+                      icon_load_patch(patch_path.c_str(), icon_nproma, icon_ed);
     if (have_exact) {
-        printf("ICON exact data loaded: n_edges_valid=%d  n_edges_alloc=%d  "
-               "n_cells=%d  n_verts=%d  nproma=%d\n",
-               icon_ed.n_edges_valid, icon_ed.n_edges_alloc,
-               icon_ed.n_cells, icon_ed.n_verts, icon_ed.nproma);
+        printf("ICON exact data loaded: nproma=%d  "
+               "n_edges=%d (valid=%d)  n_cells=%d  n_verts=%d\n",
+               icon_ed.nproma, icon_ed.n_edges, icon_ed.n_edges_valid,
+               icon_ed.n_cells, icon_ed.n_verts);
     } else {
-        fprintf(stderr, "WARNING: failed to load '%s', "
-                "will run synthetic distributions only\n",
-                patch_path.c_str());
+        fprintf(stderr, "WARNING: failed to load ICON data, "
+                "will run synthetic distributions only\n");
     }
 
     /* print GPU info */
@@ -617,19 +733,16 @@ int main(int argc, char* argv[]) {
         /*  EXACT distribution from ICON grid data                      */
         /* ============================================================ */
         if (have_exact) {
-            const int Ne = icon_ed.n_edges_valid;
+            const int Ne = icon_ed.n_edges; /* nproma * nblks_e */
 
-            printf("\n=== EXACT distribution: nlev=%d  Ne=%d ===\n", nlev, Ne);
+            printf("\n=== EXACT distribution: nlev=%d  Ne=%d (nproma=%d * nblks_e=%d) ===\n",
+                   nlev, Ne, icon_ed.nproma, icon_ed.nblks_e);
 
             /*
-             * n_edges_valid >= n_cells and n_edges_valid >= n_verts for
-             * any ICON grid (Euler relation).  But the 2-D arrays we
-             * allocate are sized Ne * nlev, and the indirect accesses
-             * index into them with flat cell/vert ids.  We need:
-             *   max(cell_idx[*]) < Ne   and   max(vert_idx[*]) < Ne
-             *
-             * Since n_cells <= n_edges_alloc >= n_edges_valid and
-             * n_verts <= n_edges_alloc, this holds.  But let's verify.
+             * The benchmark allocates all 2-D arrays as Ne * nlev and uses Ne
+             * as the horizontal stride in IC<V>.  Indirect accesses into w go
+             * to cell IDs (< n_cells) and into z_w_v to vert IDs (< n_verts).
+             * Both must fit within the Ne-strided allocation.
              */
             if (icon_ed.n_cells > Ne || icon_ed.n_verts > Ne) {
                 fprintf(stderr, "WARNING: n_cells=%d or n_verts=%d > Ne=%d; "

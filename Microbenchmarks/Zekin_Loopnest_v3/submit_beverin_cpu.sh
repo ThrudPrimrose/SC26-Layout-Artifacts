@@ -2,7 +2,7 @@
 #SBATCH --job-name=zekin_b_c
 #SBATCH --nodes=1
 #SBATCH --partition=mi300
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=zekin_b_c_%j.out
 #SBATCH --error=zekin_b_c_%j.err
 #SBATCH --ntasks=1
