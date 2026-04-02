@@ -2,7 +2,7 @@
 #SBATCH --job-name=b_cpu_madd
 #SBATCH --nodes=1
 #SBATCH --partition=mi300
-#SBATCH --time=04:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=beverin_cpu_madd_%j.out
 #SBATCH --error=beverin_cpu_madd_%j.err
 #SBATCH --ntasks=1
@@ -73,6 +73,6 @@ export BEVERIN=1
 
 echo $(lscpu)
 
-g++ -O3 -march=native -mtune=native -fopenmp -ffast-math -fno-vect-cost-model  -fprefetch-loop-arrays -funroll-loops -ftree-loop-distribution -falign-loops=64 -std=c++17 -o bench_cpu bench_cpu.cpp -lnuma
+g++ -O3 -march=native -mtune=native -fopenmp -ffast-math -fvect-cost-model=cheap -std=c++17 -o bench_cpu bench_cpu.cpp -lnuma
 
-./bench_cpu
+./bench_cpu "madd_beverin_cpu.csv"

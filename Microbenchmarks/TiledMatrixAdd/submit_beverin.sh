@@ -2,7 +2,7 @@
 #SBATCH --job-name=b_gpu_madd
 #SBATCH --nodes=1
 #SBATCH --partition=mi300
-#SBATCH --time=04:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=beverin_gpu_madd_%j.out
 #SBATCH --error=beverin_gpu_madd_%j.err
 #SBATCH --ntasks=1
@@ -53,7 +53,7 @@ export C_INCLUDE_PATH="$(python3.13 -c "import sysconfig; print(sysconfig.get_pa
 
 export HCC_AMDGPU_TARGET=gfx942
 export CUPY_HIPCC_GENERATE_CODE=--offload-arch=gfx942
-
+export ARCH=gfx942
 
 spack load gcc/ktd4slj
 
@@ -73,6 +73,7 @@ export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$GCC_HOME/lib:$GCC_HOME/lib64
 export PATH=$SCRATCH/bin:$GCC_HOME/bin:$PATH
 
 
+
 hipcc -O3 -std=c++17 \
     --offload-arch=$ARCH \
     -march=native \
@@ -84,6 +85,6 @@ hipcc -O3 -std=c++17 \
     -fgpu-flush-denormals-to-zero \
     -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
     -ffast-math --offload-arch=$ARCH -fopenmp=libgomp \
-    -o bench_gpu bench_gpu_hip.cpp
+    -o bench_gpu bench_gpu_hip.cpp -lnuma
 
-./bench_gpu
+./bench_gpu "madd_beverin_gpu.csv"

@@ -2,7 +2,7 @@
 /*
  * Layout-conflict benchmark (GPU) — parameterized sweep
  * ======================================================
- * C[i,j] = A[i,j] + B[i,j]
+ * C[i,j] += A[i,j] + B[i,j]
  *
  * Layouts:  A row-major, B col-major, C row-major
  *
@@ -33,10 +33,10 @@
 
 /* ---- dimensions ---- */
 #ifndef M_DIM
-#define M_DIM 16384
+#define M_DIM 8192
 #endif
 #ifndef N_DIM
-#define N_DIM 16384
+#define N_DIM 8192
 #endif
 
 static constexpr int Md = M_DIM;
@@ -470,7 +470,7 @@ static Result run_bench(const KernelConfig& cfg,
                         double* hC, double ref_cs, double ref_cs_rm)
 {
     const size_t total = (size_t)Md * Nd;
-    const double data_bytes = (double)total * sizeof(double) * 3.0;
+    const double data_bytes = (double)total * sizeof(double) * 4.0;  /* 2R + 1RW (C+=) */
 
     const double* dB = cfg.uses_B_rm ? dB_rm : dB_cm;
     double expected_cs = cfg.uses_B_rm ? ref_cs_rm : ref_cs;
@@ -568,6 +568,7 @@ int main(int argc, char** argv)
     }
 
     /* reference checksum for col-major B */
+    CUDA_CHECK(hipMemset(dC, 0, bytes));
     {
         dim3 blk(32, 8);
         dim3 grd((Nd + 31) / 32, (Md + 7) / 8);
@@ -579,6 +580,7 @@ int main(int argc, char** argv)
     for (size_t k = 0; k < total; k++) ref_cs += hC[k];
 
     /* reference checksum for row-major B (control) */
+    CUDA_CHECK(hipMemset(dC, 0, bytes));
     {
         dim3 blk(32, 8);
         dim3 grd((Nd + 31) / 32, (Md + 7) / 8);
@@ -627,7 +629,7 @@ int main(int argc, char** argv)
         printf("  Best control    : %.3f ms  (%.2fx vs tiled)  — all row-major\n",
                best_ctrl, best_ctrl / best_tiled);
 
-    const double data_bytes = (double)total * sizeof(double) * 3.0;
+    const double data_bytes = (double)total * sizeof(double) * 4.0;  /* 2R + 1RW (C+=) */
     printf("\n  Peak BW (best control): %.1f GB/s\n",
            data_bytes / (best_ctrl * 1e-3) / 1e9);
     printf("  Tiled recovery:         %.1f GB/s\n",

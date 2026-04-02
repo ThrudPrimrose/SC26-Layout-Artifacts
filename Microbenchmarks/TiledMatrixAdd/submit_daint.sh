@@ -1,8 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=madd_daint
 #SBATCH --nodes=1
-#SBATCH --partition=debug
+#SBATCH --partition=normal
 #SBATCH --time=00:30:00
+#SBTACH --account g177-1
 #SBATCH --output=madd_daint_%j.out
 #SBATCH --error=madd_daint_%j.err
 #SBATCH --ntasks=1
