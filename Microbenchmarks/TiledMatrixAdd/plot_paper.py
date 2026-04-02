@@ -180,10 +180,10 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
     if add_peak and peak and peak > ymax:
         ymax = peak  # extend axis to show STREAM line
     loc = MaxNLocator(nbins=5, min_n_ticks=5)
-    ticks = loc.tick_values(0, ymax * 1.15 if not add_peak else ymax)
+    ticks = loc.tick_values(0, ymax if not add_peak else ymax)
     ticks = ticks[ticks >= 0]
     if len(ticks) > 7: ticks = ticks[:7]
-    top = ticks[-1] * 1.01 if len(ticks) else ymax * 1.2
+    top = ticks[-1] * 1.01 if len(ticks) else ymax 
 
     # violins
     if data:
@@ -210,9 +210,13 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
     ax.set_xticks(positions)
     ax.set_xticklabels(xlabels, fontsize=9)
     ax.set_yticks(ticks)
+    from matplotlib.ticker import AutoMinorLocator
+    ax.yaxis.set_minor_locator(AutoMinorLocator(4))
+    ax.tick_params(axis='y', which='minor', length=3)
     ax.set_ylim(0, top)
     ax.set_title(title, fontsize=13)
     ax.grid(axis="y", alpha=0.25)
+    ax.grid(axis="y", which='minor', alpha=0.12, ls=':')
 
     # STREAM
     if peak:
