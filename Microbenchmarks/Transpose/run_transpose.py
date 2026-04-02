@@ -19,8 +19,8 @@ BINARY      = "./transpose_gpu"
 BINARY_LIB  = "./transpose_lib"
 CSV_RAW     = "transpose_raw.csv"
 CSV_AGG     = "transpose_results.csv"
-N           = 256
-REPS        = 10
+N           = 16384
+REPS        = 100
 WARMUP      = 5
 
 V_NAMES = {0:"naive", 1:"blocked", 2:"smem", 3:"smem_blk", 4:"smem_pad", 5:"smem_swiz", 6:"smem_blk_swiz", 7:"smem_pad_blk"}

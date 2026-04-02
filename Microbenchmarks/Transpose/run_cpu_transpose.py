@@ -120,7 +120,7 @@ def measure_bandwidth(threads):
     bbin = cache / "stream_copy"
 
     src.write_text(STREAM_SRC)
-    cmd = f"g++ -O3 -march=native -fopenmp -o {bbin} {src}"
+    cmd = f"g++ -O3 -march=native -fopenmp -o {bbin} {src} -lnuma"
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode != 0:
         print(f"  [ERROR] STREAM compile failed:\n{r.stderr.strip()}")
@@ -145,7 +145,7 @@ def compile_kernels(force=False):
     if Path(BINARY_KERN).exists() and not force:
         print(f"  {BINARY_KERN} exists, skipping (use --compile to force)")
         return True
-    cmd = f"g++ -O3 -march=native -fopenmp -o {BINARY_KERN} transpose_cpu.cpp"
+    cmd = f"g++ -O3 -march=native -fopenmp -o {BINARY_KERN} transpose_cpu.cpp -lnuma"
     print(f"  Compiling kernels: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode != 0:
@@ -172,7 +172,7 @@ def compile_openblas(force=False):
             break
 
     cmd = (f"g++ -O3 -march=native -fopenmp {blas_flags} "
-           f"-o {BINARY_BLAS} transpose_openblas.cpp -lopenblas")
+           f"-o {BINARY_BLAS} transpose_openblas.cpp -lopenblas -lnuma")
     print(f"  Compiling OpenBLAS: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode != 0:
