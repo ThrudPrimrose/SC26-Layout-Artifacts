@@ -55,6 +55,9 @@ export HCC_AMDGPU_TARGET=gfx942
 export CUPY_HIPCC_GENERATE_CODE=--offload-arch=gfx942
 
 
+spack load gcc/ktd4slj
+
+
 export C_INCLUDE_PATH=$SCRATCH/include:$C_INCLUDE_PATH
 export CPLUS_INCLUDE_PATH=$SCRATCH/include:$CPLUS_INCLUDE_PATH
 export LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LIBRARY_PATH
@@ -62,11 +65,16 @@ export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LD_LIBRARY_PATH
 export PATH=$SCRATCH/bin:$PATH
 export BEVERIN=1
 
-spack load gcc/ktd4slj
+export GCC_HOME=$(spack location -i gcc/ktd4slj)
+export C_INCLUDE_PATH=$SCRATCH/include:$GCC_HOME/include:$C_INCLUDE_PATH
+export CPLUS_INCLUDE_PATH=$SCRATCH/include:$GCC_HOME/include:$CPLUS_INCLUDE_PATH
+export LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$GCC_HOME/lib:$GCC_HOME/lib64:$LIBRARY_PATH
+export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$GCC_HOME/lib:$GCC_HOME/lib64:$LD_LIBRARY_PATH
+export PATH=$SCRATCH/bin:$GCC_HOME/bin:$PATH
+
 
 hipcc -O3 -std=c++17 \
     --offload-arch=$ARCH \
-    -fopenmp \
     -march=native \
     -mtune=native \
     -ffast-math \
@@ -75,7 +83,7 @@ hipcc -O3 -std=c++17 \
     -mllvm -amdgpu-function-calls=false \
     -fgpu-flush-denormals-to-zero \
     -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
-    -ffast-math --offload-arch=$ARCH -fopenmp \
+    -ffast-math --offload-arch=$ARCH -fopenmp=libgomp \
     -o bench_gpu bench_gpu_hip.cpp
 
 ./bench_gpu
