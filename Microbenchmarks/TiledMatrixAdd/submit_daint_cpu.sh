@@ -61,4 +61,4 @@ export BEVERIN=0
 
 g++ -O3 -march=native -mtune=native -fopenmp -ffast-math -fno-vect-cost-model  -fprefetch-loop-arrays -funroll-loops -ftree-loop-distribution -falign-loops=64 -std=c++17 -o bench_cpu bench_cpu.cpp -lnuma
 
-./bench_cpu
+./bench_cpu "madd_daint_gpu.csv"

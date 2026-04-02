@@ -45,4 +45,4 @@ export PATH=$SCRATCH/bin:$CUTENSOR_HOME/bin:$PATH
 
 nvcc -O3 -arch=sm_90 -std=c++17 -o bench_gpu bench_gpu.cu
 
-./bench_gpu
+./bench_gpu "madd_daint_gpu.csv"
