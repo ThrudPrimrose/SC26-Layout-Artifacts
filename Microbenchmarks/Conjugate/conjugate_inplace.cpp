@@ -93,7 +93,7 @@ static void flush_caches() {
     for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
     /* Full fence: ensure all stores (including write-backs) complete
        before we start timing the next kernel invocation.             */
-    #pragma omp parallel
+    #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
 }
 static void flush_free() { numa_free(flush_buf, FLUSH_N * sizeof(double)); }
