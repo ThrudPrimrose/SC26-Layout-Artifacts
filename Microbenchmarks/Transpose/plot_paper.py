@@ -187,9 +187,9 @@ def draw_panel(ax, cats, title, peak, add_peak, xlabels_map):
     # separator line
     if sep_x is not None:
         ax.axvline(x=sep_x, color="gray", ls="--", lw=1.5, alpha=0.6)
-        ax.text(sep_x - 0.1, top * 0.128, "Row-Major\nLayout",
+        ax.text(sep_x - 0.1, top * 0.08, "Row-Major",
                 ha="right", va="top", fontsize=8, color="gray", fontweight="bold")
-        ax.text(sep_x + 0.1, top * 0.128, "Blocked\nLayout",
+        ax.text(sep_x + 0.1, top * 0.08, "Blocked",
                 ha="left", va="top", fontsize=8, color="gray", fontweight="bold")
 
     ax.set_xticks(positions)
@@ -216,7 +216,7 @@ def draw_panel(ax, cats, title, peak, add_peak, xlabels_map):
         off = 0.04 * top
         for p, med, vk, vmin in medians:
             pct = 100.0 * med / peak
-            if pct < 10:
+            if pct < 14:
                 ax.text(p, med + off, f"{pct:.0f}%",
                         ha="center", va="bottom", fontsize=10,
                         color=VCOL[vk], fontweight="bold")

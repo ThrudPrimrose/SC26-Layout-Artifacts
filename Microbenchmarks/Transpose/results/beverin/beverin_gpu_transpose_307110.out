@@ -1,0 +1,990 @@
+Running on nid002924
+Threads: 96
+── Roofline ──
+  Emp BW: 3536 GB/s
+
+── Compile ──
+  Compiling kernels: hipcc -O3 -ffast-math -fPIC -Wall -Wextra  -DHIP_PLATFORM_AMD=1 -D__HIP_PLATFORM_AMD__=1  -Wno-unused-parameter -munsafe-fp-atomics  --offload-arch=gfx942 -ffp-contract=fast -Wno-ignored-attributes -Wno-unused-result -std=c++17 -o ./transpose_gpu transpose_gpu_hip.cpp
+  Compiling hipTensor: hipcc -O3 -ffast-math -fPIC -Wall -Wextra  -DHIP_PLATFORM_AMD=1 -D__HIP_PLATFORM_AMD__=1  -Wno-unused-parameter -munsafe-fp-atomics  --offload-arch=gfx942 -ffp-contract=fast -Wno-ignored-attributes -Wno-unused-result -std=c++17 -o ./transpose_lib transpose_hiptensor.cpp -lhiptensor
+
+── Sweep: N=16384 reps=100 warmup=5 ──
+  naive N=16384 BX=32 BY=8 TX=1 TY=8 SB=32 PAD=1 | med 4.3202 ms (497.1 GB/s)  p5 4.2797 ms  p95 4.3770 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=1 TY=8 SB=32 PAD=1 | med 4.4708 ms (480.3 GB/s)  p5 4.4281 ms  p95 4.5262 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=1 TY=8 SB=64 PAD=1 | med 4.3197 ms (497.1 GB/s)  p5 4.2783 ms  p95 4.3900 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=1 TY=8 SB=128 PAD=1 | med 4.4723 ms (480.2 GB/s)  p5 4.4195 ms  p95 4.5161 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=1 TY=8 SB=256 PAD=1 | med 4.4659 ms (480.9 GB/s)  p5 4.4302 ms  p95 4.5140 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=8 TX=1 TY=8 SB=32 PAD=1 | med 0.8538 ms (2515.2 GB/s)  p5 0.8228 ms  p95 0.9111 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=1 TY=8 SB=32 PAD=1 | med 0.8524 ms (2519.4 GB/s)  p5 0.8224 ms  p95 0.9485 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=1 TY=8 SB=64 PAD=1 | med 0.8522 ms (2519.8 GB/s)  p5 0.8238 ms  p95 0.9516 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=1 TY=8 SB=128 PAD=1 | med 0.8541 ms (2514.4 GB/s)  p5 0.8236 ms  p95 0.9179 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=1 TY=8 SB=256 PAD=1 | med 0.8537 ms (2515.4 GB/s)  p5 0.8240 ms  p95 0.9794 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=8 TX=1 TY=8 SB=32 PAD=1 | med 0.8610 ms (2494.3 GB/s)  p5 0.8464 ms  p95 0.8778 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  FAIL smem_swiz 32x8 TX=1 TY=8: 
+  FAIL smem_blk_swiz 32x8 TX=1 TY=8: 
+  FAIL smem_blk_swiz 32x8 TX=1 TY=8: 
+  FAIL smem_blk_swiz 32x8 TX=1 TY=8: 
+  FAIL smem_blk_swiz 32x8 TX=1 TY=8: 
+  smem_pad_blk N=16384 BX=32 BY=8 TX=1 TY=8 SB=32 PAD=1 | med 0.8635 ms (2486.9 GB/s)  p5 0.8491 ms  p95 0.8740 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=16 TX=1 TY=8 SB=32 PAD=1 | med 4.2873 ms (500.9 GB/s)  p5 4.2507 ms  p95 4.3226 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=1 TY=8 SB=32 PAD=1 | med 4.1686 ms (515.2 GB/s)  p5 4.1334 ms  p95 4.2138 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=1 TY=8 SB=64 PAD=1 | med 4.1641 ms (515.7 GB/s)  p5 4.1221 ms  p95 4.2021 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=1 TY=8 SB=128 PAD=1 | med 4.1645 ms (515.7 GB/s)  p5 4.1314 ms  p95 4.1963 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=1 TY=8 SB=256 PAD=1 | med 4.1697 ms (515.0 GB/s)  p5 4.1403 ms  p95 4.2104 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=16 TX=1 TY=8 SB=32 PAD=1 | med 0.9031 ms (2377.9 GB/s)  p5 0.8754 ms  p95 0.9817 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=1 TY=8 SB=32 PAD=1 | med 0.9028 ms (2378.7 GB/s)  p5 0.8776 ms  p95 0.9720 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=1 TY=8 SB=64 PAD=1 | med 0.9015 ms (2382.1 GB/s)  p5 0.8766 ms  p95 0.9721 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=1 TY=8 SB=128 PAD=1 | med 0.9028 ms (2378.6 GB/s)  p5 0.8760 ms  p95 0.9887 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=1 TY=8 SB=256 PAD=1 | med 0.9025 ms (2379.5 GB/s)  p5 0.8786 ms  p95 0.9811 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=16 TX=1 TY=8 SB=32 PAD=1 | med 0.8835 ms (2430.6 GB/s)  p5 0.8790 ms  p95 0.9306 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  FAIL smem_swiz 32x16 TX=1 TY=8: 
+  FAIL smem_blk_swiz 32x16 TX=1 TY=8: 
+  FAIL smem_blk_swiz 32x16 TX=1 TY=8: 
+  FAIL smem_blk_swiz 32x16 TX=1 TY=8: 
+  FAIL smem_blk_swiz 32x16 TX=1 TY=8: 
+  smem_pad_blk N=16384 BX=32 BY=16 TX=1 TY=8 SB=32 PAD=1 | med 0.8927 ms (2405.6 GB/s)  p5 0.8846 ms  p95 0.9230 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=8 TX=2 TY=4 SB=32 PAD=1 | med 3.5329 ms (607.8 GB/s)  p5 3.4636 ms  p95 3.6809 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=2 TY=4 SB=32 PAD=1 | med 3.6092 ms (595.0 GB/s)  p5 3.5099 ms  p95 3.7070 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=2 TY=4 SB=64 PAD=1 | med 3.5410 ms (606.5 GB/s)  p5 3.4606 ms  p95 3.6769 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=2 TY=4 SB=128 PAD=1 | med 3.5103 ms (611.8 GB/s)  p5 3.4365 ms  p95 3.6049 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=2 TY=4 SB=256 PAD=1 | med 3.5341 ms (607.6 GB/s)  p5 3.4443 ms  p95 3.6637 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=8 TX=2 TY=4 SB=32 PAD=1 | med 0.8557 ms (2509.5 GB/s)  p5 0.8276 ms  p95 0.9449 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=2 TY=4 SB=32 PAD=1 | med 0.8533 ms (2516.7 GB/s)  p5 0.8276 ms  p95 0.9453 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=2 TY=4 SB=64 PAD=1 | med 0.8573 ms (2505.0 GB/s)  p5 0.8293 ms  p95 0.9316 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=2 TY=4 SB=128 PAD=1 | med 0.8584 ms (2501.7 GB/s)  p5 0.8303 ms  p95 0.9745 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=2 TY=4 SB=256 PAD=1 | med 0.8587 ms (2500.8 GB/s)  p5 0.8298 ms  p95 0.9609 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=8 TX=2 TY=4 SB=32 PAD=1 | med 0.8594 ms (2498.8 GB/s)  p5 0.8509 ms  p95 0.8870 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=8 TX=2 TY=4 SB=32 PAD=1 | med 0.8382 ms (2562.1 GB/s)  p5 0.8063 ms  p95 0.8949 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=2 TY=4 SB=32 PAD=1 | med 0.8375 ms (2564.2 GB/s)  p5 0.8041 ms  p95 0.8996 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=2 TY=4 SB=64 PAD=1 | med 0.8372 ms (2565.2 GB/s)  p5 0.8086 ms  p95 0.9033 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=2 TY=4 SB=128 PAD=1 | med 0.8380 ms (2562.6 GB/s)  p5 0.8073 ms  p95 0.8893 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=2 TY=4 SB=256 PAD=1 | med 0.8374 ms (2564.3 GB/s)  p5 0.8063 ms  p95 0.8956 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=8 TX=2 TY=4 SB=32 PAD=1 | med 0.8604 ms (2496.0 GB/s)  p5 0.8465 ms  p95 0.8752 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=16 TX=2 TY=4 SB=32 PAD=1 | med 3.6117 ms (594.6 GB/s)  p5 3.4952 ms  p95 3.7282 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=2 TY=4 SB=32 PAD=1 | med 3.5389 ms (606.8 GB/s)  p5 3.4427 ms  p95 3.6770 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=2 TY=4 SB=64 PAD=1 | med 3.5778 ms (600.2 GB/s)  p5 3.4470 ms  p95 3.7286 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=2 TY=4 SB=128 PAD=1 | med 3.5623 ms (602.8 GB/s)  p5 3.4567 ms  p95 3.7049 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=2 TY=4 SB=256 PAD=1 | med 3.6204 ms (593.2 GB/s)  p5 3.4937 ms  p95 3.7357 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=16 TX=2 TY=4 SB=32 PAD=1 | med 0.9061 ms (2370.0 GB/s)  p5 0.8790 ms  p95 0.9840 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=2 TY=4 SB=32 PAD=1 | med 0.9078 ms (2365.6 GB/s)  p5 0.8810 ms  p95 0.9926 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=2 TY=4 SB=64 PAD=1 | med 0.9087 ms (2363.2 GB/s)  p5 0.8828 ms  p95 0.9805 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=2 TY=4 SB=128 PAD=1 | med 0.9085 ms (2363.7 GB/s)  p5 0.8828 ms  p95 0.9834 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=2 TY=4 SB=256 PAD=1 | med 0.9070 ms (2367.7 GB/s)  p5 0.8816 ms  p95 0.9978 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=16 TX=2 TY=4 SB=32 PAD=1 | med 0.9150 ms (2346.9 GB/s)  p5 0.9074 ms  p95 0.9450 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=16 TX=2 TY=4 SB=32 PAD=1 | med 0.8424 ms (2549.1 GB/s)  p5 0.8138 ms  p95 0.9049 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=2 TY=4 SB=32 PAD=1 | med 0.8421 ms (2550.2 GB/s)  p5 0.8114 ms  p95 0.9220 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=2 TY=4 SB=64 PAD=1 | med 0.8449 ms (2541.7 GB/s)  p5 0.8279 ms  p95 0.9121 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=2 TY=4 SB=128 PAD=1 | med 0.8738 ms (2457.6 GB/s)  p5 0.8232 ms  p95 0.9073 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=2 TY=4 SB=256 PAD=1 | med 0.8429 ms (2547.8 GB/s)  p5 0.8101 ms  p95 0.9647 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=16 TX=2 TY=4 SB=32 PAD=1 | med 0.9147 ms (2347.8 GB/s)  p5 0.9085 ms  p95 0.9562 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=8 TX=4 TY=1 SB=32 PAD=1 | med 3.1605 ms (679.5 GB/s)  p5 3.1254 ms  p95 3.2146 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=1 SB=32 PAD=1 | med 3.1573 ms (680.2 GB/s)  p5 3.1315 ms  p95 3.2484 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=1 SB=64 PAD=1 | med 3.1604 ms (679.5 GB/s)  p5 3.1219 ms  p95 3.2316 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=1 SB=128 PAD=1 | med 3.1646 ms (678.6 GB/s)  p5 3.1263 ms  p95 3.3101 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=1 SB=256 PAD=1 | med 3.1656 ms (678.4 GB/s)  p5 3.1387 ms  p95 3.2977 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=8 TX=4 TY=1 SB=32 PAD=1 | med 1.5827 ms (1356.8 GB/s)  p5 1.5476 ms  p95 1.7678 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=1 SB=32 PAD=1 | med 1.6015 ms (1340.9 GB/s)  p5 1.5502 ms  p95 1.7566 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=1 SB=64 PAD=1 | med 1.5797 ms (1359.4 GB/s)  p5 1.5423 ms  p95 1.6801 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=1 SB=128 PAD=1 | med 1.5781 ms (1360.8 GB/s)  p5 1.5485 ms  p95 1.7358 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=1 SB=256 PAD=1 | med 1.5737 ms (1364.6 GB/s)  p5 1.5413 ms  p95 1.7071 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=8 TX=4 TY=1 SB=32 PAD=1 | med 1.5766 ms (1362.1 GB/s)  p5 1.5287 ms  p95 1.6866 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=8 TX=4 TY=1 SB=32 PAD=1 | med 1.6071 ms (1336.3 GB/s)  p5 1.5330 ms  p95 1.7007 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=1 SB=32 PAD=1 | med 1.5680 ms (1369.5 GB/s)  p5 1.5275 ms  p95 1.6997 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=1 SB=64 PAD=1 | med 1.5902 ms (1350.5 GB/s)  p5 1.5365 ms  p95 1.7065 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=1 SB=128 PAD=1 | med 1.5967 ms (1345.0 GB/s)  p5 1.5373 ms  p95 1.6904 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=1 SB=256 PAD=1 | med 1.6016 ms (1340.9 GB/s)  p5 1.5427 ms  p95 1.6967 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=8 TX=4 TY=1 SB=32 PAD=1 | med 1.5841 ms (1355.6 GB/s)  p5 1.5308 ms  p95 1.7285 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=16 TX=4 TY=1 SB=32 PAD=1 | med 2.5933 ms (828.1 GB/s)  p5 2.5355 ms  p95 2.7683 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=4 TY=1 SB=32 PAD=1 | med 2.5940 ms (827.9 GB/s)  p5 2.5402 ms  p95 2.7343 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=4 TY=1 SB=64 PAD=1 | med 2.5961 ms (827.2 GB/s)  p5 2.5416 ms  p95 2.7119 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=4 TY=1 SB=128 PAD=1 | med 2.5832 ms (831.3 GB/s)  p5 2.5370 ms  p95 2.7287 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=4 TY=1 SB=256 PAD=1 | med 2.5833 ms (831.3 GB/s)  p5 2.5411 ms  p95 2.7595 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=16 TX=4 TY=1 SB=32 PAD=1 | med 1.0332 ms (2078.5 GB/s)  p5 1.0217 ms  p95 1.0798 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=4 TY=1 SB=32 PAD=1 | med 1.0406 ms (2063.8 GB/s)  p5 1.0234 ms  p95 1.0828 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=4 TY=1 SB=64 PAD=1 | med 1.0372 ms (2070.4 GB/s)  p5 1.0198 ms  p95 1.0814 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=4 TY=1 SB=128 PAD=1 | med 1.0419 ms (2061.1 GB/s)  p5 1.0213 ms  p95 1.0704 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=4 TY=1 SB=256 PAD=1 | med 1.0443 ms (2056.3 GB/s)  p5 1.0239 ms  p95 1.0678 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=16 TX=4 TY=1 SB=32 PAD=1 | med 1.0509 ms (2043.4 GB/s)  p5 1.0300 ms  p95 1.0916 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=16 TX=4 TY=1 SB=32 PAD=1 | med 1.0615 ms (2023.0 GB/s)  p5 1.0358 ms  p95 1.1021 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=4 TY=1 SB=32 PAD=1 | med 1.0560 ms (2033.5 GB/s)  p5 1.0366 ms  p95 1.0970 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=4 TY=1 SB=64 PAD=1 | med 1.0491 ms (2046.9 GB/s)  p5 1.0389 ms  p95 1.0964 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=4 TY=1 SB=128 PAD=1 | med 1.0630 ms (2020.2 GB/s)  p5 1.0342 ms  p95 1.1014 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=4 TY=1 SB=256 PAD=1 | med 1.0551 ms (2035.4 GB/s)  p5 1.0352 ms  p95 1.1012 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=16 TX=4 TY=1 SB=32 PAD=1 | med 1.0580 ms (2029.7 GB/s)  p5 1.0270 ms  p95 1.0931 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=8 TX=4 TY=2 SB=32 PAD=1 | med 3.1585 ms (679.9 GB/s)  p5 3.0896 ms  p95 3.2421 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=2 SB=32 PAD=1 | med 3.1723 ms (677.0 GB/s)  p5 3.0871 ms  p95 3.2521 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=2 SB=64 PAD=1 | med 3.1687 ms (677.7 GB/s)  p5 3.0801 ms  p95 3.2649 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=2 SB=128 PAD=1 | med 3.1548 ms (680.7 GB/s)  p5 3.0771 ms  p95 3.2877 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=2 SB=256 PAD=1 | med 3.1608 ms (679.4 GB/s)  p5 3.0783 ms  p95 3.2659 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=8 TX=4 TY=2 SB=32 PAD=1 | med 1.0057 ms (2135.3 GB/s)  p5 0.9826 ms  p95 1.0426 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=2 SB=32 PAD=1 | med 1.0127 ms (2120.6 GB/s)  p5 0.9768 ms  p95 1.0527 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=2 SB=64 PAD=1 | med 1.0074 ms (2131.6 GB/s)  p5 0.9704 ms  p95 1.0455 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=2 SB=128 PAD=1 | med 1.0127 ms (2120.6 GB/s)  p5 0.9773 ms  p95 1.1028 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=2 SB=256 PAD=1 | med 1.0103 ms (2125.5 GB/s)  p5 0.9738 ms  p95 1.0514 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=8 TX=4 TY=2 SB=32 PAD=1 | med 1.0181 ms (2109.3 GB/s)  p5 1.0121 ms  p95 1.0644 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=8 TX=4 TY=2 SB=32 PAD=1 | med 1.0294 ms (2086.1 GB/s)  p5 0.9842 ms  p95 1.0665 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=2 SB=32 PAD=1 | med 1.0049 ms (2137.0 GB/s)  p5 0.9673 ms  p95 1.0561 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=2 SB=64 PAD=1 | med 1.0135 ms (2118.8 GB/s)  p5 0.9821 ms  p95 1.0608 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=2 SB=128 PAD=1 | med 1.0115 ms (2123.0 GB/s)  p5 0.9783 ms  p95 1.0708 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=2 SB=256 PAD=1 | med 1.0207 ms (2104.0 GB/s)  p5 0.9864 ms  p95 1.0572 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=8 TX=4 TY=2 SB=32 PAD=1 | med 1.0198 ms (2105.7 GB/s)  p5 1.0109 ms  p95 1.0592 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=16 TX=4 TY=2 SB=32 PAD=1 | med 3.1595 ms (679.7 GB/s)  p5 3.0750 ms  p95 3.2405 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=4 TY=2 SB=32 PAD=1 | med 3.1603 ms (679.5 GB/s)  p5 3.0631 ms  p95 3.2937 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=4 TY=2 SB=64 PAD=1 | med 3.1561 ms (680.4 GB/s)  p5 3.0659 ms  p95 3.2668 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=4 TY=2 SB=128 PAD=1 | med 3.1451 ms (682.8 GB/s)  p5 3.0594 ms  p95 3.2497 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=16 TX=4 TY=2 SB=256 PAD=1 | med 3.1643 ms (678.7 GB/s)  p5 3.0820 ms  p95 3.2789 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=16 TX=4 TY=2 SB=32 PAD=1 | med 0.9119 ms (2355.0 GB/s)  p5 0.8831 ms  p95 0.9899 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=4 TY=2 SB=32 PAD=1 | med 0.9084 ms (2363.9 GB/s)  p5 0.8832 ms  p95 0.9926 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=4 TY=2 SB=64 PAD=1 | med 0.9225 ms (2327.8 GB/s)  p5 0.8885 ms  p95 0.9908 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=4 TY=2 SB=128 PAD=1 | med 0.9093 ms (2361.6 GB/s)  p5 0.8811 ms  p95 1.0118 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=16 TX=4 TY=2 SB=256 PAD=1 | med 0.9146 ms (2347.9 GB/s)  p5 0.8827 ms  p95 1.0178 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=16 TX=4 TY=2 SB=32 PAD=1 | med 0.9250 ms (2321.6 GB/s)  p5 0.9195 ms  p95 0.9517 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=16 TX=4 TY=2 SB=32 PAD=1 | med 0.8617 ms (2492.1 GB/s)  p5 0.8302 ms  p95 0.8892 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=4 TY=2 SB=32 PAD=1 | med 0.8583 ms (2502.1 GB/s)  p5 0.8291 ms  p95 0.9871 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=4 TY=2 SB=64 PAD=1 | med 0.8575 ms (2504.4 GB/s)  p5 0.8274 ms  p95 0.9070 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=4 TY=2 SB=128 PAD=1 | med 0.8590 ms (2500.0 GB/s)  p5 0.8315 ms  p95 0.9879 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=16 TX=4 TY=2 SB=256 PAD=1 | med 0.8583 ms (2501.9 GB/s)  p5 0.8305 ms  p95 0.8978 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=16 TX=4 TY=2 SB=32 PAD=1 | med 0.9265 ms (2317.8 GB/s)  p5 0.9212 ms  p95 0.9503 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=8 TX=2 TY=2 SB=32 PAD=1 | med 3.4631 ms (620.1 GB/s)  p5 3.3944 ms  p95 3.5540 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=2 TY=2 SB=32 PAD=1 | med 3.4626 ms (620.2 GB/s)  p5 3.4123 ms  p95 3.5789 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=2 TY=2 SB=64 PAD=1 | med 3.4836 ms (616.5 GB/s)  p5 3.4188 ms  p95 3.5858 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=2 TY=2 SB=128 PAD=1 | med 3.4850 ms (616.2 GB/s)  p5 3.4185 ms  p95 3.6066 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=2 TY=2 SB=256 PAD=1 | med 3.4771 ms (617.6 GB/s)  p5 3.4139 ms  p95 3.5799 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=8 TX=2 TY=2 SB=32 PAD=1 | med 1.0169 ms (2111.8 GB/s)  p5 0.9910 ms  p95 1.0571 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=2 TY=2 SB=32 PAD=1 | med 1.0154 ms (2114.8 GB/s)  p5 0.9904 ms  p95 1.0471 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=2 TY=2 SB=64 PAD=1 | med 1.0168 ms (2112.1 GB/s)  p5 0.9887 ms  p95 1.0564 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=2 TY=2 SB=128 PAD=1 | med 1.0108 ms (2124.5 GB/s)  p5 0.9894 ms  p95 1.0612 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=2 TY=2 SB=256 PAD=1 | med 1.0094 ms (2127.6 GB/s)  p5 0.9882 ms  p95 1.0427 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=8 TX=2 TY=2 SB=32 PAD=1 | med 1.0032 ms (2140.6 GB/s)  p5 0.9709 ms  p95 1.0568 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=8 TX=2 TY=2 SB=32 PAD=1 | med 1.0146 ms (2116.6 GB/s)  p5 0.9814 ms  p95 1.0501 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=2 TY=2 SB=32 PAD=1 | med 1.0247 ms (2095.7 GB/s)  p5 0.9798 ms  p95 1.0633 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=2 TY=2 SB=64 PAD=1 | med 1.0182 ms (2109.2 GB/s)  p5 0.9808 ms  p95 1.0650 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=2 TY=2 SB=128 PAD=1 | med 1.0240 ms (2097.2 GB/s)  p5 0.9824 ms  p95 1.0636 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=2 TY=2 SB=256 PAD=1 | med 1.0212 ms (2102.8 GB/s)  p5 0.9823 ms  p95 1.0559 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=8 TX=2 TY=2 SB=32 PAD=1 | med 1.0032 ms (2140.6 GB/s)  p5 0.9703 ms  p95 1.0463 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=8 TX=4 TY=4 SB=32 PAD=1 | med 3.6499 ms (588.4 GB/s)  p5 3.5798 ms  p95 3.7259 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=4 SB=32 PAD=1 | med 3.6421 ms (589.6 GB/s)  p5 3.5823 ms  p95 3.7123 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=4 SB=64 PAD=1 | med 3.6394 ms (590.1 GB/s)  p5 3.5804 ms  p95 3.6987 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=4 SB=128 PAD=1 | med 3.6432 ms (589.4 GB/s)  p5 3.5798 ms  p95 3.7064 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=8 TX=4 TY=4 SB=256 PAD=1 | med 3.6375 ms (590.4 GB/s)  p5 3.5969 ms  p95 3.6961 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=8 TX=4 TY=4 SB=32 PAD=1 | med 1.0897 ms (1970.7 GB/s)  p5 1.0831 ms  p95 1.1332 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=4 SB=32 PAD=1 | med 1.0922 ms (1966.1 GB/s)  p5 1.0843 ms  p95 1.1399 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=4 SB=64 PAD=1 | med 1.0953 ms (1960.7 GB/s)  p5 1.0888 ms  p95 1.1425 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=4 SB=128 PAD=1 | med 1.0933 ms (1964.2 GB/s)  p5 1.0837 ms  p95 1.1398 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=8 TX=4 TY=4 SB=256 PAD=1 | med 1.0928 ms (1965.0 GB/s)  p5 1.0863 ms  p95 1.1435 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=8 TX=4 TY=4 SB=32 PAD=1 | med 1.1841 ms (1813.6 GB/s)  p5 1.1761 ms  p95 1.2200 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=8 TX=4 TY=4 SB=32 PAD=1 | med 1.0344 ms (2076.1 GB/s)  p5 1.0266 ms  p95 1.0808 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=4 SB=32 PAD=1 | med 1.0346 ms (2075.7 GB/s)  p5 1.0292 ms  p95 1.0858 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=4 SB=64 PAD=1 | med 1.0350 ms (2074.9 GB/s)  p5 1.0293 ms  p95 1.0848 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=4 SB=128 PAD=1 | med 1.0349 ms (2075.0 GB/s)  p5 1.0283 ms  p95 1.0807 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=8 TX=4 TY=4 SB=256 PAD=1 | med 1.0347 ms (2075.5 GB/s)  p5 1.0282 ms  p95 1.0808 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=8 TX=4 TY=4 SB=32 PAD=1 | med 1.1836 ms (1814.3 GB/s)  p5 1.1770 ms  p95 1.2244 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=32 TX=1 TY=1 SB=32 PAD=1 | med 3.1317 ms (685.7 GB/s)  p5 3.1194 ms  p95 3.2281 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=1 SB=32 PAD=1 | med 3.1411 ms (683.7 GB/s)  p5 3.1287 ms  p95 3.2449 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=1 SB=64 PAD=1 | med 3.1323 ms (685.6 GB/s)  p5 3.1149 ms  p95 3.2355 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=1 SB=128 PAD=1 | med 3.1408 ms (683.7 GB/s)  p5 3.1272 ms  p95 3.2296 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=1 SB=256 PAD=1 | med 3.1374 ms (684.5 GB/s)  p5 3.1223 ms  p95 3.2581 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=32 TX=1 TY=1 SB=32 PAD=1 | med 1.1094 ms (1935.7 GB/s)  p5 1.1028 ms  p95 1.1728 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=1 SB=32 PAD=1 | med 1.1097 ms (1935.1 GB/s)  p5 1.1045 ms  p95 1.1752 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=1 SB=64 PAD=1 | med 1.1098 ms (1934.9 GB/s)  p5 1.1050 ms  p95 1.1697 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=1 SB=128 PAD=1 | med 1.1098 ms (1934.9 GB/s)  p5 1.1055 ms  p95 1.1568 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=1 SB=256 PAD=1 | med 1.1104 ms (1934.0 GB/s)  p5 1.1034 ms  p95 1.1721 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=32 TX=1 TY=1 SB=32 PAD=1 | med 0.8930 ms (2404.7 GB/s)  p5 0.8870 ms  p95 0.9702 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=32 TX=1 TY=1 SB=32 PAD=1 | med 0.8936 ms (2403.3 GB/s)  p5 0.8884 ms  p95 0.9610 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=1 TY=1 SB=32 PAD=1 | med 0.8936 ms (2403.2 GB/s)  p5 0.8878 ms  p95 0.9680 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=1 TY=1 SB=64 PAD=1 | med 0.8954 ms (2398.2 GB/s)  p5 0.8885 ms  p95 0.9611 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=1 TY=1 SB=128 PAD=1 | med 0.8938 ms (2402.7 GB/s)  p5 0.8882 ms  p95 0.9543 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=1 TY=1 SB=256 PAD=1 | med 0.8933 ms (2403.9 GB/s)  p5 0.8877 ms  p95 0.9537 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=32 TX=1 TY=1 SB=32 PAD=1 | med 0.8976 ms (2392.5 GB/s)  p5 0.8878 ms  p95 0.9632 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=32 TX=1 TY=2 SB=32 PAD=1 | med 3.0291 ms (708.9 GB/s)  p5 3.0172 ms  p95 3.0990 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=2 SB=32 PAD=1 | med 3.0314 ms (708.4 GB/s)  p5 3.0139 ms  p95 3.1110 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=2 SB=64 PAD=1 | med 3.0309 ms (708.5 GB/s)  p5 3.0130 ms  p95 3.1141 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=2 SB=128 PAD=1 | med 3.0321 ms (708.3 GB/s)  p5 3.0172 ms  p95 3.1025 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=2 SB=256 PAD=1 | med 3.0317 ms (708.3 GB/s)  p5 3.0198 ms  p95 3.1055 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=32 TX=1 TY=2 SB=32 PAD=1 | med 1.1608 ms (1850.1 GB/s)  p5 1.1246 ms  p95 1.2006 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=2 SB=32 PAD=1 | med 1.1611 ms (1849.5 GB/s)  p5 1.1231 ms  p95 1.2387 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=2 SB=64 PAD=1 | med 1.1609 ms (1849.8 GB/s)  p5 1.1250 ms  p95 1.1806 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=2 SB=128 PAD=1 | med 1.1608 ms (1849.9 GB/s)  p5 1.1258 ms  p95 1.1903 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=2 SB=256 PAD=1 | med 1.1615 ms (1848.9 GB/s)  p5 1.1258 ms  p95 1.2094 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=32 TX=1 TY=2 SB=32 PAD=1 | med 0.9159 ms (2344.7 GB/s)  p5 0.9073 ms  p95 0.9620 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  FAIL smem_swiz 32x32 TX=1 TY=2: 
+  FAIL smem_blk_swiz 32x32 TX=1 TY=2: 
+  FAIL smem_blk_swiz 32x32 TX=1 TY=2: 
+  FAIL smem_blk_swiz 32x32 TX=1 TY=2: 
+  FAIL smem_blk_swiz 32x32 TX=1 TY=2: 
+  smem_pad_blk N=16384 BX=32 BY=32 TX=1 TY=2 SB=32 PAD=1 | med 0.9126 ms (2353.0 GB/s)  p5 0.9069 ms  p95 0.9706 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=32 TX=2 TY=1 SB=32 PAD=1 | med 3.1394 ms (684.0 GB/s)  p5 3.1195 ms  p95 3.2521 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=2 TY=1 SB=32 PAD=1 | med 3.1550 ms (680.7 GB/s)  p5 3.1366 ms  p95 3.2563 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=2 TY=1 SB=64 PAD=1 | med 3.1486 ms (682.0 GB/s)  p5 3.1285 ms  p95 3.2547 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=2 TY=1 SB=128 PAD=1 | med 3.1513 ms (681.5 GB/s)  p5 3.1349 ms  p95 3.2780 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=2 TY=1 SB=256 PAD=1 | med 3.1474 ms (682.3 GB/s)  p5 3.1330 ms  p95 3.2409 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=32 TX=2 TY=1 SB=32 PAD=1 | med 1.1573 ms (1855.6 GB/s)  p5 1.1490 ms  p95 1.2296 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=2 TY=1 SB=32 PAD=1 | med 1.1543 ms (1860.4 GB/s)  p5 1.1457 ms  p95 1.2072 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=2 TY=1 SB=64 PAD=1 | med 1.1560 ms (1857.6 GB/s)  p5 1.1432 ms  p95 1.2059 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=2 TY=1 SB=128 PAD=1 | med 1.1554 ms (1858.7 GB/s)  p5 1.1464 ms  p95 1.2022 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=2 TY=1 SB=256 PAD=1 | med 1.1533 ms (1862.1 GB/s)  p5 1.1439 ms  p95 1.2364 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=32 TX=2 TY=1 SB=32 PAD=1 | med 0.9260 ms (2319.1 GB/s)  p5 0.9192 ms  p95 0.9686 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=32 TX=2 TY=1 SB=32 PAD=1 | med 0.9531 ms (2253.2 GB/s)  p5 0.9456 ms  p95 0.9957 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=2 TY=1 SB=32 PAD=1 | med 0.9566 ms (2244.8 GB/s)  p5 0.9475 ms  p95 1.0017 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=2 TY=1 SB=64 PAD=1 | med 0.9548 ms (2249.2 GB/s)  p5 0.9454 ms  p95 1.0018 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=2 TY=1 SB=128 PAD=1 | med 0.9526 ms (2254.4 GB/s)  p5 0.9461 ms  p95 0.9992 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=2 TY=1 SB=256 PAD=1 | med 0.9542 ms (2250.5 GB/s)  p5 0.9471 ms  p95 1.0036 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=32 TX=2 TY=1 SB=32 PAD=1 | med 0.9249 ms (2321.9 GB/s)  p5 0.9193 ms  p95 0.9752 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=32 TX=1 TY=4 SB=32 PAD=1 | med 3.1305 ms (686.0 GB/s)  p5 3.1159 ms  p95 3.1723 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=4 SB=32 PAD=1 | med 3.1257 ms (687.0 GB/s)  p5 3.1080 ms  p95 3.1412 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=4 SB=64 PAD=1 | med 3.1286 ms (686.4 GB/s)  p5 3.1137 ms  p95 3.1730 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=4 SB=128 PAD=1 | med 3.1288 ms (686.4 GB/s)  p5 3.0912 ms  p95 3.2054 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=1 TY=4 SB=256 PAD=1 | med 3.1250 ms (687.2 GB/s)  p5 3.1104 ms  p95 3.1471 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=32 TX=1 TY=4 SB=32 PAD=1 | med 1.1443 ms (1876.7 GB/s)  p5 1.1272 ms  p95 1.1865 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=4 SB=32 PAD=1 | med 1.1545 ms (1860.1 GB/s)  p5 1.1264 ms  p95 1.1892 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=4 SB=64 PAD=1 | med 1.1476 ms (1871.2 GB/s)  p5 1.1286 ms  p95 1.2064 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=4 SB=128 PAD=1 | med 1.1460 ms (1873.8 GB/s)  p5 1.1310 ms  p95 1.1862 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=1 TY=4 SB=256 PAD=1 | med 1.1420 ms (1880.4 GB/s)  p5 1.1286 ms  p95 1.1874 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=32 TX=1 TY=4 SB=32 PAD=1 | med 0.8685 ms (2472.7 GB/s)  p5 0.8373 ms  p95 0.9463 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  FAIL smem_swiz 32x32 TX=1 TY=4: 
+  FAIL smem_blk_swiz 32x32 TX=1 TY=4: 
+  FAIL smem_blk_swiz 32x32 TX=1 TY=4: 
+  FAIL smem_blk_swiz 32x32 TX=1 TY=4: 
+  FAIL smem_blk_swiz 32x32 TX=1 TY=4: 
+  smem_pad_blk N=16384 BX=32 BY=32 TX=1 TY=4 SB=32 PAD=1 | med 0.8682 ms (2473.4 GB/s)  p5 0.8326 ms  p95 0.9223 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=32 BY=32 TX=2 TY=2 SB=32 PAD=1 | med 3.1258 ms (687.0 GB/s)  p5 3.0951 ms  p95 3.2085 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=2 TY=2 SB=32 PAD=1 | med 3.1300 ms (686.1 GB/s)  p5 3.1010 ms  p95 3.2210 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=2 TY=2 SB=64 PAD=1 | med 3.1263 ms (686.9 GB/s)  p5 3.0946 ms  p95 3.2333 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=2 TY=2 SB=128 PAD=1 | med 3.1254 ms (687.1 GB/s)  p5 3.0952 ms  p95 3.2049 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=32 BY=32 TX=2 TY=2 SB=256 PAD=1 | med 3.1215 ms (688.0 GB/s)  p5 3.0910 ms  p95 3.2105 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=32 BY=32 TX=2 TY=2 SB=32 PAD=1 | med 1.1383 ms (1886.5 GB/s)  p5 1.1069 ms  p95 1.2079 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=2 TY=2 SB=32 PAD=1 | med 1.1341 ms (1893.5 GB/s)  p5 1.1102 ms  p95 1.1642 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=2 TY=2 SB=64 PAD=1 | med 1.1443 ms (1876.7 GB/s)  p5 1.1145 ms  p95 1.1837 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=2 TY=2 SB=128 PAD=1 | med 1.1419 ms (1880.6 GB/s)  p5 1.1135 ms  p95 1.1686 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=32 BY=32 TX=2 TY=2 SB=256 PAD=1 | med 1.1447 ms (1876.0 GB/s)  p5 1.1138 ms  p95 1.1651 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=32 BY=32 TX=2 TY=2 SB=32 PAD=1 | med 0.8796 ms (2441.4 GB/s)  p5 0.8446 ms  p95 0.9306 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=32 BY=32 TX=2 TY=2 SB=32 PAD=1 | med 0.8913 ms (2409.4 GB/s)  p5 0.8552 ms  p95 0.9417 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=2 TY=2 SB=32 PAD=1 | med 0.8904 ms (2411.9 GB/s)  p5 0.8539 ms  p95 0.9608 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=2 TY=2 SB=64 PAD=1 | med 0.8898 ms (2413.5 GB/s)  p5 0.8558 ms  p95 0.9575 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=2 TY=2 SB=128 PAD=1 | med 0.8887 ms (2416.4 GB/s)  p5 0.8546 ms  p95 0.9427 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=32 BY=32 TX=2 TY=2 SB=256 PAD=1 | med 0.8910 ms (2410.2 GB/s)  p5 0.8546 ms  p95 0.9478 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=32 BY=32 TX=2 TY=2 SB=32 PAD=1 | med 0.8756 ms (2452.7 GB/s)  p5 0.8424 ms  p95 0.9384 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=16 BY=8 TX=1 TY=1 SB=32 PAD=1 | med 2.2949 ms (935.8 GB/s)  p5 2.2550 ms  p95 2.3260 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=1 SB=32 PAD=1 | med 2.2853 ms (939.7 GB/s)  p5 2.2520 ms  p95 2.3213 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=1 SB=64 PAD=1 | med 2.2915 ms (937.1 GB/s)  p5 2.2573 ms  p95 2.3369 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=1 SB=128 PAD=1 | med 2.2879 ms (938.6 GB/s)  p5 2.2527 ms  p95 2.3374 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=1 SB=256 PAD=1 | med 2.2901 ms (937.7 GB/s)  p5 2.2501 ms  p95 2.3373 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=16 BY=8 TX=1 TY=1 SB=32 PAD=1 | med 1.5665 ms (1370.9 GB/s)  p5 1.5561 ms  p95 1.5879 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=1 SB=32 PAD=1 | med 1.5678 ms (1369.7 GB/s)  p5 1.5550 ms  p95 1.5886 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=1 SB=64 PAD=1 | med 1.5676 ms (1369.9 GB/s)  p5 1.5535 ms  p95 1.5840 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=1 SB=128 PAD=1 | med 1.5690 ms (1368.7 GB/s)  p5 1.5557 ms  p95 1.6030 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=1 SB=256 PAD=1 | med 1.5683 ms (1369.3 GB/s)  p5 1.5546 ms  p95 1.6208 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=16 BY=8 TX=1 TY=1 SB=32 PAD=1 | med 1.5655 ms (1371.8 GB/s)  p5 1.5518 ms  p95 1.6454 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=16 BY=8 TX=1 TY=1 SB=32 PAD=1 | med 1.5669 ms (1370.5 GB/s)  p5 1.5559 ms  p95 1.6322 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=1 TY=1 SB=32 PAD=1 | med 1.5670 ms (1370.4 GB/s)  p5 1.5552 ms  p95 1.6698 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=1 TY=1 SB=64 PAD=1 | med 1.5662 ms (1371.2 GB/s)  p5 1.5528 ms  p95 1.5967 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=1 TY=1 SB=128 PAD=1 | med 1.5673 ms (1370.2 GB/s)  p5 1.5534 ms  p95 1.5992 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=1 TY=1 SB=256 PAD=1 | med 1.5681 ms (1369.5 GB/s)  p5 1.5557 ms  p95 1.6096 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=16 BY=8 TX=1 TY=1 SB=32 PAD=1 | med 1.5675 ms (1370.0 GB/s)  p5 1.5536 ms  p95 1.5948 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=16 BY=16 TX=1 TY=1 SB=32 PAD=1 | med 1.5791 ms (1359.9 GB/s)  p5 1.5658 ms  p95 1.6093 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=1 SB=32 PAD=1 | med 1.5772 ms (1361.6 GB/s)  p5 1.5604 ms  p95 1.6207 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=1 SB=64 PAD=1 | med 1.5766 ms (1362.1 GB/s)  p5 1.5633 ms  p95 1.6103 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=1 SB=128 PAD=1 | med 1.5766 ms (1362.1 GB/s)  p5 1.5604 ms  p95 1.6097 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=1 SB=256 PAD=1 | med 1.5774 ms (1361.4 GB/s)  p5 1.5628 ms  p95 1.6107 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=16 BY=16 TX=1 TY=1 SB=32 PAD=1 | med 1.1536 ms (1861.6 GB/s)  p5 1.1498 ms  p95 1.2052 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=1 SB=32 PAD=1 | med 1.1526 ms (1863.2 GB/s)  p5 1.1486 ms  p95 1.2096 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=1 SB=64 PAD=1 | med 1.1534 ms (1861.8 GB/s)  p5 1.1496 ms  p95 1.2103 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=1 SB=128 PAD=1 | med 1.1558 ms (1858.0 GB/s)  p5 1.1502 ms  p95 1.2082 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=1 SB=256 PAD=1 | med 1.1562 ms (1857.3 GB/s)  p5 1.1512 ms  p95 1.2053 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=16 BY=16 TX=1 TY=1 SB=32 PAD=1 | med 1.0922 ms (1966.2 GB/s)  p5 1.0870 ms  p95 1.1384 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=16 BY=16 TX=1 TY=1 SB=32 PAD=1 | med 1.0903 ms (1969.7 GB/s)  p5 1.0843 ms  p95 1.1513 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=16 TX=1 TY=1 SB=32 PAD=1 | med 1.0866 ms (1976.4 GB/s)  p5 1.0772 ms  p95 1.1308 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=16 TX=1 TY=1 SB=64 PAD=1 | med 1.0916 ms (1967.3 GB/s)  p5 1.0860 ms  p95 1.1491 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=16 TX=1 TY=1 SB=128 PAD=1 | med 1.0916 ms (1967.2 GB/s)  p5 1.0792 ms  p95 1.1397 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=16 TX=1 TY=1 SB=256 PAD=1 | med 1.0876 ms (1974.5 GB/s)  p5 1.0757 ms  p95 1.1352 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=16 BY=16 TX=1 TY=1 SB=32 PAD=1 | med 1.0890 ms (1972.0 GB/s)  p5 1.0655 ms  p95 1.1479 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=16 BY=8 TX=1 TY=2 SB=32 PAD=1 | med 2.4221 ms (886.6 GB/s)  p5 2.3649 ms  p95 2.4965 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=2 SB=32 PAD=1 | med 2.4038 ms (893.4 GB/s)  p5 2.3443 ms  p95 2.4915 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=2 SB=64 PAD=1 | med 2.4137 ms (889.7 GB/s)  p5 2.3533 ms  p95 2.4778 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=2 SB=128 PAD=1 | med 2.4134 ms (889.8 GB/s)  p5 2.3406 ms  p95 2.5115 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=2 SB=256 PAD=1 | med 2.4097 ms (891.2 GB/s)  p5 2.3385 ms  p95 2.5070 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=16 BY=8 TX=1 TY=2 SB=32 PAD=1 | med 1.0924 ms (1965.8 GB/s)  p5 1.0728 ms  p95 1.1347 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=2 SB=32 PAD=1 | med 1.0939 ms (1963.1 GB/s)  p5 1.0792 ms  p95 1.1317 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=2 SB=64 PAD=1 | med 1.0871 ms (1975.4 GB/s)  p5 1.0803 ms  p95 1.1308 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=2 SB=128 PAD=1 | med 1.0898 ms (1970.5 GB/s)  p5 1.0821 ms  p95 1.1431 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=2 SB=256 PAD=1 | med 1.0930 ms (1964.8 GB/s)  p5 1.0825 ms  p95 1.1290 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=16 BY=8 TX=1 TY=2 SB=32 PAD=1 | med 1.0966 ms (1958.4 GB/s)  p5 1.0782 ms  p95 1.1283 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=16 BY=8 TX=1 TY=2 SB=32 PAD=1 | med 1.1108 ms (1933.3 GB/s)  p5 1.0927 ms  p95 1.1452 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=1 TY=2 SB=32 PAD=1 | med 1.1093 ms (1935.9 GB/s)  p5 1.0946 ms  p95 1.1507 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=1 TY=2 SB=64 PAD=1 | med 1.0969 ms (1957.8 GB/s)  p5 1.0877 ms  p95 1.1574 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=1 TY=2 SB=128 PAD=1 | med 1.0937 ms (1963.5 GB/s)  p5 1.0860 ms  p95 1.1445 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=1 TY=2 SB=256 PAD=1 | med 1.1074 ms (1939.1 GB/s)  p5 1.0932 ms  p95 1.1363 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=16 BY=8 TX=1 TY=2 SB=32 PAD=1 | med 1.0912 ms (1967.9 GB/s)  p5 1.0744 ms  p95 1.1376 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=16 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 2.1075 ms (1019.0 GB/s)  p5 2.0999 ms  p95 2.1779 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 2.1042 ms (1020.6 GB/s)  p5 2.0965 ms  p95 2.1762 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=2 SB=64 PAD=1 | med 2.1013 ms (1022.0 GB/s)  p5 2.0933 ms  p95 2.1547 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=2 SB=128 PAD=1 | med 2.1037 ms (1020.8 GB/s)  p5 2.0956 ms  p95 2.1577 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=2 SB=256 PAD=1 | med 2.1008 ms (1022.2 GB/s)  p5 2.0897 ms  p95 2.1669 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=16 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 1.0035 ms (2139.9 GB/s)  p5 0.9887 ms  p95 1.0501 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 1.0124 ms (2121.2 GB/s)  p5 0.9948 ms  p95 1.0677 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=2 SB=64 PAD=1 | med 1.0092 ms (2128.0 GB/s)  p5 0.9910 ms  p95 1.0630 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=2 SB=128 PAD=1 | med 1.0091 ms (2128.1 GB/s)  p5 0.9945 ms  p95 1.0692 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=2 SB=256 PAD=1 | med 1.0180 ms (2109.5 GB/s)  p5 0.9908 ms  p95 1.0772 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=16 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 1.0075 ms (2131.5 GB/s)  p5 0.9787 ms  p95 1.0836 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  FAIL smem_swiz 16x16 TX=1 TY=2: 
+  FAIL smem_blk_swiz 16x16 TX=1 TY=2: 
+  FAIL smem_blk_swiz 16x16 TX=1 TY=2: 
+  FAIL smem_blk_swiz 16x16 TX=1 TY=2: 
+  FAIL smem_blk_swiz 16x16 TX=1 TY=2: 
+  smem_pad_blk N=16384 BX=16 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 0.9905 ms (2168.0 GB/s)  p5 0.9765 ms  p95 1.0610 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=16 BY=8 TX=2 TY=1 SB=32 PAD=1 | med 2.2165 ms (968.9 GB/s)  p5 2.1781 ms  p95 2.2496 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=2 TY=1 SB=32 PAD=1 | med 2.2192 ms (967.7 GB/s)  p5 2.1782 ms  p95 2.2713 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=2 TY=1 SB=64 PAD=1 | med 2.2157 ms (969.2 GB/s)  p5 2.1668 ms  p95 2.2559 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=2 TY=1 SB=128 PAD=1 | med 2.2083 ms (972.5 GB/s)  p5 2.1717 ms  p95 2.2555 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=2 TY=1 SB=256 PAD=1 | med 2.2182 ms (968.1 GB/s)  p5 2.1797 ms  p95 2.2576 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=16 BY=8 TX=2 TY=1 SB=32 PAD=1 | med 1.5771 ms (1361.6 GB/s)  p5 1.5237 ms  p95 1.6543 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=2 TY=1 SB=32 PAD=1 | med 1.5800 ms (1359.2 GB/s)  p5 1.5214 ms  p95 1.6495 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=2 TY=1 SB=64 PAD=1 | med 1.5747 ms (1363.8 GB/s)  p5 1.5279 ms  p95 1.6389 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=2 TY=1 SB=128 PAD=1 | med 1.5807 ms (1358.5 GB/s)  p5 1.5227 ms  p95 1.6390 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=2 TY=1 SB=256 PAD=1 | med 1.5808 ms (1358.5 GB/s)  p5 1.5180 ms  p95 1.6388 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=16 BY=8 TX=2 TY=1 SB=32 PAD=1 | med 1.5820 ms (1357.5 GB/s)  p5 1.5259 ms  p95 1.6674 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=16 BY=8 TX=2 TY=1 SB=32 PAD=1 | med 1.5919 ms (1349.0 GB/s)  p5 1.5334 ms  p95 1.6507 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=2 TY=1 SB=32 PAD=1 | med 1.5875 ms (1352.8 GB/s)  p5 1.5293 ms  p95 1.6467 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=2 TY=1 SB=64 PAD=1 | med 1.5984 ms (1343.5 GB/s)  p5 1.5363 ms  p95 1.6633 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=2 TY=1 SB=128 PAD=1 | med 1.5926 ms (1348.4 GB/s)  p5 1.5330 ms  p95 1.6629 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=8 TX=2 TY=1 SB=256 PAD=1 | med 1.5936 ms (1347.6 GB/s)  p5 1.5348 ms  p95 1.6583 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=16 BY=8 TX=2 TY=1 SB=32 PAD=1 | med 1.5959 ms (1345.6 GB/s)  p5 1.5310 ms  p95 1.6683 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=16 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 1.9387 ms (1107.7 GB/s)  p5 1.9271 ms  p95 1.9878 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 1.9388 ms (1107.7 GB/s)  p5 1.9261 ms  p95 1.9962 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=2 TY=2 SB=64 PAD=1 | med 1.9326 ms (1111.2 GB/s)  p5 1.9200 ms  p95 2.0126 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=2 TY=2 SB=128 PAD=1 | med 1.9319 ms (1111.6 GB/s)  p5 1.9208 ms  p95 1.9889 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=2 TY=2 SB=256 PAD=1 | med 1.9308 ms (1112.2 GB/s)  p5 1.9177 ms  p95 2.0011 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=16 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.8645 ms (2484.0 GB/s)  p5 0.8573 ms  p95 0.9062 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.8638 ms (2486.0 GB/s)  p5 0.8558 ms  p95 0.9605 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=2 TY=2 SB=64 PAD=1 | med 0.8647 ms (2483.4 GB/s)  p5 0.8587 ms  p95 0.9396 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=2 TY=2 SB=128 PAD=1 | med 0.8655 ms (2481.1 GB/s)  p5 0.8578 ms  p95 0.9756 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=2 TY=2 SB=256 PAD=1 | med 0.8656 ms (2481.0 GB/s)  p5 0.8584 ms  p95 0.9690 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=16 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.8484 ms (2531.2 GB/s)  p5 0.8132 ms  p95 0.9380 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=16 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.8541 ms (2514.3 GB/s)  p5 0.8158 ms  p95 0.9073 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.8511 ms (2523.2 GB/s)  p5 0.8175 ms  p95 0.9382 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=16 TX=2 TY=2 SB=64 PAD=1 | med 0.8526 ms (2518.7 GB/s)  p5 0.8189 ms  p95 0.9344 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=16 TX=2 TY=2 SB=128 PAD=1 | med 0.8524 ms (2519.2 GB/s)  p5 0.8174 ms  p95 0.9234 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=16 BY=16 TX=2 TY=2 SB=256 PAD=1 | med 0.8540 ms (2514.7 GB/s)  p5 0.8187 ms  p95 0.9377 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=16 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.8494 ms (2528.3 GB/s)  p5 0.8147 ms  p95 0.9223 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=16 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 2.4016 ms (894.2 GB/s)  p5 2.3872 ms  p95 2.4799 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 2.4280 ms (884.5 GB/s)  p5 2.4170 ms  p95 2.4668 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=4 SB=64 PAD=1 | med 2.4041 ms (893.3 GB/s)  p5 2.3925 ms  p95 2.4734 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=4 SB=128 PAD=1 | med 2.3998 ms (894.9 GB/s)  p5 2.3897 ms  p95 2.4725 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=8 TX=1 TY=4 SB=256 PAD=1 | med 2.4045 ms (893.1 GB/s)  p5 2.3908 ms  p95 2.4763 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=16 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.9617 ms (2233.0 GB/s)  p5 0.9388 ms  p95 0.9970 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.9626 ms (2231.0 GB/s)  p5 0.9381 ms  p95 1.0243 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=4 SB=64 PAD=1 | med 0.9629 ms (2230.3 GB/s)  p5 0.9366 ms  p95 1.0256 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=4 SB=128 PAD=1 | med 0.9645 ms (2226.6 GB/s)  p5 0.9414 ms  p95 1.0119 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=8 TX=1 TY=4 SB=256 PAD=1 | med 0.9561 ms (2246.0 GB/s)  p5 0.9330 ms  p95 0.9961 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=16 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.9581 ms (2241.3 GB/s)  p5 0.9384 ms  p95 0.9844 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  FAIL smem_swiz 16x8 TX=1 TY=4: 
+  FAIL smem_blk_swiz 16x8 TX=1 TY=4: 
+  FAIL smem_blk_swiz 16x8 TX=1 TY=4: 
+  FAIL smem_blk_swiz 16x8 TX=1 TY=4: 
+  FAIL smem_blk_swiz 16x8 TX=1 TY=4: 
+  smem_pad_blk N=16384 BX=16 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.9508 ms (2258.5 GB/s)  p5 0.9137 ms  p95 1.0282 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=16 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 2.2438 ms (957.1 GB/s)  p5 2.2265 ms  p95 2.2853 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 2.2833 ms (940.5 GB/s)  p5 2.2692 ms  p95 2.3031 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=4 SB=64 PAD=1 | med 2.2797 ms (942.0 GB/s)  p5 2.2647 ms  p95 2.3099 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=4 SB=128 PAD=1 | med 2.2510 ms (954.0 GB/s)  p5 2.2324 ms  p95 2.2921 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=16 BY=16 TX=1 TY=4 SB=256 PAD=1 | med 2.2455 ms (956.3 GB/s)  p5 2.2325 ms  p95 2.2953 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=16 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 0.9484 ms (2264.4 GB/s)  p5 0.9205 ms  p95 1.0264 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 0.9600 ms (2237.0 GB/s)  p5 0.9377 ms  p95 1.0008 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=4 SB=64 PAD=1 | med 0.9511 ms (2257.8 GB/s)  p5 0.9316 ms  p95 1.0189 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=4 SB=128 PAD=1 | med 0.9529 ms (2253.6 GB/s)  p5 0.9339 ms  p95 1.0292 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=16 BY=16 TX=1 TY=4 SB=256 PAD=1 | med 0.9571 ms (2243.8 GB/s)  p5 0.9410 ms  p95 1.0319 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=16 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 0.9480 ms (2265.3 GB/s)  p5 0.9272 ms  p95 1.0326 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  FAIL smem_swiz 16x16 TX=1 TY=4: 
+  FAIL smem_blk_swiz 16x16 TX=1 TY=4: 
+  FAIL smem_blk_swiz 16x16 TX=1 TY=4: 
+  FAIL smem_blk_swiz 16x16 TX=1 TY=4: 
+  FAIL smem_blk_swiz 16x16 TX=1 TY=4: 
+  smem_pad_blk N=16384 BX=16 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 0.9506 ms (2259.2 GB/s)  p5 0.9313 ms  p95 1.0341 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 6.5177 ms (329.5 GB/s)  p5 6.4589 ms  p95 6.5951 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 6.5274 ms (329.0 GB/s)  p5 6.4575 ms  p95 6.7183 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=8 TX=1 TY=4 SB=64 PAD=1 | med 6.5223 ms (329.3 GB/s)  p5 6.4715 ms  p95 6.5986 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=8 TX=1 TY=4 SB=128 PAD=1 | med 6.5193 ms (329.4 GB/s)  p5 6.4489 ms  p95 6.6971 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=8 TX=1 TY=4 SB=256 PAD=1 | med 6.5315 ms (328.8 GB/s)  p5 6.4706 ms  p95 6.6039 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.9007 ms (2384.2 GB/s)  p5 0.8926 ms  p95 0.9885 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.9009 ms (2383.7 GB/s)  p5 0.8930 ms  p95 0.9537 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=8 TX=1 TY=4 SB=64 PAD=1 | med 0.9020 ms (2380.7 GB/s)  p5 0.8934 ms  p95 0.9742 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=8 TX=1 TY=4 SB=128 PAD=1 | med 0.9015 ms (2382.2 GB/s)  p5 0.8938 ms  p95 0.9687 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=8 TX=1 TY=4 SB=256 PAD=1 | med 0.9027 ms (2379.0 GB/s)  p5 0.8943 ms  p95 0.9723 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.8625 ms (2489.9 GB/s)  p5 0.8262 ms  p95 0.8976 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.8770 ms (2448.7 GB/s)  p5 0.8407 ms  p95 0.9164 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.8698 ms (2468.9 GB/s)  p5 0.8372 ms  p95 0.9218 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=8 TX=1 TY=4 SB=64 PAD=1 | med 0.8792 ms (2442.6 GB/s)  p5 0.8393 ms  p95 0.9174 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=8 TX=1 TY=4 SB=128 PAD=1 | med 0.8684 ms (2472.8 GB/s)  p5 0.8366 ms  p95 0.9328 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=8 TX=1 TY=4 SB=256 PAD=1 | med 0.8706 ms (2466.8 GB/s)  p5 0.8374 ms  p95 0.9365 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=64 BY=8 TX=1 TY=4 SB=32 PAD=1 | med 0.8601 ms (2496.8 GB/s)  p5 0.8283 ms  p95 0.9136 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 6.4730 ms (331.8 GB/s)  p5 6.4254 ms  p95 6.5180 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 6.4799 ms (331.4 GB/s)  p5 6.4380 ms  p95 6.5274 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=1 TY=2 SB=64 PAD=1 | med 6.4691 ms (332.0 GB/s)  p5 6.4300 ms  p95 6.5223 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=1 TY=2 SB=128 PAD=1 | med 6.4825 ms (331.3 GB/s)  p5 6.4404 ms  p95 6.5561 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=1 TY=2 SB=256 PAD=1 | med 6.4743 ms (331.7 GB/s)  p5 6.4363 ms  p95 6.5188 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 1.1444 ms (1876.4 GB/s)  p5 1.1360 ms  p95 1.2142 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 1.1510 ms (1865.8 GB/s)  p5 1.1354 ms  p95 1.1996 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=1 TY=2 SB=64 PAD=1 | med 1.1443 ms (1876.7 GB/s)  p5 1.1352 ms  p95 1.2198 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=1 TY=2 SB=128 PAD=1 | med 1.1461 ms (1873.8 GB/s)  p5 1.1348 ms  p95 1.2027 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=1 TY=2 SB=256 PAD=1 | med 1.1474 ms (1871.7 GB/s)  p5 1.1391 ms  p95 1.2208 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 0.9104 ms (2358.9 GB/s)  p5 0.9052 ms  p95 0.9566 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 0.9492 ms (2262.4 GB/s)  p5 0.9400 ms  p95 0.9866 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 0.9564 ms (2245.5 GB/s)  p5 0.9409 ms  p95 0.9919 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=1 TY=2 SB=64 PAD=1 | med 0.9527 ms (2254.1 GB/s)  p5 0.9408 ms  p95 0.9950 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=1 TY=2 SB=128 PAD=1 | med 0.9518 ms (2256.1 GB/s)  p5 0.9403 ms  p95 0.9914 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=1 TY=2 SB=256 PAD=1 | med 0.9523 ms (2255.1 GB/s)  p5 0.9410 ms  p95 0.9998 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=64 BY=16 TX=1 TY=2 SB=32 PAD=1 | med 0.9116 ms (2355.7 GB/s)  p5 0.9058 ms  p95 0.9594 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 6.3903 ms (336.1 GB/s)  p5 6.3426 ms  p95 6.4462 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 6.3824 ms (336.5 GB/s)  p5 6.3434 ms  p95 6.4470 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=1 TY=4 SB=64 PAD=1 | med 6.3914 ms (336.0 GB/s)  p5 6.3474 ms  p95 6.4706 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=1 TY=4 SB=128 PAD=1 | med 6.3815 ms (336.5 GB/s)  p5 6.3382 ms  p95 6.4484 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=1 TY=4 SB=256 PAD=1 | med 6.3988 ms (335.6 GB/s)  p5 6.3556 ms  p95 6.4757 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 1.1272 ms (1905.2 GB/s)  p5 1.1039 ms  p95 1.1536 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 1.1318 ms (1897.4 GB/s)  p5 1.1021 ms  p95 1.1858 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=1 TY=4 SB=64 PAD=1 | med 1.1306 ms (1899.5 GB/s)  p5 1.1058 ms  p95 1.1959 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=1 TY=4 SB=128 PAD=1 | med 1.1267 ms (1906.0 GB/s)  p5 1.1032 ms  p95 1.1599 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=1 TY=4 SB=256 PAD=1 | med 1.1283 ms (1903.4 GB/s)  p5 1.0967 ms  p95 1.1617 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 0.8661 ms (2479.4 GB/s)  p5 0.8279 ms  p95 0.8902 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 0.8696 ms (2469.6 GB/s)  p5 0.8620 ms  p95 0.9199 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 0.8682 ms (2473.5 GB/s)  p5 0.8406 ms  p95 0.9346 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=1 TY=4 SB=64 PAD=1 | med 0.8686 ms (2472.3 GB/s)  p5 0.8597 ms  p95 0.9415 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=1 TY=4 SB=128 PAD=1 | med 0.8685 ms (2472.7 GB/s)  p5 0.8615 ms  p95 0.9074 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=1 TY=4 SB=256 PAD=1 | med 0.8709 ms (2465.9 GB/s)  p5 0.8606 ms  p95 0.9185 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=64 BY=16 TX=1 TY=4 SB=32 PAD=1 | med 0.8687 ms (2472.0 GB/s)  p5 0.8272 ms  p95 0.9065 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=16 TX=2 TY=1 SB=32 PAD=1 | med 5.8353 ms (368.0 GB/s)  p5 5.7603 ms  p95 5.9817 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=2 TY=1 SB=32 PAD=1 | med 5.8209 ms (368.9 GB/s)  p5 5.7468 ms  p95 6.0128 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=2 TY=1 SB=64 PAD=1 | med 5.8129 ms (369.4 GB/s)  p5 5.7337 ms  p95 5.9390 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=2 TY=1 SB=128 PAD=1 | med 5.8289 ms (368.4 GB/s)  p5 5.7411 ms  p95 5.9232 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=2 TY=1 SB=256 PAD=1 | med 5.8095 ms (369.6 GB/s)  p5 5.7292 ms  p95 5.9142 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=16 TX=2 TY=1 SB=32 PAD=1 | med 1.1376 ms (1887.8 GB/s)  p5 1.1299 ms  p95 1.1828 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=2 TY=1 SB=32 PAD=1 | med 1.1358 ms (1890.6 GB/s)  p5 1.1274 ms  p95 1.1979 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=2 TY=1 SB=64 PAD=1 | med 1.1361 ms (1890.2 GB/s)  p5 1.1287 ms  p95 1.1833 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=2 TY=1 SB=128 PAD=1 | med 1.1364 ms (1889.8 GB/s)  p5 1.1289 ms  p95 1.1814 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=2 TY=1 SB=256 PAD=1 | med 1.1356 ms (1891.0 GB/s)  p5 1.1297 ms  p95 1.1789 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=16 TX=2 TY=1 SB=32 PAD=1 | med 1.0194 ms (2106.6 GB/s)  p5 0.9904 ms  p95 1.0534 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=16 TX=2 TY=1 SB=32 PAD=1 | med 1.0257 ms (2093.6 GB/s)  p5 0.9946 ms  p95 1.0794 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=2 TY=1 SB=32 PAD=1 | med 1.0216 ms (2102.0 GB/s)  p5 0.9943 ms  p95 1.0518 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=2 TY=1 SB=64 PAD=1 | med 1.0194 ms (2106.6 GB/s)  p5 0.9903 ms  p95 1.0519 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=2 TY=1 SB=128 PAD=1 | med 1.0170 ms (2111.7 GB/s)  p5 0.9919 ms  p95 1.0534 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=2 TY=1 SB=256 PAD=1 | med 1.0196 ms (2106.2 GB/s)  p5 0.9884 ms  p95 1.0540 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=64 BY=16 TX=2 TY=1 SB=32 PAD=1 | med 1.0214 ms (2102.4 GB/s)  p5 0.9807 ms  p95 1.0549 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  naive N=16384 BX=64 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 5.2648 ms (407.9 GB/s)  p5 5.2280 ms  p95 5.3195 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 5.2561 ms (408.6 GB/s)  p5 5.2173 ms  p95 5.3073 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=2 TY=2 SB=64 PAD=1 | med 5.2641 ms (407.9 GB/s)  p5 5.2280 ms  p95 5.3213 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=2 TY=2 SB=128 PAD=1 | med 5.2604 ms (408.2 GB/s)  p5 5.2238 ms  p95 5.3301 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  blocked N=16384 BX=64 BY=16 TX=2 TY=2 SB=256 PAD=1 | med 5.2644 ms (407.9 GB/s)  p5 5.2300 ms  p95 5.3333 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem N=16384 BX=64 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 1.1268 ms (1905.8 GB/s)  p5 1.1143 ms  p95 1.1863 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 1.1265 ms (1906.3 GB/s)  p5 1.1098 ms  p95 1.1721 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=2 TY=2 SB=64 PAD=1 | med 1.1287 ms (1902.6 GB/s)  p5 1.1123 ms  p95 1.1796 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=2 TY=2 SB=128 PAD=1 | med 1.1280 ms (1903.7 GB/s)  p5 1.1110 ms  p95 1.1621 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk N=16384 BX=64 BY=16 TX=2 TY=2 SB=256 PAD=1 | med 1.1293 ms (1901.6 GB/s)  p5 1.1146 ms  p95 1.1889 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad N=16384 BX=64 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.9032 ms (2377.6 GB/s)  p5 0.8706 ms  p95 0.9510 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_swiz N=16384 BX=64 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.9148 ms (2347.4 GB/s)  p5 0.8857 ms  p95 0.9538 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.9151 ms (2346.8 GB/s)  p5 0.8861 ms  p95 0.9643 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=2 TY=2 SB=64 PAD=1 | med 0.9147 ms (2347.7 GB/s)  p5 0.8857 ms  p95 0.9634 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=2 TY=2 SB=128 PAD=1 | med 0.9128 ms (2352.7 GB/s)  p5 0.8858 ms  p95 0.9577 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_blk_swiz N=16384 BX=64 BY=16 TX=2 TY=2 SB=256 PAD=1 | med 0.9136 ms (2350.7 GB/s)  p5 0.8868 ms  p95 0.9508 ms  maxerr=0.0e+00  cksum=2.199023e+12
+  smem_pad_blk N=16384 BX=64 BY=16 TX=2 TY=2 SB=32 PAD=1 | med 0.9036 ms (2376.6 GB/s)  p5 0.8704 ms  p95 0.9576 ms  maxerr=0.0e+00  cksum=2.199023e+12
+
+  ── Library: hipTensor ──
+  hiptensor N=16384 SB=32 | 1.0762 ms  1995.5 GB/s  cksum=3.602880e+16
+  hiptensor_blk N=16384 SB=32 | 0.7733 ms  2776.9 GB/s  cksum=3.602880e+16
+  hiptensor_blk N=16384 SB=64 | 0.7817 ms  2747.1 GB/s  cksum=3.602880e+16
+  hiptensor_blk N=16384 SB=128 | 0.7832 ms  2742.0 GB/s  cksum=3.602880e+16
+  hiptensor_blk N=16384 SB=256 | 0.7418 ms  2895.0 GB/s  cksum=3.602880e+16
+
+── Aggregate ──
+
+================================================================================================
+ GPU: MI300A   Emp BW: 3536 GB/s   Theo BW: 5300 GB/s
+ Transpose: N=16384  bytes/call = 4.29 GB (read+write)
+================================================================================================
+
+ var                 BX  BY TX TY   SB P   medGB/s  minGB/s  maxGB/s  %pkBW   vs lib  type
+ ------------------------------------------------------------------------------------
+ hiptensor_blk        0   0  0  0  256 0    2885.2   2831.0   3022.6   81.6%    144%   ★ lib
+ hiptensor_blk        0   0  0  0   32 0    2771.6   2613.3   2955.7   78.4%    138%   ★ lib
+ hiptensor_blk        0   0  0  0   64 0    2748.5   2507.3   2883.6   77.7%    137%   ★ lib
+ hiptensor_blk        0   0  0  0  128 0    2742.0   2618.7   2886.5   77.5%    137%   ★ lib
+ smem_blk_swiz       32   8  1  8  256 1    2602.6   2108.8   2749.9   73.6%    130%        
+ smem_blk_swiz       32   8  1  8   64 1    2599.6   2342.6   2721.5   73.5%    130%        
+ smem_blk_swiz       32   8  1  8  128 1    2587.5   2326.3   2720.7   73.2%    129%        
+ smem_blk_swiz       32  16  1  8  128 1    2579.0   2308.5   2716.4   72.9%    129%        
+ smem_blk_swiz       32  16  1  8  256 1    2575.0   2281.3   2703.0   72.8%    129%        
+ smem_swiz           32  16  1  8   32 1    2573.9   2327.5   2685.4   72.8%    128%        
+ smem_blk_swiz       32  16  1  8   32 1    2571.5   2288.8   2695.4   72.7%    128%        
+ smem_blk_swiz       32   8  2  4   64 1    2566.0   2271.6   2692.6   72.6%    128%        
+ smem_blk_swiz       32   8  2  4   32 1    2564.8   2300.3   2687.2   72.5%    128%        
+ smem_blk_swiz       32   8  2  4  256 1    2564.3   2342.7   2693.2   72.5%    128%        
+ smem_blk_swiz       32   8  2  4  128 1    2563.0   2272.4   2694.0   72.5%    128%        
+ smem_swiz           32   8  2  4   32 1    2562.5   2281.0   2689.3   72.5%    128%        
+ smem_blk_swiz       32  16  2  4   32 1    2550.3   2169.3   2668.3   72.1%    127%        
+ smem_swiz           32  16  2  4   32 1    2549.2   2241.1   2662.1   72.1%    127%        
+ smem_blk_swiz       32  16  2  4  256 1    2547.8   2126.6   2674.3   72.1%    127%        
+ smem_blk_swiz       32  16  1  8   64 1    2546.8   2292.4   2686.1   72.0%    127%        
+ smem_blk_swiz       32  16  2  4   64 1    2541.8   2332.2   2686.1   71.9%    127%        
+ smem_pad            16  16  2  2   32 1    2531.4   2222.7   2654.5   71.6%    126%        
+ smem_pad_blk        16  16  2  2   32 1    2528.8   2287.3   2647.7   71.5%    126%        
+ smem_blk            32   8  2  4   32 1    2523.8   2004.0   2602.6   71.4%    126%        
+ smem_blk_swiz       16  16  2  2   32 1    2523.3   2163.7   2636.4   71.4%    126%        
+ smem_blk            32   8  1  8   32 1    2520.7   1989.5   2619.5   71.3%    126%        
+ smem_blk            32   8  1  8   64 1    2520.0   1996.7   2622.1   71.3%    126%        
+ smem_blk_swiz       16  16  2  2  128 1    2519.3   2150.3   2634.8   71.3%    126%        
+ smem_blk_swiz       16  16  2  2   64 1    2519.2   2171.8   2648.1   71.2%    126%        
+ smem_blk            32   8  1  8  256 1    2516.0   2062.7   2611.6   71.2%    126%        
+ smem                32   8  1  8   32 1    2515.4   2052.2   2616.8   71.1%    126%        
+ smem_blk_swiz       16  16  2  2  256 1    2514.9   2179.9   2636.0   71.1%    126%        
+ smem_blk            32   8  1  8  128 1    2514.8   2010.2   2623.1   71.1%    126%        
+ smem_swiz           16  16  2  2   32 1    2514.7   2175.8   2644.3   71.1%    126%        
+ smem                32   8  2  4   32 1    2509.8   1983.6   2599.2   71.0%    125%        
+ smem_pad            64   8  1  4   32 1    2505.3   2376.1   2625.8   70.9%    125%        
+ smem_blk            32   8  2  4   64 1    2505.0   1975.1   2597.0   70.8%    125%        
+ smem_blk_swiz       32  16  4  2   64 1    2504.5   2329.2   2598.7   70.8%    125%        
+ smem_blk_swiz       32  16  4  2  256 1    2502.8   2342.3   2599.1   70.8%    125%        
+ smem_blk_swiz       32  16  4  2   32 1    2502.4   2133.2   2597.1   70.8%    125%        
+ smem_blk            32   8  2  4  128 1    2502.1   2079.2   2597.2   70.8%    125%        
+ smem_blk            32   8  2  4  256 1    2501.8   2058.1   2597.1   70.8%    125%        
+ smem_blk_swiz       32  16  4  2  128 1    2500.2   2146.4   2604.5   70.7%    125%        
+ smem_pad            32   8  2  4   32 1    2499.0   2334.0   2594.6   70.7%    125%        
+ smem_pad_blk        64   8  1  4   32 1    2496.8   2270.0   2609.6   70.6%    125%        
+ smem_pad_blk        32   8  2  4   32 1    2496.1   2445.2   2600.0   70.6%    125%        
+ smem_pad            32   8  1  8   32 1    2494.4   2334.0   2614.8   70.5%    125%        
+ smem_swiz           32  16  4  2   32 1    2492.3   2289.3   2604.9   70.5%    124%        
+ smem_pad_blk        32   8  1  8   32 1    2487.6   2434.4   2633.3   70.4%    124%        
+ smem_blk            16  16  2  2   32 1    2486.0   2000.9   2517.0   70.3%    124%        
+ smem                16  16  2  2   32 1    2484.2   2074.9   2515.9   70.3%    124%        
+ smem_blk            16  16  2  2   64 1    2483.4   2046.5   2507.6   70.2%    124%        
+ smem_blk            16  16  2  2  128 1    2481.5   2021.4   2520.9   70.2%    124%        
+ smem_blk            16  16  2  2  256 1    2481.1   2039.6   2513.2   70.2%    124%        
+ smem_pad            64  16  1  4   32 1    2480.4   2383.6   2637.8   70.2%    124%        
+ smem_blk_swiz       64  16  1  4   32 1    2473.5   2053.0   2585.6   70.0%    123%        
+ smem_pad_blk        32  32  1  4   32 1    2473.4   2194.2   2587.8   70.0%    123%        
+ smem_blk_swiz       64   8  1  4  128 1    2473.2   2188.4   2574.1   69.9%    123%        
+ smem_pad            32  32  1  4   32 1    2473.0   2135.6   2577.1   69.9%    123%        
+ smem_blk_swiz       64  16  1  4  128 1    2473.0   2231.1   2568.6   69.9%    123%        
+ smem_blk_swiz       64  16  1  4   64 1    2472.5   2057.7   2575.8   69.9%    123%        
+ smem_pad_blk        64  16  1  4   32 1    2472.3   2342.4   2626.0   69.9%    123%        
+ smem_swiz           64  16  1  4   32 1    2469.8   2208.4   2587.7   69.9%    123%        
+ smem_blk_swiz       64   8  1  4   32 1    2469.5   2300.6   2586.5   69.8%    123%        
+ smem_blk_swiz       64   8  1  4  256 1    2467.6   2249.7   2577.5   69.8%    123%        
+ smem_blk_swiz       64  16  1  4  256 1    2465.9   2212.1   2577.0   69.7%    123%        
+ smem_blk_swiz       32  16  2  4  128 1    2457.9   2331.9   2635.7   69.5%    123%        
+ smem_swiz           64   8  1  4   32 1    2455.8   2297.4   2564.2   69.5%    123%        
+ smem_pad_blk        32  32  2  2   32 1    2452.9   2227.6   2556.2   69.4%    122%        
+ smem_swiz           32   8  1  8   32 1    2449.0   2266.4   2633.5   69.3%    122%        
+ smem_blk_swiz       32   8  1  8   32 1    2445.8   2319.7   2641.4   69.2%    122%        
+ smem_blk_swiz       64   8  1  4   64 1    2443.4   2319.2   2588.1   69.1%    122%        
+ smem_pad            32  32  2  2   32 1    2441.6   2247.5   2551.7   69.1%    122%        
+ smem_blk_swiz       32  32  1  4   32 1    2439.2   2146.6   2552.0   69.0%    122%        
+ smem_swiz           32  32  1  4   32 1    2434.6   2137.0   2549.7   68.9%    122%        
+ smem_blk_swiz       32  32  1  4  128 1    2434.6   2194.2   2545.5   68.9%    122%        
+ smem_blk_swiz       32  32  1  4  256 1    2433.2   2118.1   2546.9   68.8%    121%        
+ smem_pad            32  16  1  8   32 1    2430.6   2172.4   2446.2   68.7%    121%        
+ smem_blk_swiz       32  32  1  4   64 1    2429.1   2164.5   2543.5   68.7%    121%        
+ smem_blk_swiz       32  32  2  2  128 1    2416.5   2124.8   2530.2   68.3%    121%        
+ smem_blk_swiz       32  32  2  2   64 1    2413.7   2111.2   2526.4   68.3%    120%        
+ smem_blk_swiz       32  32  2  2   32 1    2412.3   2084.2   2534.3   68.2%    120%        
+ smem_blk_swiz       32  32  2  2  256 1    2410.3   2120.9   2521.3   68.2%    120%        
+ smem_swiz           32  32  2  2   32 1    2409.4   2179.8   2520.5   68.1%    120%        
+ smem_pad_blk        32  16  1  8   32 1    2405.9   2309.3   2436.4   68.0%    120%        
+ smem_pad            32  32  1  1   32 1    2404.9   2068.8   2425.8   68.0%    120%        
+ smem_blk_swiz       32  32  1  1  256 1    2404.1   2093.7   2421.9   68.0%    120%        
+ smem_blk_swiz       32  32  1  1   32 1    2403.5   1986.0   2424.9   68.0%    120%        
+ smem_swiz           32  32  1  1   32 1    2403.4   2088.2   2424.3   68.0%    120%        
+ smem_blk_swiz       32  32  1  1  128 1    2402.9   2106.5   2423.1   68.0%    120%        
+ smem_blk_swiz       32  32  1  1   64 1    2399.4   2196.0   2423.5   67.9%    120%        
+ smem_pad_blk        32  32  1  1   32 1    2393.0   2148.6   2423.7   67.7%    119%        
+ smem                64   8  1  4   32 1    2384.4   2036.1   2415.7   67.4%    119%        
+ smem_blk            64   8  1  4   32 1    2383.8   2094.7   2412.0   67.4%    119%        
+ smem_blk            64   8  1  4  128 1    2382.7   2063.4   2413.8   67.4%    119%        
+ smem_blk            32  16  1  8   64 1    2382.4   1982.4   2466.9   67.4%    119%        
+ smem_blk            64   8  1  4   64 1    2381.8   2008.7   2408.3   67.4%    119%        
+ smem_blk            32  16  1  8  256 1    2379.7   2087.3   2461.6   67.3%    119%        
+ smem_blk            64   8  1  4  256 1    2379.7   2067.5   2413.2   67.3%    119%        
+ smem_blk            32  16  1  8   32 1    2378.8   2093.2   2459.7   67.3%    119%        
+ smem_blk            32  16  1  8  128 1    2378.8   1980.6   2455.6   67.3%    119%        
+ smem                32  16  1  8   32 1    2377.9   1927.0   2468.8   67.3%    119%        
+ smem_pad            64  16  2  2   32 1    2377.9   2229.3   2472.7   67.3%    119%        
+ smem_pad_blk        64  16  2  2   32 1    2377.2   2154.6   2483.4   67.2%    119%        
+ smem                32  16  2  4   32 1    2370.4   1988.1   2460.1   67.0%    118%        
+ smem_blk            32  16  2  4  256 1    2368.2   2057.6   2439.3   67.0%    118%        
+ smem_blk            32  16  2  4   32 1    2365.8   2051.8   2444.5   66.9%    118%        
+ smem_blk            32  16  2  4  128 1    2364.5   2093.9   2447.9   66.9%    118%        
+ smem_blk            32  16  4  2   32 1    2364.2   1999.8   2441.4   66.9%    118%        
+ smem_blk            32  16  4  2  128 1    2363.3   1994.1   2446.1   66.8%    118%        
+ smem_blk            32  16  2  4   64 1    2363.2   2005.5   2447.0   66.8%    118%        
+ smem_pad            64  16  1  2   32 1    2358.9   2099.9   2395.7   66.7%    118%        
+ smem_pad_blk        64  16  1  2   32 1    2355.7   2107.8   2379.4   66.6%    118%        
+ smem                32  16  4  2   32 1    2355.4   1954.9   2447.0   66.6%    118%        
+ smem_pad_blk        32  32  1  2   32 1    2353.0   2107.0   2373.2   66.5%    117%        
+ smem_blk_swiz       64  16  2  2  128 1    2352.9   2128.0   2433.6   66.5%    117%        
+ smem_blk_swiz       64  16  2  2  256 1    2350.8   2131.4   2436.8   66.5%    117%        
+ smem_blk_swiz       64  16  2  2   64 1    2348.6   2149.5   2431.0   66.4%    117%        
+ smem_blk            32  16  4  2  256 1    2348.4   1861.1   2439.5   66.4%    117%        
+ smem_pad_blk        32  16  2  4   32 1    2347.8   2153.6   2418.2   66.4%    117%        
+ smem_swiz           64  16  2  2   32 1    2347.7   2184.8   2431.9   66.4%    117%        
+ smem_pad            32  16  2  4   32 1    2347.1   2095.3   2399.9   66.4%    117%        
+ smem_blk_swiz       64  16  2  2   32 1    2346.8   2124.4   2433.7   66.4%    117%        
+ smem_pad            32  32  1  2   32 1    2345.0   2117.0   2377.7   66.3%    117%        
+ smem_blk            32  16  4  2   64 1    2328.5   1791.5   2427.6   65.9%    116%        
+ smem_pad_blk        32  32  2  1   32 1    2321.9   2101.3   2343.5   65.7%    116%        
+ smem_pad            32  16  4  2   32 1    2321.8   2146.4   2347.6   65.7%    116%        
+ smem_pad            32  32  2  1   32 1    2319.9   2131.1   2342.7   65.6%    116%        
+ smem_pad_blk        32  16  4  2   32 1    2317.9   2124.9   2372.3   65.6%    116%        
+ smem_blk_swiz       32  32  1  2  128 1    2286.4   2073.6   2306.7   64.7%    114%        
+ smem_blk_swiz       32  32  1  2   32 1    2286.1   2095.8   2305.8   64.7%    114%        
+ smem_blk_swiz       32  32  1  2   64 1    2285.6   1902.4   2304.9   64.6%    114%        
+ smem_blk_swiz       32  32  1  2  256 1    2284.7   2061.4   2308.4   64.6%    114%        
+ smem_swiz           32  32  1  2   32 1    2282.5   2110.9   2302.2   64.6%    114%        
+ smem_pad            16  16  1  4   32 1    2265.8   2012.8   2351.7   64.1%    113%        
+ smem                16  16  1  4   32 1    2265.4   1645.4   2347.9   64.1%    113%        
+ smem_swiz           64  16  1  2   32 1    2263.1   2071.5   2292.6   64.0%    113%        
+ smem_pad_blk        16   8  1  4   32 1    2259.3   1656.2   2359.0   63.9%    113%        
+ smem_pad_blk        16  16  1  4   32 1    2259.3   2021.5   2345.7   63.9%    113%        
+ smem_blk            16  16  1  4   64 1    2258.5   2000.7   2362.7   63.9%    113%        
+ smem_blk_swiz       64  16  1  2  256 1    2256.7   2091.6   2289.0   63.8%    113%        
+ smem_blk_swiz       64  16  1  2  128 1    2256.2   2103.8   2296.1   63.8%    113%        
+ smem_blk_swiz       64  16  1  2   64 1    2254.8   2028.3   2299.0   63.8%    113%        
+ smem_blk_swiz       32  32  2  1  128 1    2254.4   2070.2   2279.2   63.8%    113%        
+ smem_blk            16  16  1  4  128 1    2253.7   2015.1   2340.1   63.7%    113%        
+ smem_swiz           32  32  2  1   32 1    2253.4   2087.4   2284.2   63.7%    112%        
+ smem_blk_swiz       32  32  2  1  256 1    2250.9   2007.1   2277.8   63.7%    112%        
+ smem_blk_swiz       32  32  2  1   64 1    2249.5   2084.1   2279.8   63.6%    112%        
+ smem_blk_swiz       64  16  1  2   32 1    2246.8   2109.8   2300.6   63.5%    112%        
+ smem_blk            16   8  1  4  256 1    2246.4   2078.5   2352.1   63.5%    112%        
+ smem_swiz           16  16  1  4   32 1    2246.2   2049.0   2355.2   63.5%    112%        
+ smem_blk_swiz       32  32  2  1   32 1    2245.5   2022.9   2277.3   63.5%    112%        
+ smem_blk            16  16  1  4  256 1    2243.9   2031.0   2337.2   63.5%    112%        
+ smem_pad            16   8  1  4   32 1    2241.5   2047.1   2352.4   63.4%    112%        
+ smem_blk            16  16  1  4   32 1    2238.6   2069.0   2356.3   63.3%    112%        
+ smem_blk_swiz       16  16  1  4   64 1    2236.9   2047.2   2341.4   63.3%    112%        
+ smem                16   8  1  4   32 1    2233.1   2064.7   2360.9   63.2%    111%        
+ smem_blk            16   8  1  4   32 1    2231.3   2053.1   2356.9   63.1%    111%        
+ smem_blk            16   8  1  4   64 1    2230.3   2056.2   2369.7   63.1%    111%        
+ smem_blk            16   8  1  4  128 1    2226.6   2056.4   2352.2   63.0%    111%        
+ smem_blk_swiz       16  16  1  4  256 1    2224.8   1974.5   2314.0   62.9%    111%        
+ smem_swiz           16   8  1  4   32 1    2223.3   2081.0   2353.3   62.9%    111%        
+ smem_blk_swiz       16  16  1  4  128 1    2221.9   1987.5   2316.4   62.8%    111%        
+ smem_blk_swiz       16   8  1  4   64 1    2219.5   2007.0   2332.7   62.8%    111%        
+ smem_blk_swiz       16   8  1  4  256 1    2217.7   1972.2   2331.2   62.7%    111%        
+ smem_blk_swiz       16   8  1  4  128 1    2213.9   2044.2   2316.3   62.6%    111%        
+ smem_blk_swiz       16  16  1  4   32 1    2212.1   2015.3   2324.2   62.6%    110%        
+ smem_blk_swiz       16   8  1  4   32 1    2211.4   1742.7   2284.4   62.5%    110%        
+ smem_pad_blk        16  16  1  2   32 1    2168.1   1997.1   2234.4   61.3%    108%        
+ smem_pad            32   8  2  2   32 1    2141.0   1980.3   2231.6   60.6%    107%        
+ smem_pad_blk        32   8  2  2   32 1    2140.7   2004.5   2219.8   60.5%    107%        
+ smem                16  16  1  2   32 1    2140.1   1611.1   2174.7   60.5%    107%        
+ smem_blk_swiz       32   8  4  2   32 1    2137.2   2006.2   2240.1   60.4%    107%        
+ smem                32   8  4  2   32 1    2135.5   1979.7   2230.6   60.4%    107%        
+ smem_blk_swiz       16  16  1  2  256 1    2133.1   1944.0   2206.2   60.3%    106%        
+ smem_blk            32   8  4  2   64 1    2131.7   2049.1   2242.4   60.3%    106%        
+ smem_pad            16  16  1  2   32 1    2131.7   1936.8   2234.6   60.3%    106%        
+ smem_blk            32   8  2  2  256 1    2128.6   1985.8   2189.5   60.2%    106%        
+ smem_blk            16  16  1  2  128 1    2128.4   1969.3   2217.5   60.2%    106%        
+ smem_blk            16  16  1  2   64 1    2128.1   1904.6   2183.9   60.2%    106%        
+ smem_blk            32   8  4  2  256 1    2126.3   1999.4   2244.6   60.1%    106%        
+ smem_blk            32   8  2  2  128 1    2125.5   1991.7   2183.8   60.1%    106%        
+ smem_blk_swiz       32   8  4  2  128 1    2123.2   1837.8   2207.6   60.0%    106%        
+ smem_blk            16  16  1  2   32 1    2122.5   1928.0   2188.2   60.0%    106%        
+ smem_blk            32   8  4  2  128 1    2120.9   1838.7   2215.5   60.0%    106%        
+ smem_blk            32   8  4  2   32 1    2120.8   1996.2   2223.9   60.0%    106%        
+ smem_blk_swiz       32   8  4  2   64 1    2118.9   1979.7   2234.5   59.9%    106%        
+ smem_swiz           32   8  2  2   32 1    2116.8   2018.9   2197.7   59.9%    106%        
+ smem_blk            32   8  2  2   32 1    2115.0   1957.5   2182.6   59.8%    106%        
+ smem_blk_swiz       16  16  1  2   64 1    2113.2   1930.8   2176.2   59.8%    105%        
+ smem_blk            32   8  2  2   64 1    2112.4   1988.9   2178.5   59.7%    105%        
+ smem                32   8  2  2   32 1    2112.0   1990.8   2179.3   59.7%    105%        
+ smem_blk_swiz       16  16  1  2  128 1    2111.9   1918.1   2181.4   59.7%    105%        
+ smem_blk_swiz       64  16  2  1  128 1    2111.8   2012.2   2193.2   59.7%    105%        
+ smem_pad            32   8  4  2   32 1    2109.5   1988.9   2133.7   59.7%    105%        
+ smem_blk_swiz       32   8  2  2   64 1    2109.5   1981.5   2203.2   59.7%    105%        
+ smem_blk            16  16  1  2  256 1    2109.5   1932.0   2224.1   59.7%    105%        
+ smem_blk_swiz       64  16  2  1   64 1    2106.8   1946.7   2194.9   59.6%    105%        
+ smem_pad            64  16  2  1   32 1    2106.7   1989.9   2186.1   59.6%    105%        
+ smem_blk_swiz       64  16  2  1  256 1    2106.6   1888.1   2198.1   59.6%    105%        
+ smem_swiz           16  16  1  2   32 1    2105.8   1953.0   2191.1   59.6%    105%        
+ smem_pad_blk        32   8  4  2   32 1    2105.7   2003.7   2139.3   59.6%    105%        
+ smem_blk_swiz       32   8  4  2  256 1    2104.2   1972.0   2212.6   59.5%    105%        
+ smem_blk_swiz       32   8  2  2  256 1    2102.9   1975.0   2191.0   59.5%    105%        
+ smem_pad_blk        64  16  2  1   32 1    2102.4   1966.6   2214.9   59.5%    105%        
+ smem_blk_swiz       64  16  2  1   32 1    2102.2   1958.4   2184.4   59.5%    105%        
+ smem_blk_swiz       32   8  2  2  128 1    2098.1   1965.9   2202.4   59.3%    105%        
+ smem_swiz           64  16  2  1   32 1    2097.0   1829.1   2193.3   59.3%    105%        
+ smem_blk_swiz       32   8  2  2   32 1    2096.2   1970.4   2202.4   59.3%    105%        
+ smem_swiz           32   8  4  2   32 1    2086.9   1963.0   2224.4   59.0%    104%        
+ smem_blk_swiz       16  16  1  2   32 1    2084.7   1912.1   2166.5   59.0%    104%        
+ smem                32  16  4  1   32 1    2078.9   1932.8   2112.6   58.8%    104%        
+ smem_swiz           32   8  4  4   32 1    2076.3   1880.6   2097.6   58.7%    104%        
+ smem_blk_swiz       32   8  4  4   32 1    2075.7   1859.3   2126.0   58.7%    104%        
+ smem_blk_swiz       32   8  4  4  256 1    2075.6   1910.1   2097.1   58.7%    104%        
+ smem_blk_swiz       32   8  4  4  128 1    2075.1   1909.3   2094.4   58.7%    104%        
+ smem_blk_swiz       32   8  4  4   64 1    2075.0   1907.2   2113.4   58.7%    104%        
+ smem_blk            32  16  4  1   64 1    2070.7   1944.2   2123.7   58.6%    103%        
+ smem_blk            32  16  4  1   32 1    2067.2   1915.0   2118.3   58.5%    103%        
+ smem_blk            32  16  4  1  128 1    2061.3   1908.7   2112.7   58.3%    103%        
+ smem_blk            32  16  4  1  256 1    2056.6   1895.5   2107.2   58.2%    103%        
+ smem_blk_swiz       32  16  4  1   64 1    2047.5   1930.6   2076.3   57.9%    102%        
+ smem_pad            32  16  4  1   32 1    2045.6   1765.4   2088.4   57.9%    102%        
+ smem_blk_swiz       32  16  4  1  256 1    2042.7   1746.4   2081.8   57.8%    102%        
+ smem_blk_swiz       32  16  4  1   32 1    2033.6   1907.1   2080.1   57.5%    102%        
+ smem_pad_blk        32  16  4  1   32 1    2029.7   1905.6   2099.4   57.4%    101%        
+ smem_swiz           32  16  4  1   32 1    2023.5   1870.2   2085.4   57.2%    101%        
+ smem_blk_swiz       32  16  4  1  128 1    2020.5   1883.5   2079.1   57.1%    101%        
+ hiptensor            0   0  0  0   32 0    2003.1   1872.6   2026.3   56.7%    100%   ★ lib
+ smem_blk_swiz       16  16  1  1   32 1    1977.1   1857.5   2002.9   55.9%     99%        
+ smem_blk            16   8  1  2   64 1    1975.6   1813.0   2000.8   55.9%     99%        
+ smem_blk_swiz       16  16  1  1  256 1    1974.6   1866.3   2000.6   55.8%     99%        
+ smem_pad_blk        16  16  1  1   32 1    1972.1   1589.9   2027.0   55.8%     98%        
+ smem                32   8  4  4   32 1    1970.8   1621.6   1987.2   55.7%     98%        
+ smem_blk            16   8  1  2  128 1    1970.5   1810.8   1988.3   55.7%     98%        
+ smem_swiz           16  16  1  1   32 1    1969.7   1582.9   1986.2   55.7%     98%        
+ smem_pad_blk        16   8  1  2   32 1    1968.0   1852.5   2006.3   55.7%     98%        
+ smem_blk_swiz       16  16  1  1  128 1    1967.5   1863.3   1993.8   55.6%     98%        
+ smem_blk_swiz       16  16  1  1   64 1    1967.3   1798.0   1980.2   55.6%     98%        
+ smem_blk            32   8  4  4   32 1    1966.2   1768.1   2003.7   55.6%     98%        
+ smem_pad            16  16  1  1   32 1    1966.2   1790.3   1978.1   55.6%     98%        
+ smem                16   8  1  2   32 1    1965.8   1856.6   2018.2   55.6%     98%        
+ smem_blk            32   8  4  4  256 1    1965.1   1826.2   1999.9   55.6%     98%        
+ smem_blk            16   8  1  2  256 1    1964.9   1850.0   2009.6   55.6%     98%        
+ smem_blk            32   8  4  4  128 1    1964.4   1779.3   2032.4   55.6%     98%        
+ smem_blk_swiz       16   8  1  2  128 1    1963.5   1800.7   1982.7   55.5%     98%        
+ smem_blk            16   8  1  2   32 1    1963.1   1864.2   1997.9   55.5%     98%        
+ smem_blk            32   8  4  4   64 1    1960.8   1763.5   2003.5   55.5%     98%        
+ smem_pad            16   8  1  2   32 1    1959.3   1828.4   2006.7   55.4%     98%        
+ smem_blk_swiz       16   8  1  2   64 1    1957.9   1777.0   1981.0   55.4%     98%        
+ smem_blk_swiz       16   8  1  2  256 1    1939.2   1815.9   1987.1   54.8%     97%        
+ smem_blk_swiz       16   8  1  2   32 1    1936.0   1848.3   1978.4   54.8%     97%        
+ smem                32  32  1  1   32 1    1935.7   1703.5   1958.4   54.7%     97%        
+ smem_blk            32  32  1  1   32 1    1935.3   1725.2   1948.1   54.7%     97%        
+ smem_blk            32  32  1  1  128 1    1935.1   1783.9   1944.8   54.7%     97%        
+ smem_blk            32  32  1  1   64 1    1935.0   1738.9   1946.4   54.7%     97%        
+ smem_swiz           16   8  1  2   32 1    1934.2   1749.3   1985.6   54.7%     97%        
+ smem_blk            32  32  1  1  256 1    1934.1   1711.2   1967.1   54.7%     97%        
+ smem_blk            64  16  2  2   32 1    1906.6   1621.8   1976.0   53.9%     95%        
+ smem_blk            64  16  1  4  128 1    1906.5   1656.0   1985.4   53.9%     95%        
+ smem                64  16  2  2   32 1    1905.9   1582.3   1999.4   53.9%     95%        
+ smem                64  16  1  4   32 1    1905.5   1644.5   1993.5   53.9%     95%        
+ smem_blk            64  16  2  2  128 1    1904.3   1585.6   1996.1   53.9%     95%        
+ smem_blk            64  16  2  2   64 1    1903.6   1619.5   1964.5   53.8%     95%        
+ smem_blk            64  16  1  4  256 1    1903.4   1647.6   2024.7   53.8%     95%        
+ smem_blk            64  16  2  2  256 1    1902.0   1586.4   1964.0   53.8%     95%        
+ smem_blk            64  16  1  4   64 1    1899.8   1710.2   1956.2   53.7%     95%        
+ smem_blk            64  16  1  4   32 1    1897.6   1708.5   2011.3   53.7%     95%        
+ smem_blk            32  32  2  2   32 1    1894.7   1602.4   2004.0   53.6%     95%        
+ smem_blk            64  16  2  1  256 1    1891.0   1728.9   1913.2   53.5%     94%        
+ smem_blk            64  16  2  1   32 1    1890.7   1613.4   1911.4   53.5%     94%        
+ smem_blk            64  16  2  1   64 1    1890.2   1726.2   1912.9   53.5%     94%        
+ smem_blk            64  16  2  1  128 1    1890.0   1680.3   1909.4   53.5%     94%        
+ smem                64  16  2  1   32 1    1888.4   1758.5   1911.9   53.4%     94%        
+ smem                32  32  2  2   32 1    1886.6   1683.0   1955.4   53.4%     94%        
+ smem_blk            32  32  2  2  128 1    1880.8   1650.0   1939.5   53.2%     94%        
+ smem_blk            32  32  1  4  256 1    1880.7   1644.6   1962.9   53.2%     94%        
+ smem                32  32  1  4   32 1    1876.9   1650.3   1970.7   53.1%     94%        
+ smem_blk            32  32  2  2   64 1    1876.8   1645.8   1980.2   53.1%     94%        
+ smem_blk            64  16  1  2   64 1    1876.8   1664.6   1927.9   53.1%     94%        
+ smem                64  16  1  2   32 1    1876.5   1585.0   1893.9   53.1%     94%        
+ smem_blk            32  32  2  2  256 1    1876.0   1595.5   1973.9   53.1%     94%        
+ smem_blk            32  32  1  4  128 1    1874.1   1647.4   1937.4   53.0%     94%        
+ smem_blk            64  16  1  2  128 1    1874.1   1687.5   1897.6   53.0%     94%        
+ smem_blk            32  32  1  4   64 1    1872.1   1664.4   1937.5   52.9%     93%        
+ smem_blk            64  16  1  2  256 1    1871.7   1681.7   1901.6   52.9%     93%        
+ smem_blk            64  16  1  2   32 1    1866.1   1648.0   1906.2   52.8%     93%        
+ smem_blk            16  16  1  1   32 1    1863.3   1738.1   1872.6   52.7%     93%        
+ smem_blk            32  32  2  1  256 1    1862.6   1627.2   1898.1   52.7%     93%        
+ smem_blk            32  32  1  4   32 1    1862.3   1674.2   1947.4   52.7%     93%        
+ smem_blk            16  16  1  1   64 1    1861.8   1527.0   1871.6   52.7%     93%        
+ smem                16  16  1  1   32 1    1861.6   1742.2   1869.7   52.7%     93%        
+ smem_blk            32  32  2  1   32 1    1860.5   1480.2   1881.2   52.6%     93%        
+ smem_blk            32  32  2  1  128 1    1858.7   1526.7   1880.6   52.6%     93%        
+ smem_blk            32  32  2  1   64 1    1858.5   1680.1   1884.9   52.6%     93%        
+ smem_blk            16  16  1  1  128 1    1858.1   1740.1   1874.3   52.5%     93%        
+ smem_blk            16  16  1  1  256 1    1857.4   1717.8   1868.5   52.5%     93%        
+ smem                32  32  2  1   32 1    1855.8   1659.6   1912.4   52.5%     93%        
+ smem                32  32  1  2   32 1    1850.5   1678.7   1914.8   52.3%     92%        
+ smem_blk            32  32  1  2   64 1    1850.1   1607.8   1912.9   52.3%     92%        
+ smem_blk            32  32  1  2  128 1    1850.0   1634.1   1921.5   52.3%     92%        
+ smem_blk            32  32  1  2   32 1    1849.7   1529.1   1918.7   52.3%     92%        
+ smem_blk            32  32  1  2  256 1    1848.9   1674.1   1917.1   52.3%     92%        
+ smem_pad_blk        32   8  4  4   32 1    1814.5   1709.3   1863.9   51.3%     91%        
+ smem_pad            32   8  4  4   32 1    1813.7   1687.2   1869.0   51.3%     91%        
+ smem_pad            16   8  1  1   32 1    1372.0   1186.3   1395.0   38.8%     68%        
+ smem_blk_swiz       16   8  1  1   64 1    1371.2   1227.1   1403.1   38.8%     68%        
+ smem                16   8  1  1   32 1    1370.9   1224.9   1386.8   38.8%     68%        
+ smem_swiz           16   8  1  1   32 1    1370.6   1233.6   1401.7   38.8%     68%        
+ smem_blk_swiz       16   8  1  1   32 1    1370.4   1230.7   1389.2   38.8%     68%        
+ smem_blk_swiz       16   8  1  1  128 1    1370.2   1226.0   1392.8   38.8%     68%        
+ smem_blk            16   8  1  1   64 1    1370.0   1255.5   1396.7   38.7%     68%        
+ smem_pad_blk        16   8  1  1   32 1    1370.0   1201.3   1386.9   38.7%     68%        
+ smem_blk_swiz       32   8  4  1   32 1    1369.7   1212.5   1413.6   38.7%     68%        
+ smem_blk            16   8  1  1   32 1    1369.7   1210.4   1403.7   38.7%     68%        
+ smem_blk_swiz       16   8  1  1  256 1    1369.5   1230.2   1410.7   38.7%     68%        
+ smem_blk            16   8  1  1  256 1    1369.3   1229.2   1401.6   38.7%     68%        
+ smem_blk            16   8  1  1  128 1    1368.9   1214.6   1384.9   38.7%     68%        
+ smem_blk            32   8  4  1  256 1    1364.6   1166.2   1410.8   38.6%     68%        
+ smem_blk            16   8  2  1   64 1    1364.0   1274.3   1416.9   38.6%     68%        
+ smem                16   8  2  1   32 1    1363.8   1253.5   1421.9   38.6%     68%        
+ smem_pad            32   8  4  1   32 1    1362.3   1204.6   1419.5   38.5%     68%        
+ blocked             16  16  1  1  128 1    1362.3   1304.4   1379.5   38.5%     68%        
+ blocked             16  16  1  1   64 1    1362.2   1293.4   1381.4   38.5%     68%        
+ blocked             16  16  1  1   32 1    1361.9   1299.5   1383.6   38.5%     68%        
+ blocked             16  16  1  1  256 1    1361.6   1305.2   1385.5   38.5%     68%        
+ smem_blk            32   8  4  1  128 1    1360.8   1160.9   1405.2   38.5%     68%        
+ naive               16  16  1  1   32 1    1360.3   1260.6   1377.4   38.5%     68%        
+ smem_blk            32   8  4  1   64 1    1360.2   1211.1   1400.0   38.5%     68%        
+ smem_blk            16   8  2  1   32 1    1359.6   1280.0   1429.2   38.5%     68%        
+ smem_blk            16   8  2  1  128 1    1358.7   1297.1   1417.4   38.4%     68%        
+ smem_blk            16   8  2  1  256 1    1358.5   1260.8   1430.6   38.4%     68%        
+ smem_pad            16   8  2  1   32 1    1357.9   1232.0   1414.9   38.4%     68%        
+ smem_pad_blk        32   8  4  1   32 1    1357.7   1193.2   1412.7   38.4%     68%        
+ smem                32   8  4  1   32 1    1356.8   1203.2   1402.3   38.4%     68%        
+ smem_blk_swiz       16   8  2  1   32 1    1353.4   1263.1   1413.3   38.3%     68%        
+ smem_blk_swiz       32   8  4  1   64 1    1350.5   1200.4   1404.4   38.2%     67%        
+ smem_swiz           16   8  2  1   32 1    1349.4   1277.4   1415.1   38.2%     67%        
+ smem_blk_swiz       16   8  2  1  256 1    1348.8   1290.1   1413.2   38.1%     67%        
+ smem_blk_swiz       16   8  2  1  128 1    1348.5   1260.7   1432.2   38.1%     67%        
+ smem_pad_blk        16   8  2  1   32 1    1346.1   1267.2   1412.0   38.1%     67%        
+ smem_blk_swiz       32   8  4  1  128 1    1346.0   1210.1   1415.4   38.1%     67%        
+ smem_blk_swiz       16   8  2  1   64 1    1344.0   1252.7   1414.1   38.0%     67%        
+ smem_blk            32   8  4  1   32 1    1342.9   1193.4   1413.6   38.0%     67%        
+ smem_blk_swiz       32   8  4  1  256 1    1341.3   1213.1   1405.7   37.9%     67%        
+ smem_swiz           32   8  4  1   32 1    1336.9   1242.9   1409.2   37.8%     67%        
+ blocked             16  16  2  2  256 1    1112.4   1052.4   1122.7   31.5%     56%        
+ blocked             16  16  2  2  128 1    1111.6   1057.7   1119.9   31.4%     55%        
+ blocked             16  16  2  2   64 1    1111.2   1049.9   1121.0   31.4%     55%        
+ naive               16  16  2  2   32 1    1107.7   1052.9   1119.2   31.3%     55%        
+ blocked             16  16  2  2   32 1    1107.7   1054.6   1120.7   31.3%     55%        
+ blocked             16  16  1  2  256 1    1022.2    980.7   1029.8   28.9%     51%        
+ blocked             16  16  1  2   64 1    1022.0    984.2   1027.9   28.9%     51%        
+ blocked             16  16  1  2  128 1    1020.8    839.0   1027.1   28.9%     51%        
+ blocked             16  16  1  2   32 1    1020.6    977.0   1028.5   28.9%     51%        
+ naive               16  16  1  2   32 1    1019.0    951.5   1024.1   28.8%     51%        
+ blocked             16   8  2  1  128 1     972.8    893.8    995.4   27.5%     49%        
+ blocked             16   8  2  1   64 1     969.3    889.7   1000.9   27.4%     48%        
+ naive               16   8  2  1   32 1     968.9    903.4    991.6   27.4%     48%        
+ blocked             16   8  2  1  256 1     968.3    886.3    987.5   27.4%     48%        
+ blocked             16   8  2  1   32 1     967.8    893.2   1000.8   27.4%     48%        
+ naive               16  16  1  4   32 1     957.1    864.0    968.0   27.1%     48%        
+ blocked             16  16  1  4  256 1     956.4    892.5    965.7   27.0%     48%        
+ blocked             16  16  1  4  128 1     954.0    847.0    964.5   27.0%     48%        
+ blocked             16  16  1  4   64 1     942.0    842.9    966.5   26.6%     47%        
+ blocked             16  16  1  4   32 1     940.6    861.7    975.7   26.6%     47%        
+ blocked             16   8  1  1   32 1     939.7    878.3    966.2   26.6%     47%        
+ blocked             16   8  1  1  128 1     938.9    862.0    971.3   26.6%     47%        
+ blocked             16   8  1  1  256 1     937.8    870.5    963.4   26.5%     47%        
+ blocked             16   8  1  1   64 1     937.7    879.3    958.1   26.5%     47%        
+ naive               16   8  1  1   32 1     935.8    876.3    965.6   26.5%     47%        
+ blocked             16   8  1  4  128 1     894.9    837.2    899.9   25.3%     45%        
+ naive               16   8  1  4   32 1     894.2    834.4    900.6   25.3%     45%        
+ blocked             16   8  1  2   32 1     893.5    825.5    939.5   25.3%     45%        
+ blocked             16   8  1  4   64 1     893.3    822.3    899.3   25.3%     45%        
+ blocked             16   8  1  4  256 1     893.2    848.8    901.0   25.3%     45%        
+ blocked             16   8  1  2  256 1     891.2    805.5    927.8   25.2%     44%        
+ blocked             16   8  1  2  128 1     890.2    842.5    934.2   25.2%     44%        
+ blocked             16   8  1  2   64 1     889.9    819.5    925.9   25.2%     44%        
+ naive               16   8  1  2   32 1     886.6    820.2    926.6   25.1%     44%        
+ blocked             16   8  1  4   32 1     884.5    828.0    903.3   25.0%     44%        
+ blocked             32  16  4  1  256 1     831.4    740.0    851.8   23.5%     42%        
+ blocked             32  16  4  1  128 1     831.3    745.5    852.7   23.5%     42%        
+ naive               32  16  4  1   32 1     828.9    744.9    860.1   23.4%     41%        
+ blocked             32  16  4  1   32 1     827.9    743.9    855.7   23.4%     41%        
+ blocked             32  16  4  1   64 1     827.3    745.1    854.6   23.4%     41%        
+ naive               32  32  1  2   32 1     709.0    675.8    712.6   20.1%     35%        
+ blocked             32  32  1  2   32 1     708.5    671.1    716.3   20.0%     35%        
+ blocked             32  32  1  2   64 1     708.5    677.0    715.4   20.0%     35%        
+ blocked             32  32  1  2  256 1     708.5    677.4    713.0   20.0%     35%        
+ blocked             32  32  1  2  128 1     708.3    673.2    714.7   20.0%     35%        
+ blocked             32  32  2  2  256 1     688.0    623.7    697.4   19.5%     34%        
+ blocked             32  32  1  4  256 1     687.2    561.1    692.0   19.4%     34%        
+ blocked             32  32  2  2  128 1     687.2    630.0    695.8   19.4%     34%        
+ naive               32  32  2  2   32 1     687.1    623.0    695.1   19.4%     34%        
+ blocked             32  32  1  4   32 1     687.0    555.7    693.4   19.4%     34%        
+ blocked             32  32  2  2   64 1     687.0    614.8    696.3   19.4%     34%        
+ blocked             32  32  1  4   64 1     686.4    667.7    693.7   19.4%     34%        
+ blocked             32  32  1  4  128 1     686.4    655.0    697.2   19.4%     34%        
+ blocked             32  32  2  2   32 1     686.1    631.4    695.4   19.4%     34%        
+ naive               32  32  1  4   32 1     686.0    664.8    691.7   19.4%     34%        
+ naive               32  32  1  1   32 1     685.8    616.7    691.0   19.4%     34%        
+ blocked             32  32  1  1   64 1     685.6    625.8    691.4   19.4%     34%        
+ blocked             32  32  1  1  256 1     684.5    611.7    689.2   19.4%     34%        
+ naive               32  32  2  1   32 1     684.1    630.3    690.0   19.3%     34%        
+ blocked             32  32  1  1  128 1     683.8    624.5    688.4   19.3%     34%        
+ blocked             32  32  1  1   32 1     683.7    622.8    688.6   19.3%     34%        
+ blocked             32  16  4  2  128 1     682.9    629.5    709.9   19.3%     34%        
+ blocked             32  32  2  1  256 1     682.3    628.7    687.8   19.3%     34%        
+ blocked             32  32  2  1   64 1     682.1    625.6    687.6   19.3%     34%        
+ blocked             32  32  2  1  128 1     681.5    631.3    687.4   19.3%     34%        
+ blocked             32   8  4  2  128 1     680.9    632.3    708.9   19.3%     34%        
+ blocked             32  32  2  1   32 1     680.7    631.4    686.1   19.3%     34%        
+ blocked             32  16  4  2   64 1     680.5    636.7    714.9   19.2%     34%        
+ blocked             32   8  4  1   32 1     680.2    626.4    687.0   19.2%     34%        
+ naive               32   8  4  2   32 1     680.1    661.0    699.2   19.2%     34%        
+ naive               32  16  4  2   32 1     679.9    643.2    710.0   19.2%     34%        
+ blocked             32  16  4  2   32 1     679.7    632.9    713.2   19.2%     34%        
+ blocked             32   8  4  2  256 1     679.6    632.2    707.3   19.2%     34%        
+ naive               32   8  4  1   32 1     679.5    604.1    691.8   19.2%     34%        
+ blocked             32   8  4  1   64 1     679.5    611.6    691.2   19.2%     34%        
+ blocked             32   8  4  1  128 1     678.7    631.9    691.4   19.2%     34%        
+ blocked             32  16  4  2  256 1     678.7    633.9    712.9   19.2%     34%        
+ blocked             32   8  4  1  256 1     678.4    627.5    689.2   19.2%     34%        
+ blocked             32   8  4  2   64 1     677.7    637.3    708.2   19.2%     34%        
+ blocked             32   8  4  2   32 1     677.1    643.4    698.6   19.1%     34%        
+ blocked             32   8  2  2   32 1     620.4    572.3    631.4   17.5%     31%        
+ naive               32   8  2  2   32 1     620.2    574.6    638.5   17.5%     31%        
+ blocked             32   8  2  2  256 1     617.6    578.7    633.6   17.5%     31%        
+ blocked             32   8  2  2   64 1     616.5    577.5    633.7   17.4%     31%        
+ blocked             32   8  2  2  128 1     616.2    576.0    634.7   17.4%     31%        
+ blocked             32   8  2  4  128 1     612.1    515.3    628.2   17.3%     31%        
+ naive               32   8  2  4   32 1     607.9    576.0    626.9   17.2%     30%        
+ blocked             32   8  2  4  256 1     607.7    582.1    629.0   17.2%     30%        
+ blocked             32  16  2  4   32 1     606.9    552.9    635.9   17.2%     30%        
+ blocked             32   8  2  4   64 1     606.6    578.3    629.7   17.2%     30%        
+ blocked             32  16  2  4  128 1     602.9    562.6    635.7   17.0%     30%        
+ blocked             32  16  2  4   64 1     600.6    565.2    631.5   17.0%     30%        
+ blocked             32   8  2  4   32 1     595.0    564.8    617.7   16.8%     30%        
+ naive               32  16  2  4   32 1     594.6    561.2    621.1   16.8%     30%        
+ blocked             32  16  2  4  256 1     593.5    566.3    630.8   16.8%     30%        
+ blocked             32   8  4  4  256 1     590.4    485.5    613.8   16.7%     29%        
+ blocked             32   8  4  4   64 1     590.2    570.9    606.1   16.7%     29%        
+ blocked             32   8  4  4   32 1     589.9    573.5    604.1   16.7%     29%        
+ blocked             32   8  4  4  128 1     589.5    572.8    606.2   16.7%     29%        
+ naive               32   8  4  4   32 1     588.4    564.3    608.4   16.6%     29%        
+ blocked             32  16  1  8   64 1     515.7    503.2    522.1   14.6%     26%        
+ blocked             32  16  1  8  128 1     515.7    498.8    524.3   14.6%     26%        
+ blocked             32  16  1  8   32 1     515.2    498.8    522.1   14.6%     26%        
+ blocked             32  16  1  8  256 1     515.0    499.4    520.2   14.6%     26%        
+ naive               32  16  1  8   32 1     500.9    488.0    509.3   14.2%     25%        
+ blocked             32   8  1  8   64 1     497.3    479.9    503.6   14.1%     25%        
+ naive               32   8  1  8   32 1     497.1    482.2    503.9   14.1%     25%        
+ blocked             32   8  1  8  256 1     480.9    474.1    487.5   13.6%     24%        
+ blocked             32   8  1  8   32 1     480.4    473.7    487.2   13.6%     24%        
+ blocked             32   8  1  8  128 1     480.2    472.2    488.5   13.6%     24%        
+ blocked             64  16  2  2   32 1     408.6    380.7    413.8   11.6%     20%        
+ blocked             64  16  2  2  128 1     408.2    381.7    413.1   11.5%     20%        
+ blocked             64  16  2  2   64 1     408.0    379.7    413.1   11.5%     20%        
+ naive               64  16  2  2   32 1     407.9    378.1    412.3   11.5%     20%        
+ blocked             64  16  2  2  256 1     407.9    377.6    412.8   11.5%     20%        
+ blocked             64  16  2  1  256 1     369.7    343.7    377.1   10.5%     18%        
+ blocked             64  16  2  1   64 1     369.6    330.7    376.2   10.5%     18%        
+ blocked             64  16  2  1   32 1     369.0    334.5    374.8   10.4%     18%        
+ blocked             64  16  2  1  128 1     368.5    343.1    377.0   10.4%     18%        
+ naive               64  16  2  1   32 1     368.0    344.0    375.4   10.4%     18%        
+ blocked             64  16  1  4   32 1     336.5    314.4    339.5    9.5%     17%        
+ blocked             64  16  1  4  128 1     336.5    314.8    340.6    9.5%     17%        
+ naive               64  16  1  4   32 1     336.1    315.3    340.0    9.5%     17%        
+ blocked             64  16  1  4   64 1     336.0    315.6    339.6    9.5%     17%        
+ blocked             64  16  1  4  256 1     335.7    318.2    339.1    9.5%     17%        
+ blocked             64  16  1  2   64 1     332.0    310.4    335.0    9.4%     17%        
+ naive               64  16  1  2   32 1     331.8    310.4    335.0    9.4%     17%        
+ blocked             64  16  1  2  256 1     331.7    308.0    334.6    9.4%     17%        
+ blocked             64  16  1  2   32 1     331.4    276.2    334.5    9.4%     17%        
+ blocked             64  16  1  2  128 1     331.3    308.8    334.3    9.4%     17%        
+ naive               64   8  1  4   32 1     329.5    294.0    334.0    9.3%     16%        
+ blocked             64   8  1  4  128 1     329.5    310.5    333.8    9.3%     16%        
+ blocked             64   8  1  4   64 1     329.3    289.6    333.7    9.3%     16%        
+ blocked             64   8  1  4   32 1     329.0    308.5    335.0    9.3%     16%        
+ blocked             64   8  1  4  256 1     328.8    293.2    332.4    9.3%     16%        
+
+ Best library : hiptensor_blk SB=256 -> 2885.2 GB/s (81.6% peak)
+ Best kernel  : smem_blk_swiz BX=32 BY=8 TX=1 TY=8 SB=256 -> 2602.6 GB/s (73.6% peak)  (130% of best library)
+
+Per-iteration: transpose_raw.csv
+Aggregated:    transpose_results.csv
