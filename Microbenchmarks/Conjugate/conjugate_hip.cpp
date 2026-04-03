@@ -29,7 +29,7 @@
  *  OOP BW = 4·P·N_base·8.
  *  VL sweep: 2 … 64.                                                 */
 
-constexpr int64_t TOTAL_DOUBLES = 1LL << 27;   // ~1 GB per side
+constexpr int64_t TOTAL_DOUBLES = 1LL << 29;   // ~1 GB per side
 constexpr int64_t BLK   = 256;
 constexpr int64_t RUNS  = 100;
 constexpr int64_t GPU_MAX_VL = 64;

@@ -27,7 +27,7 @@
  *  Total doubles = 2·P·N_base = const.
  *  Useful BW = 2·P·N_base·8  (read im + write im).                  */
 
-constexpr int64_t TOTAL_DOUBLES = 1LL << 27;
+constexpr int64_t TOTAL_DOUBLES = 1LL << 29;
 constexpr int64_t BLK   = 256;
 constexpr int64_t RUNS  = 100;
 constexpr int64_t GPU_MAX_VL = 64;
