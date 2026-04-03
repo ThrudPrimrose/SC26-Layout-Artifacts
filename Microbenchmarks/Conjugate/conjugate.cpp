@@ -17,7 +17,7 @@
  *  OOP BW = 2 × (2·P·N_base) × 8   (read all + write all).
  *  SoA has 4·P distinct streams (2P in + 2P out).                    */
 
-constexpr int64_t TOTAL_DOUBLES = 1LL << 29;   // ~2 GB per side
+constexpr int64_t TOTAL_DOUBLES = 1LL << 30;   // ~2 GB per side
 constexpr int64_t RUNS  = 100;
 constexpr int64_t MAX_VL = 512;
 
@@ -76,7 +76,7 @@ static void bind_and_touch(void *base, size_t total_bytes) {
 
 /* ═══ Cache flush ═══ */
 
-constexpr int64_t FLUSH_N = 1 << 27;   /* 1 GB — 4× per-CCX L3 on MI300A */
+constexpr int64_t FLUSH_N = 1 << 28;   /* 1 GB — 4× per-CCX L3 on MI300A */
 static double *flush_buf;
 
 static void flush_init() {

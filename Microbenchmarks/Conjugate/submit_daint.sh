@@ -2,26 +2,30 @@
 #SBATCH --job-name=conjugate_bench
 #SBATCH --nodes=1
 #SBATCH --partition=normal
-#SBATCH --time=00:50:00
+#SBATCH --time=03:30:00
 #SBATCH --output=conjugate_%j.out
 #SBATCH --error=conjugate_%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=72
-#SBATCH --mem-bind=local
+#SBATCH --cpus-per-task=288
+#SBATCH --exclusive
+#SBATCH --account=g177-1
+#SBATCH --gpus-per-task=1
 # -------------------------------
 # OpenMP configuration
 # -------------------------------
-export OMP_NUM_THREADS=72
+export OMP_NUM_THREADS=288
 export OMP_PROC_BIND=close
-export OMP_PLACES=threads
+export OMP_PLACES="{0}:72:1,{72}:72:1,{144}:72:1,{216}:72:1"
 export OMP_DISPLAY_ENV=TRUE
 
 echo "Running on $(hostname)"
 echo "Threads: $OMP_NUM_THREADS"
-set -e
+
+spack load gcc/76jw6nu
+spack load cuda@12.9
 
 CFLAGS="-O3 -fopenmp -mtune=native -ftree-vectorize -fno-vect-cost-model -march=native -ffast-math -std=c++17"
-NVFLAGS="-O3 -arch=sm_90 -ffast-math -std=c++17 ${CFLAGS}"
+NVFLAGS="-O3 -arch=sm_90 -std=c++17"
 
 echo "═══ build ═══"
 echo "[1/4] conjugate_inplace.cpp    (CPU in-place)"
@@ -36,8 +40,13 @@ nvcc $NVFLAGS -o conjugate_gpu_inplace conjugate_inplace.cu
 echo "[4/4] conjugate.cu        (GPU out-of-place)"
 nvcc $NVFLAGS -o conjugate_gpu_oop conjugate.cu
 
+g++ -O3 -march=native -mtune=native -fopenmp -ffast-math \
+    -std=c++17 -o conj_prof_arm conj_prof_arm.cpp -lnuma
+
 echo ""
 echo "═══ run ═══"
+
+./conj_prof_arm
 
 echo "--- CPU in-place ---"
 ./conjugate_cpu_inplace
