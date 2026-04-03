@@ -18,9 +18,6 @@
 #define MPOL_BIND 2
 #endif
 
-#ifndef NOHUGEPAGE
-#define NOHUGEPAGE 1
-#endif
 
 static long sys_mbind(void *a, unsigned long l, int m, const unsigned long *nm, unsigned long mx,
                       unsigned f) {
