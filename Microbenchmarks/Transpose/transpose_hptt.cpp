@@ -279,31 +279,30 @@ int main(int argc, char **argv) {
 
     /* ── Allocate with NUMA binding ───────────────────────────────── */
     float *h_in, *h_out, *h_row, *h_ref;
-    bool use_numa = (D >= 2);
+    bool use_numa = (D >= 2) && is_blocked(VAR);
 
     if (use_numa) {
+        /* Blocked variants: mmap + contiguous NUMA split */
         h_in  = numa_alloc<float>(elems);
         h_out = numa_alloc<float>(elems);
         h_row = numa_alloc<float>(elems);
         h_ref = (float *)aligned_alloc(64, bytes);
 
-        if (is_blocked(VAR)) {
-            bind_contiguous(h_in, bytes, D);
-            bind_contiguous(h_out, bytes, D);
-        } else {
-            bind_by_rows(h_in, N, D);
-            bind_by_cols(h_out, N, D);
-        }
+        bind_contiguous(h_in, bytes, D);
+        bind_contiguous(h_out, bytes, D);
         bind_by_rows(h_row, N, D);
 
-        printf("  NUMA: %s\n", is_blocked(VAR)
-                   ? "blocked contiguous split"
-                   : "input rows->domains, output cols->domains");
+        printf("  NUMA: blocked contiguous split\n");
     } else {
+        /* Row-major variants: aligned_alloc + first-touch via parallel_init.
+         * HPTT's internal planner can segfault with mmap + per-page mbind. */
         h_in  = (float *)aligned_alloc(64, bytes);
         h_out = (float *)aligned_alloc(64, bytes);
         h_row = (float *)aligned_alloc(64, bytes);
         h_ref = (float *)aligned_alloc(64, bytes);
+
+        if (D >= 2)
+            printf("  NUMA: first-touch (aligned_alloc)\n");
     }
 
     /* ── Init ─────────────────────────────────────────────────────── */
