@@ -224,6 +224,12 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
                         ha="center", va="top", fontsize=10,
                         color=VCOL[vk], fontweight="bold")
 
+
+
+        if peak > 3000:
+            if top < peak*1.1:
+                ax.set_ylim(0, peak * 1.1)
+
     # ── Gap arrow: best schedule → best layout ──
     med_dict = {vk: (p, m) for p, m, vk, _ in medians}
     min_dict = {vk: vmin for _, _, vk, vmin in medians}
@@ -354,10 +360,15 @@ def main():
             if ci == 0:
                 ax.set_ylabel("Bandwidth [GB/s]", fontsize=11)
 
-    fig.suptitle(r"Addition ($C[:] += A[:] + B[:]$) with Suboptimal Layouts",
-                 fontsize=14, y=0.89 if nrows > 1 else 0.98)
+    #import matplotlib
+    #matplotlib.rcParams['text.usetex'] = True
 
-    fig.tight_layout(rect=[0, 0, 1, 0.93 if nrows > 1 else 0.95])
+    fig.suptitle("Addition (C[:] += A[:] + B[:]) with Suboptimal Layouts",
+                 fontsize=15, y=0.89 if nrows > 1 else 0.98)
+    fig.text(0.5, 0.85 if nrows > 1 else 0.95, 
+            "% annotations relative to STREAM peak bandwidth",
+            ha='center', va='top', fontsize=12, color='dimgray')
+    fig.tight_layout(rect=[0, 0, 1, 0.89 if nrows > 1 else 0.92])
 
     tags = sorted({c for _, c in grid})
     if any(r == "cpu" for r, _ in grid): tags.append("cpu")
