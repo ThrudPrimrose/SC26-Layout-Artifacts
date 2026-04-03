@@ -285,7 +285,7 @@ kernel_control(const double* __restrict__ A,
             int j = base_j + dx * BX;
             if (i < Md && j < Nd) {
                 int idx = i * Nd + j;
-                C[idx] = A[idx] + B_rm[idx];
+                C[idx] += A[idx] + B_rm[idx];
             }
         }
     }
