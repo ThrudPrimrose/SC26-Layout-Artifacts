@@ -27,8 +27,8 @@ from collections import defaultdict
 # ══════════════════════════════════════════════════════════════════════
 
 STREAM_PEAK = {
-    "MI300A Zen CPU": 1228,  "Grace CPU": 1700.62,
-    "MI300A GPU":       4294,     "GH200 GPU": 3780,
+    "MI300A Zen CPU": 1228*1e-3,  "GH200 Grace CPU": 1806.62*1e-3,
+    "MI300A GPU":       4294*1e-3,     "GH200 Hopper GPU": 3780*1e-3,
 }
 
 VCOL = {"naive": "#e67e22", "tiled": "#27ae60", "perm": "#2980b9", "blk": "#9b59b6"}
@@ -50,7 +50,7 @@ def parse_cpu(path):
             if not l or l.startswith("variant"): continue
             p = l.split(",")
             if len(p) < 10: continue
-            try: rows.append(dict(variant=p[0], tile=int(p[3]), gbs=float(p[7])))
+            try: rows.append(dict(variant=p[0], tile=int(p[3]), gbs=float(p[7])*1e-3))
             except: continue
     return rows
 
@@ -66,7 +66,7 @@ def parse_gpu(path):
             else:
                 parts = l.split(","); kernel = parts[0]; rest = parts[1:]
             if len(rest) < 9: continue
-            try: rows.append(dict(kernel=kernel.strip(), gbs=float(rest[6])))
+            try: rows.append(dict(kernel=kernel.strip(), gbs=float(rest[6])*1e-3))
             except: continue
     return rows
 
@@ -196,6 +196,8 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
     ax.set_xticks(positions)
     ax.set_xticklabels(xlabels, fontsize=8)
     ax.set_yticks(ticks)
+    from matplotlib.ticker import FormatStrFormatter
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
     ax.yaxis.set_minor_locator(AutoMinorLocator(4))
     ax.tick_params(axis='y', which='minor', length=3)
     ax.set_ylim(0, top)
@@ -205,7 +207,7 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
 
     # STREAM peak
     if peak:
-        ax.text(0.03, 0.97, f"STREAM {peak:.0f} GB/s",
+        ax.text(0.03, 0.97, f"STREAM {peak:.2f} TB/s",
                 transform=ax.transAxes, ha="left", va="top",
                 fontsize=8, color="dimgray")
         ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5)
@@ -293,8 +295,8 @@ def main():
     # NVIDIA
     ap.add_argument("--nv-cpu",  default="results/daint/madd_daint_cpu.csv", help="CSV for NVIDIA CPU")
     ap.add_argument("--nv-gpu",  default="results/daint/madd_daint_gpu.csv", help="CSV for NVIDIA GPU")
-    ap.add_argument("--nv-cpu-label", default="Grace CPU")
-    ap.add_argument("--nv-gpu-label", default="GH200 GPU")
+    ap.add_argument("--nv-cpu-label", default="GH200 Grace CPU")
+    ap.add_argument("--nv-gpu-label", default="GH200 Hopper GPU")
     # Legacy single-platform (maps to AMD slots)
     ap.add_argument("--cpu", default=None, help="(legacy) same as --amd-cpu")
     ap.add_argument("--gpu", default=None, help="(legacy) same as --amd-gpu")
@@ -363,7 +365,7 @@ def main():
     #import matplotlib
     #matplotlib.rcParams['text.usetex'] = True
 
-    fig.suptitle("Addition (C[:] += A[:] + B[:]) with Suboptimal Layouts",
+    fig.suptitle("Matrix Addition (C += A + B) with Suboptimal Layouts",
                  fontsize=15, y=0.89 if nrows > 1 else 0.98)
     fig.text(0.5, 0.85 if nrows > 1 else 0.95, 
             "% annotations relative to STREAM peak bandwidth",

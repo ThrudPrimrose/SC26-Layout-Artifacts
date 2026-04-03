@@ -25,10 +25,9 @@ from collections import defaultdict
 # ══════════════════════════════════════════════════════════════════════
 
 STREAM_PEAK = {
-    "MI300A CPU":  1160.35,   "Grace CPU":  1700.62,
-    "MI300A GPU":  4294,      "GH200 GPU":  3780,
+    "MI300A Zen CPU": 1228.0*1e-3,  "GH200 Grace CPU": 1806.62*1e-3,
+    "MI300A GPU":       4294.0*1e-3,     "GH200 Hopper GPU": 3780*1e-3,
 }
-
 VCOL = {
     "lib_rm":  "#e67e22",   # orange
     "kern_rm": "#27ae60",   # green
@@ -80,7 +79,7 @@ def parse_cpu_raw(path):
                 continue
             try:
                 key = (p[0], p[1], p[2], p[3], p[4], p[5])
-                groups[key].append(float(p[8]))
+                groups[key].append(float(p[8])*1e-3)
             except (ValueError, IndexError):
                 continue
     return groups
@@ -95,7 +94,7 @@ def parse_gpu_raw(path):
                 continue
             try:
                 key = tuple(p[:8])
-                groups[key].append(float(p[10]))
+                groups[key].append(float(p[10])*1e-3)
             except (ValueError, IndexError):
                 continue
     return groups
@@ -205,7 +204,7 @@ def draw_panel(ax, cats, title, peak, add_peak, xlabels_map):
     # STREAM peak line + label
     if peak:
         ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5)
-        ax.text(0.03, 0.97, f"STREAM {peak:.0f} GB/s",
+        ax.text(0.03, 0.97, f"STREAM {peak:.2f} TB/s",
                 transform=ax.transAxes, ha="left", va="top",
                 fontsize=8, color="dimgray")
         if peak > ymax and top < peak * 1.1:
@@ -235,10 +234,10 @@ def main():
     ap.add_argument("--amd-gpu", default="results/beverin/transpose_raw.csv")
     ap.add_argument("--nv-cpu",  default="results/daint/transpose_cpu_raw.csv")
     ap.add_argument("--nv-gpu",  default="results/daint/transpose_raw.csv")
-    ap.add_argument("--amd-cpu-label", default="MI300A CPU")
+    ap.add_argument("--amd-cpu-label", default="MI300A Zen CPU")
     ap.add_argument("--amd-gpu-label", default="MI300A GPU")
-    ap.add_argument("--nv-cpu-label",  default="Grace CPU")
-    ap.add_argument("--nv-gpu-label",  default="GH200 GPU")
+    ap.add_argument("--nv-cpu-label",  default="GH200 Grace CPU")
+    ap.add_argument("--nv-gpu-label",  default="GH200 Hopper GPU")
     ap.add_argument("--add-peak", action="store_true", default=True, help="Enable STREAM peak line")
     args = ap.parse_args()
 
@@ -292,7 +291,7 @@ def main():
             title, cats, peak, xmap = grid[(rk, ck)]
             draw_panel(ax, cats, title, peak, args.add_peak, xmap)
             if ci == 0:
-                ax.set_ylabel("Bandwidth [GB/s]", fontsize=11)
+                ax.set_ylabel("Bandwidth [TB/s]", fontsize=11)
 
     fig.suptitle("Matrix Transpose: Row-Major vs Blocked Layout",
                  fontsize=15, y=0.89)
@@ -313,8 +312,8 @@ def main():
         for cat in ["lib_rm", "kern_rm", "lib_blk", "kern_blk"]:
             if cat not in cats: continue
             med = float(np.median(cats[cat]))
-            pk = f"  ({100 * med / peak:.0f}%)" if peak else ""
-            print(f"    {xmap[cat]:<24} {med:8.1f} GB/s{pk}")
+            pk = f"  ({100 * med / peak:.2f}%)" if peak else ""
+            print(f"    {xmap[cat]:<24} {med:8.2f} TB/s{pk}")
 
 if __name__ == "__main__":
     main()
