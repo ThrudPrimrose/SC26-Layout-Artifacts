@@ -8,18 +8,23 @@
 #include <sys/syscall.h>
 #include <numaif.h>
 #include <unistd.h>
-#include <type_traits>
 
-constexpr int64_t N    = 1 << 28;
-constexpr int64_t RUNS = 100;
+/*  Total doubles across all K fields is constant.
+ *  TOTAL = K * N_base   =>   same memory footprint for every K.
+ *  OOP bandwidth = 2 * TOTAL * 8  (read all + write all).            */
+constexpr int64_t TOTAL = 1LL << 28;          // ~2 GB per side
+constexpr int64_t RUNS  = 100;
+constexpr int64_t CPU_MAX_VL = 512;
 
-struct C2 { double re, im; };
-template<int VL> struct C2V { double re[VL], im[VL]; };
+/* ═══ Generic layout structs ═══ */
 
-static_assert(sizeof(C2) == 2 * sizeof(double), "");
-#define CHECK_C2V(VL) static_assert(sizeof(C2V<VL>) == 2*(VL)*sizeof(double), "");
-CHECK_C2V(2) CHECK_C2V(4) CHECK_C2V(8) CHECK_C2V(16) CHECK_C2V(32) CHECK_C2V(64) CHECK_C2V(128) CHECK_C2V(256) CHECK_C2V(512)
-#undef CHECK_C2V
+template<int K>
+struct AoS { double f[K]; };
+
+template<int K, int VL>
+struct AoSoA { double f[K][VL]; };
+
+/* ═══ NUMA helpers (same as original) ═══ */
 
 static long PAGE_SZ;
 
@@ -29,28 +34,13 @@ static int get_numa_node() {
     return (int)node;
 }
 
-static void print_mems_allowed() {
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f) return;
-    char line[512];
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "Mems_allowed_list:", 18) == 0 ||
-            strncmp(line, "Cpus_allowed_list:", 18) == 0)
-            printf("  %s", line);
-    }
-    fclose(f);
-}
-
-/* ═══ NUMA-aware allocation: mmap + per-thread mbind + first-touch ═══ */
-
 static void *numa_alloc(size_t bytes) {
     void *p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) { perror("mmap"); std::abort(); }
-    madvise(p, bytes, MADV_GEPAGE);
+    madvise(p, bytes, MADV_HUGEPAGE);
     return p;
 }
-
 static void numa_free(void *p, size_t bytes) { munmap(p, bytes); }
 
 static void bind_and_touch(void *base, size_t total_bytes) {
@@ -64,111 +54,107 @@ static void bind_and_touch(void *base, size_t total_bytes) {
         int64_t hi = std::min(lo + chunk, n_pages);
         if (lo < n_pages && lo < hi) {
             uintptr_t pbeg = (uintptr_t)base + lo * PAGE_SZ;
-            uintptr_t pend = (uintptr_t)base + hi * PAGE_SZ;
-            if (pend > (uintptr_t)base + total_bytes)
-                pend = (uintptr_t)base + total_bytes;
-
+            uintptr_t pend = std::min((uintptr_t)base + hi * PAGE_SZ,
+                                      (uintptr_t)base + total_bytes);
             int node = get_numa_node();
             unsigned long mask = 1UL << node;
             mbind((void *)pbeg, pend - pbeg, MPOL_BIND, &mask, 64, 0);
-
-            for (uintptr_t addr = pbeg; addr < pend; addr += PAGE_SZ)
-                *(volatile char *)addr = 0;
+            for (uintptr_t a = pbeg; a < pend; a += PAGE_SZ)
+                *(volatile char *)a = 0;
         }
     }
-}
-
-/* ═══ First-touch with data init ═══ */
-
-static void ft_aos(C2 *buf, int64_t n) {
-    bind_and_touch(buf, n * sizeof(C2));
-    #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < n; i++) {
-        buf[i].re = (double)(i % 997) * 0.001;
-        buf[i].im = (double)(i % 991) * 0.001;
-    }
-}
-
-static void ft_soa(double *r, double *im, int64_t n) {
-    bind_and_touch(r,  n * sizeof(double));
-    bind_and_touch(im, n * sizeof(double));
-    #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < n; i++) {
-        r[i]  = (double)(i % 997) * 0.001;
-        im[i] = (double)(i % 991) * 0.001;
-    }
-}
-
-template<int VL>
-static void ft_aosoa(C2V<VL> *buf, int64_t n) {
-    bind_and_touch(buf, (n / VL) * sizeof(C2V<VL>));
-    int64_t nblks = n / VL;
-    #pragma omp parallel for schedule(static)
-    for (int64_t b = 0; b < nblks; b++)
-        for (int l = 0; l < VL; l++) {
-            buf[b].re[l] = (double)((b * VL + l) % 997) * 0.001;
-            buf[b].im[l] = (double)((b * VL + l) % 991) * 0.001;
-        }
 }
 
 /* ═══ Cache flush ═══ */
 
 constexpr int64_t FLUSH_N = 1 << 26;
-static double *flush_buf = nullptr;
+static double *flush_buf;
 
 static void flush_init() {
-    constexpr size_t bytes = FLUSH_N * sizeof(double);
-    flush_buf = (double *)numa_alloc(bytes);
-    bind_and_touch(flush_buf, bytes);
+    size_t b = FLUSH_N * sizeof(double);
+    flush_buf = (double *)numa_alloc(b);
+    bind_and_touch(flush_buf, b);
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] = 0.0;
 }
-
 static void flush_caches() {
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
 }
-
 static void flush_free() { numa_free(flush_buf, FLUSH_N * sizeof(double)); }
 
-/* ═══ Kernels (out-of-place): read 2N, write 2N = 4N doubles ═══ */
+/* ═══ Init helpers ═══ */
 
-static void c_aos(const C2 *__restrict__ in, C2 *__restrict__ out, int64_t n) {
+static void init_and_bind(double *buf, int64_t n) {
+    bind_and_touch(buf, n * sizeof(double));
     #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < n; i++) {
-        out[i].re = in[i].re;
-        out[i].im = -in[i].im;
-    }
+    for (int64_t i = 0; i < n; i++)
+        buf[i] = (double)(i % 997) * 0.001;
 }
 
-static void c_soa(const double *__restrict__ ri, const double *__restrict__ ii,
-                  double *__restrict__ ro, double *__restrict__ io, int64_t n) {
+template<int K>
+static void init_aos(AoS<K> *buf, int64_t n) {
+    bind_and_touch(buf, n * sizeof(AoS<K>));
     #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < n; i++) {
-        ro[i] = ri[i];
-        io[i] = -ii[i];
-    }
+    for (int64_t i = 0; i < n; i++)
+        for (int k = 0; k < K; k++)
+            buf[i].f[k] = (double)((i * K + k) % 997) * 0.001;
 }
 
-template<int VL>
-static void c_aosoa(const C2V<VL> *__restrict__ in, C2V<VL> *__restrict__ out, int64_t n) {
-    int64_t nblks = n / VL;
+template<int K, int VL>
+static void init_aosoa(AoSoA<K,VL> *buf, int64_t n_base) {
+    int64_t nblks = n_base / VL;
+    bind_and_touch(buf, nblks * sizeof(AoSoA<K,VL>));
     #pragma omp parallel for schedule(static)
-    for (int64_t b = 0; b < nblks; b++) {
-        #pragma omp simd
-        for (int l = 0; l < VL; l++) {
-            out[b].re[l] =  in[b].re[l];
-            out[b].im[l] = -in[b].im[l];
-        }
-    }
+    for (int64_t b = 0; b < nblks; b++)
+        for (int k = 0; k < K; k++)
+            for (int l = 0; l < VL; l++)
+                buf[b].f[k][l] = (double)(((b * VL + l) * K + k) % 997) * 0.001;
 }
 
-/* ═══ BW = 4N×8 ═══ */
+/* ═══ Kernels (out-of-place): negate all K fields ═══ */
+
+template<int K>
+static void kern_aos(const AoS<K> *__restrict__ in,
+                     AoS<K> *__restrict__ out, int64_t n) {
+    #pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < n; i++)
+        for (int k = 0; k < K; k++)
+            out[i].f[k] = -in[i].f[k];
+}
+
+template<int K>
+static void kern_soa(double *const *__restrict__ in,
+                     double *const *__restrict__ out, int64_t n) {
+    /* Every thread touches all 2K streams → stresses TLB */
+    #pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < n; i++)
+        for (int k = 0; k < K; k++)
+            out[k][i] = -in[k][i];
+}
+
+template<int K, int VL>
+static void kern_aosoa(const AoSoA<K,VL> *__restrict__ in,
+                       AoSoA<K,VL> *__restrict__ out, int64_t n_base) {
+    int64_t nblks = n_base / VL;
+    #pragma omp parallel for schedule(static)
+    for (int64_t b = 0; b < nblks; b++)
+        for (int k = 0; k < K; k++)
+            #pragma omp simd
+            for (int l = 0; l < VL; l++)
+                out[b].f[k][l] = -in[b].f[k][l];
+}
+
+/* ═══ Bench driver ═══ */
 
 static FILE *csv;
-static double bw(double ms) { return 4.0 * N * sizeof(double) / (ms * 1e6); }
 
-#define CPU_BENCH(label, call) do { \
+/* BW = 2 * K * n_base * 8   (read K fields + write K fields) */
+static double bw_oop(int K, int64_t n_base, double ms) {
+    return 2.0 * K * n_base * sizeof(double) / (ms * 1e6);
+}
+
+#define CPU_BENCH(K_val, n_base, label, call) do { \
     for (int w = 0; w < 5; w++) { flush_caches(); call; } \
     double times[RUNS]; \
     for (int r = 0; r < RUNS; r++) { \
@@ -179,41 +165,67 @@ static double bw(double ms) { return 4.0 * N * sizeof(double) / (ms * 1e6); }
     } \
     double sum = 0; \
     for (int r = 0; r < RUNS; r++) { \
-        fprintf(csv, "%s,%d,%.6f,%.2f\n", label, r, times[r], bw(times[r])); \
+        fprintf(csv, "%d,%s,%d,%.6f,%.2f\n", \
+                K_val, label, r, times[r], bw_oop(K_val, n_base, times[r])); \
         sum += times[r]; \
     } \
     double avg = sum / RUNS; \
-    printf("  %-14s %8.4f ms  %7.1f GB/s\n", label, avg, bw(avg)); \
+    printf("  %-14s %8.4f ms  %7.1f GB/s\n", label, avg, bw_oop(K_val, n_base, avg)); \
 } while (0)
 
-static void bench_aos() {
-    constexpr size_t bytes = N * sizeof(C2);
-    auto *in  = (C2 *)numa_alloc(bytes); ft_aos(in, N);
-    auto *out = (C2 *)numa_alloc(bytes); ft_aos(out, N);
-    CPU_BENCH("AoS", c_aos(in, out, N));
+template<int K>
+static void bench_aos(int64_t n) {
+    size_t bytes = n * sizeof(AoS<K>);
+    auto *in  = (AoS<K> *)numa_alloc(bytes); init_aos<K>(in, n);
+    auto *out = (AoS<K> *)numa_alloc(bytes); init_aos<K>(out, n);
+    CPU_BENCH(K, n, "AoS", (kern_aos<K>(in, out, n)));
     numa_free(in, bytes); numa_free(out, bytes);
 }
 
-static void bench_soa() {
-    constexpr size_t bytes = N * sizeof(double);
-    double *ri = (double *)numa_alloc(bytes);
-    double *ii = (double *)numa_alloc(bytes);
-    double *ro = (double *)numa_alloc(bytes);
-    double *io = (double *)numa_alloc(bytes);
-    ft_soa(ri, ii, N);
-    ft_soa(ro, io, N);
-    CPU_BENCH("SoA", c_soa(ri, ii, ro, io, N));
-    numa_free(ri, bytes); numa_free(ii, bytes);
-    numa_free(ro, bytes); numa_free(io, bytes);
+template<int K>
+static void bench_soa(int64_t n) {
+    size_t bytes = n * sizeof(double);
+    double *in_arr[K], *out_arr[K];
+    for (int k = 0; k < K; k++) {
+        in_arr[k]  = (double *)numa_alloc(bytes); init_and_bind(in_arr[k], n);
+        out_arr[k] = (double *)numa_alloc(bytes); init_and_bind(out_arr[k], n);
+    }
+    double *const *ip = in_arr, *const *op = out_arr;
+    CPU_BENCH(K, n, "SoA", (kern_soa<K>(ip, op, n)));
+    for (int k = 0; k < K; k++) {
+        numa_free(in_arr[k], bytes); numa_free(out_arr[k], bytes);
+    }
 }
 
-template<int VL>
-static void bench_aosoa(const char *label) {
-    constexpr size_t bytes = (N / VL) * sizeof(C2V<VL>);
-    auto *in  = (C2V<VL> *)numa_alloc(bytes); ft_aosoa<VL>(in, N);
-    auto *out = (C2V<VL> *)numa_alloc(bytes); ft_aosoa<VL>(out, N);
-    CPU_BENCH(label, c_aosoa<VL>(in, out, N));
+template<int K, int VL>
+static void bench_aosoa(int64_t n, const char *label) {
+    int64_t nblks = n / VL;
+    size_t bytes = nblks * sizeof(AoSoA<K,VL>);
+    auto *in  = (AoSoA<K,VL> *)numa_alloc(bytes); init_aosoa<K,VL>(in, n);
+    auto *out = (AoSoA<K,VL> *)numa_alloc(bytes); init_aosoa<K,VL>(out, n);
+    CPU_BENCH(K, n, label, (kern_aosoa<K,VL>(in, out, n)));
     numa_free(in, bytes); numa_free(out, bytes);
+}
+
+template<int K>
+static void run_all(int64_t n) {
+    printf("\n── K=%d  N_base=%lld  total=%.1f GB (per side) ──\n",
+           K, (long long)n, (double)K * n * 8 / 1e9);
+    bench_aos<K>(n);
+    bench_soa<K>(n);
+    bench_aosoa<K,   2>(n, "AoSoA-2");
+    bench_aosoa<K,   4>(n, "AoSoA-4");
+    bench_aosoa<K,   8>(n, "AoSoA-8");
+    bench_aosoa<K,  16>(n, "AoSoA-16");
+    bench_aosoa<K,  32>(n, "AoSoA-32");
+    bench_aosoa<K,  64>(n, "AoSoA-64");
+    bench_aosoa<K, 128>(n, "AoSoA-128");
+    bench_aosoa<K, 256>(n, "AoSoA-256");
+    bench_aosoa<K, 512>(n, "AoSoA-512");
+}
+
+static int64_t n_base(int K) {
+    return (TOTAL / K / CPU_MAX_VL) * CPU_MAX_VL;
 }
 
 int main() {
@@ -221,42 +233,30 @@ int main() {
     flush_init();
 
     csv = fopen("results_cpu_oop.csv", "w");
-    fprintf(csv, "layout,run,ms,gbps\n");
+    fprintf(csv, "K,layout,run,ms,gbps\n");
 
-    printf("conj (oop): N=%lldM  runs=%d  threads=%d  page=%ld\n",
-           (long long)(N >> 20), (int)RUNS, omp_get_max_threads(), PAGE_SZ);
-    printf("BW = 4N×8 (read re,im + write re,im)  |  cache flush before each run\n");
-    printf("NUMA: per-thread mbind(MPOL_BIND) + first-touch\n");
-    print_mems_allowed();
+    printf("conj OOP: TOTAL=%lldM  runs=%d  threads=%d  page=%ld\n",
+           (long long)(TOTAL >> 20), (int)RUNS, omp_get_max_threads(), PAGE_SZ);
+    printf("BW = 2·K·N_base·8  (read+write all K fields)\n");
 
     {
         int nodes[8] = {};
         #pragma omp parallel
-        {
-            int n = get_numa_node();
-            if (n >= 0 && n < 8) {
-                #pragma omp atomic
-                nodes[n]++;
-            }
-        }
+        { int nd = get_numa_node(); if (nd >= 0 && nd < 8) {
+            #pragma omp atomic
+            nodes[nd]++;
+        }}
         printf("  thread spread:");
-        for (int i = 0; i < 8; i++)
-            if (nodes[i]) printf(" N%d=%d", i, nodes[i]);
-        printf("\n\n");
+        for (int i = 0; i < 8; i++) if (nodes[i]) printf(" N%d=%d", i, nodes[i]);
+        printf("\n");
     }
 
-    printf("[CPU]\n");
-    bench_aos();
-    bench_soa();
-    bench_aosoa< 2>("AoSoA-2");
-    bench_aosoa< 4>("AoSoA-4");
-    bench_aosoa< 8>("AoSoA-8");
-    bench_aosoa<16>("AoSoA-16");
-    bench_aosoa<32>("AoSoA-32");
-    bench_aosoa<64>("AoSoA-64");
-    bench_aosoa<128>("AoSoA-128");
-    bench_aosoa<256>("AoSoA-256");
-    bench_aosoa<512>("AoSoA-512");
+    run_all< 3>(n_base( 3));
+    run_all< 6>(n_base( 6));
+    run_all< 9>(n_base( 9));
+    run_all<12>(n_base(12));
+    run_all<15>(n_base(15));
+
     fclose(csv);
     flush_free();
     printf("\nwrote results_cpu_oop.csv\n");
