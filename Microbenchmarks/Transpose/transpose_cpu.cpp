@@ -17,6 +17,11 @@
 #ifndef MPOL_BIND
 #define MPOL_BIND 2
 #endif
+
+#ifndef NOHUGEPAGE
+#define NOHUGEPAGE 1
+#endif
+
 static long sys_mbind(void *a, unsigned long l, int m, const unsigned long *nm, unsigned long mx,
                       unsigned f) {
     return syscall(SYS_mbind, a, l, m, nm, mx, f);
@@ -48,7 +53,11 @@ template <typename T> static T *numa_alloc(size_t c) {
         perror("mmap");
         std::abort();
     }
+#if NOHUGEPAGE
     madvise(p, b, MADV_NOHUGEPAGE);
+#else
+    madvise(p, b, MADV_HUGEPAGE);
+#endif
     return (T *)p;
 }
 template <typename T> static void numa_dealloc(T *p, size_t c) {

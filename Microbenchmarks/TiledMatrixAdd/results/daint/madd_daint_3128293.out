@@ -1,0 +1,46 @@
+Running on nid005393
+Threads: 288
+Layout-conflict benchmark (GPU: NVIDIA GH200 120GB)
+  M=16384  N=16384  reps=100
+  A: row-major   B: col-major   C: row-major
+  Warp=32  L2-line=128B → 16 doubles/txn
+
+Kernel                                                                Median          BW
+------------------------------------------------------------------------------------------------
+  direct        BX=32  BY=1   TX=1  TY=1   tile=1x32                 5.073 ms    1693.4 GB/s  OK
+  direct        BX=32  BY=1   TX=4  TY=1   tile=1x128                2.486 ms    3454.6 GB/s  OK
+  direct        BX=128 BY=1   TX=1  TY=1   tile=1x128                2.518 ms    3411.5 GB/s  OK
+  direct        BX=256 BY=1   TX=1  TY=1   tile=1x256                2.538 ms    3384.1 GB/s  OK
+  direct        BX=16  BY=16  TX=1  TY=1   tile=16x16                2.029 ms    4234.4 GB/s  OK
+  direct        BX=32  BY=8   TX=1  TY=1   tile=8x32                 2.240 ms    3835.0 GB/s  OK
+  direct        BX=32  BY=8   TX=2  TY=2   tile=16x64                1.930 ms    4450.6 GB/s  OK
+  direct        BX=32  BY=4   TX=4  TY=4   tile=16x128               2.399 ms    3580.0 GB/s  OK
+  direct        BX=32  BY=8   TX=4  TY=4   tile=32x128               1.941 ms    4425.8 GB/s  OK
+  direct_T      BX=32  BY=1   TX=1  TY=1   tile=32x1                 6.706 ms    1280.9 GB/s  OK
+  direct_T      BX=128 BY=1   TX=1  TY=1   tile=128x1                6.743 ms    1273.8 GB/s  OK
+  direct_T      BX=16  BY=16  TX=1  TY=1   tile=16x16                2.340 ms    3670.9 GB/s  OK
+  direct_T      BX=32  BY=8   TX=1  TY=1   tile=32x8                 4.314 ms    1991.1 GB/s  OK
+  direct_T      BX=32  BY=8   TX=2  TY=2   tile=64x16                5.764 ms    1490.3 GB/s  OK
+  tiled+smem    BX=16  BY=16  TX=1  TY=1   tile=16x16                2.310 ms    3718.4 GB/s  OK
+  tiled+smem    BX=16  BY=16  TX=2  TY=2   tile=32x32                1.779 ms    4827.6 GB/s  OK
+  tiled+smem    BX=32  BY=1   TX=1  TY=32  tile=32x32                3.048 ms    2818.1 GB/s  OK
+  tiled+smem    BX=32  BY=8   TX=1  TY=1   tile=8x32                 2.520 ms    3408.3 GB/s  OK
+  tiled+smem    BX=32  BY=8   TX=2  TY=2   tile=16x64                1.834 ms    4684.3 GB/s  OK
+  tiled+smem    BX=32  BY=8   TX=2  TY=4   tile=32x64             SKIP (smem 49920 > 49152)
+  tiled+smem    BX=32  BY=4   TX=2  TY=8   tile=32x64             SKIP (smem 49920 > 49152)
+  tiled+smem    BX=32  BY=8   TX=4  TY=4   tile=32x128            SKIP (smem 99072 > 49152)
+  tiled+smem    BX=16  BY=16  TX=4  TY=4   tile=64x64             SKIP (smem 99840 > 49152)
+  tiled+smem    BX=32  BY=8   TX=4  TY=8   tile=64x128            SKIP (smem 198144 > 49152)
+  tiled+smem    BX=32  BY=8   TX=8  TY=8   tile=64x256            SKIP (smem 394752 > 49152)
+  tiled+smem    BX=32  BY=4   TX=8  TY=16  tile=64x256            SKIP (smem 394752 > 49152)
+  all_rowmajor  BX=32  BY=8   TX=1  TY=1   (control)                 1.742 ms    4930.6 GB/s  OK
+  all_rowmajor  BX=32  BY=8   TX=4  TY=4   (control)                 1.771 ms    4850.0 GB/s  OK
+
+=== Summary (best of each category) ===
+  Best tiled+smem : 1.779 ms  (baseline)
+  Best direct     : 1.930 ms  (1.1x vs tiled)  — B uncoalesced
+  Best direct_T   : 2.340 ms  (1.3x vs tiled)  — A,C uncoalesced
+  Best control    : 1.742 ms  (0.98x vs tiled)  — all row-major
+
+  Peak BW (best control): 4930.6 GB/s
+  Tiled recovery:         4827.6 GB/s

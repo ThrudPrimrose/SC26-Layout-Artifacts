@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=transpose_daint
 #SBATCH --nodes=1
-#SBATCH --partition=debug
-#SBATCH --time=00:30:00
+#SBATCH --partition=normal
+#SBATCH --time=02:00:00
 #SBATCH --output=transpose_daint_%j.out
 #SBATCH --error=transpose_daint_%j.err
 #SBATCH --ntasks=1

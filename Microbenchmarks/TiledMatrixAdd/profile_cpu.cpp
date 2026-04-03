@@ -50,6 +50,7 @@ static const int N = N_DIM;
 #define NWARMUP 5
 #define MAX_THREADS 512
 
+
 /* ════════════════════════════════════════════════════════════════════
  *  PER-THREAD PMC
  *
@@ -194,7 +195,11 @@ static void *numa_alloc(size_t bytes) {
     void *p = mmap(nullptr,bytes,PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0);
     if (p==MAP_FAILED){perror("mmap");std::abort();}
+#if NOHUGEPAGE
+    madvise(p,bytes,MADV_NOHUGEPAGE);
+#else
     madvise(p,bytes,MADV_HUGEPAGE);
+#endif
     return p;
 }
 static void numa_free(void *p, size_t b) { munmap(p,b); }
@@ -249,7 +254,7 @@ template<int SB> static void ft_init_blk_cm(double *buf,size_t tot,int M_,int N_
             int i=br*SB+lr,j=bc*SB+lc;
             bl[lc*SB+lr]=(double)((i*13+j*37)%1000)/100.0;}}}
 
-static constexpr int64_t FLUSH_N=1<<24;
+static constexpr int64_t FLUSH_N=1<<27;
 static double *g_flush_buf=nullptr;
 static void cache_flush(){
     if(!g_flush_buf){g_flush_buf=(double*)numa_alloc(FLUSH_N*sizeof(double));
@@ -264,13 +269,13 @@ static void cache_flush(){
 static void kernel_row_major(const double*__restrict__ A,const double*__restrict__ B,double*__restrict__ C){
     #pragma omp parallel for schedule(static)
     for(int i=0;i<M;i++){
-        #pragma omp simd nontemporal(C)
+        #pragma omp simd 
         for(int j=0;j<N;j++) C[idx_rm(i,j)]+=A[idx_rm(i,j)]+B[idx_cm(i,j)];}}
 
 static void kernel_col_major(const double*__restrict__ A,const double*__restrict__ B,double*__restrict__ C){
     #pragma omp parallel for schedule(static)
     for(int j=0;j<N;j++){
-        #pragma omp simd nontemporal(C)
+        #pragma omp simd
         for(int i=0;i<M;i++) C[idx_rm(i,j)]+=A[idx_rm(i,j)]+B[idx_cm(i,j)];}}
 
 template<int T>
@@ -284,13 +289,13 @@ static void kernel_tiled(const double*__restrict__ A,const double*__restrict__ B
             #pragma omp simd
             for(int i=ii;i<ie;i++) bl[(i-ii)*T+(j-jj)]=B[idx_cm(i,j)];}
         for(int i=ii;i<ie;i++){
-            #pragma omp simd nontemporal(C)
+            #pragma omp simd
             for(int j=jj;j<je;j++) C[idx_rm(i,j)]+=A[idx_rm(i,j)]+bl[(i-ii)*T+(j-jj)];}}}
 
 static void kernel_all_rowmajor(const double*__restrict__ A,const double*__restrict__ Br,double*__restrict__ C){
     #pragma omp parallel for schedule(static)
     for(int i=0;i<M;i++){
-        #pragma omp simd nontemporal(C)
+        #pragma omp simd
         for(int j=0;j<N;j++) C[idx_rm(i,j)]+=A[idx_rm(i,j)]+Br[idx_rm(i,j)];}}
 
 template<int SB>
@@ -350,7 +355,8 @@ static void bench(const char *vn, int ts, KernelFn fn,
     uint64_t cnt[N_PMC];
 
     for(int r=0;r<NREP;r++){
-        zC(); cache_flush();
+        //zC();
+        cache_flush();
 
         pmc_enable_all();            /* reset+enable all per-thread fds */
         auto t0=Clock::now();
