@@ -50,11 +50,11 @@ template <typename T> static T *numa_alloc(size_t c) {
         perror("mmap");
         std::abort();
     }
-#if NOHUGEPAGE
+//#if NOHUGEPAGE
     madvise(p, b, MADV_NOHUGEPAGE);
-#else
-    madvise(p, b, MADV_HUGEPAGE);
-#endif
+//#else
+//    madvise(p, b, MADV_HUGEPAGE);
+//#endif
     return (T *)p;
 }
 template <typename T> static void numa_dealloc(T *p, size_t c) {
