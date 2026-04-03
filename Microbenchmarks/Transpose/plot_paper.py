@@ -194,9 +194,15 @@ def draw_panel(ax, cats, title, peak, add_peak, xlabels_map):
     ax.set_xticks(positions)
     ax.set_xticklabels(xlabels, fontsize=7.5)
     ax.set_yticks(ticks)
+    if peak > 3.76 and peak < 3.9:
+        top *= 1.033
+    #if peak > 1.2 and peak < 1.3:
+    #    top *= 1.13
+    ax.set_ylim(0, top)
+    from matplotlib.ticker import FormatStrFormatter
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
     ax.yaxis.set_minor_locator(AutoMinorLocator(4))
     ax.tick_params(axis='y', which='minor', length=3)
-    ax.set_ylim(0, top)
     ax.set_title(title, fontsize=11)
     ax.grid(axis="y", alpha=0.25)
     ax.grid(axis="y", which='minor', alpha=0.12, ls=':')
