@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 plot_addition_paper.py
-Up to 2×2 violin grid:  rows = {CPU, GPU},  cols = {AMD, NVIDIA}
+Up to 2×2 violin grid:  rows = {AMD, NVIDIA},  cols = {CPU, GPU}
 
 Usage:
     # Single platform (1×2)
@@ -12,8 +12,8 @@ Usage:
         --amd-cpu amd_cpu.csv  --amd-gpu amd_gpu.csv \
         --nv-cpu  nv_cpu.csv   --nv-gpu  nv_gpu.csv  --add-peak
 
-    # Any subset works (e.g. GPUs only → 1×2)
-    python plot_addition_paper.py --amd-gpu amd.csv --nv-gpu nv.csv --add-peak
+    # Any subset works (e.g. CPUs only → 2×1)
+    python plot_addition_paper.py --amd-cpu amd.csv --nv-cpu nv.csv --add-peak
 """
 import matplotlib
 matplotlib.use("Agg")
@@ -28,7 +28,7 @@ from collections import defaultdict
 
 STREAM_PEAK = {
     "MI300A Zen CPU": 1160.35,  "Grace CPU": 1700.62,
-    "MI300A GPU":       4271,     "GH200 GPU": 3720.48,
+    "MI300A GPU":       4294,     "GH200 GPU": 3780,
 }
 
 VCOL = {"naive": "#e67e22", "tiled": "#27ae60", "perm": "#2980b9", "blk": "#9b59b6"}
@@ -159,7 +159,7 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
         data.append(arr)
         positions.append(pos)
         colors.append(VCOL[vk])
-        medians.append((pos, float(np.median(arr)), vk))
+        medians.append((pos, float(np.median(arr)), vk, float(np.min(arr))))
         xlabels.append((xlabels_map or XLABEL_CPU)[vk])
         pos += 1
 
@@ -188,9 +188,9 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
     # separator
     if sep_x is not None:
         ax.axvline(x=sep_x, color="gray", ls="--", lw=1.5, alpha=0.6)
-        ax.text(sep_x - 0.3, top * 0.128, "Schedule\nOnly",
+        ax.text(sep_x - 0.1, top * 0.128, "Schedule\nOnly",
                 ha="right", va="top", fontsize=8, color="gray", fontweight="bold")
-        ax.text(sep_x + 0.9, top * 0.128, "W. Layout\nTransform.",
+        ax.text(sep_x + 0.1, top * 0.128, "With Layout\nTransformations",
                 ha="left", va="top", fontsize=8, color="gray", fontweight="bold")
 
     ax.set_xticks(positions)
@@ -208,25 +208,25 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
         ax.text(0.03, 0.97, f"STREAM {peak:.0f} GB/s",
                 transform=ax.transAxes, ha="left", va="top",
                 fontsize=8, color="dimgray")
-        if add_peak:
-            ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5)
+        ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5)
 
     # % annotations
     if peak:
         off = 0.04 * top
-        for p, med, vk in medians:
+        for p, med, vk, vmin in medians:
             pct = 100.0 * med / peak
             if pct < 10:
                 ax.text(p, med + off, f"{pct:.0f}%",
                         ha="center", va="bottom", fontsize=10,
                         color=VCOL[vk], fontweight="bold")
             else:
-                ax.text(p, med - off, f"{pct:.0f}%",
+                ax.text(p, vmin - off, f"{pct:.0f}%",
                         ha="center", va="top", fontsize=10,
                         color=VCOL[vk], fontweight="bold")
 
     # ── Gap arrow: best schedule → best layout ──
-    med_dict = {vk: (p, m) for p, m, vk in medians}
+    med_dict = {vk: (p, m) for p, m, vk, _ in medians}
+    min_dict = {vk: vmin for _, _, vk, vmin in medians}
 
     # Pick target: if blk >= 10% of peak above perm, arrow goes to blk
     layout_target = None
@@ -244,36 +244,34 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
         p_target, y_target = med_dict[layout_target]
         arrow_x = p_tiled + 0.82
         ax.plot([p_tiled, arrow_x], [y_tiled, y_tiled],
-                color="#555555", ls=":", lw=1, alpha=0.5)
+                color="#555555", ls=":", lw=1.5, alpha=0.5)
         ax.plot([p_target, arrow_x], [y_target, y_target],
-                color="#555555", ls=":", lw=1, alpha=0.5)
+                color="#555555", ls=":", lw=1.5, alpha=0.5)
         ax.annotate("", xy=(arrow_x, y_target), xytext=(arrow_x, y_tiled),
                     arrowprops=dict(arrowstyle="<->", color="#555555",
                                    lw=1.5, shrinkA=2, shrinkB=2))
         mid_y = (y_tiled + y_target) / 2
         y_off = 0.21 * ymax if gpu else 0.12 * ymax
-        ax.text(arrow_x + 0.08, mid_y - y_off,
-                "Gap between\nbest schedule\nand best layout",
-                fontsize=8, color="#555555", va="center", ha="left",
-                style="italic")
+        text_y = mid_y - y_off
+        perm_min = min_dict.get("perm", text_y)
+        print(perm_min, text_y)
+        if perm_min < text_y * 1.3:
+            text_y = perm_min - 0.25 * ymax
+        #raise Exception(y_tiled, y_target)
+        if y_target - y_tiled > 0.15 * peak:
+            ax.text(arrow_x + 0.08, text_y,
+                    "Gap between\nbest schedule\nand best layout",
+                    fontsize=8, color="#555555", va="center", ha="left",
+                    style="italic")
+            
 
     # Arrow 2: perm → blk, only if blk wasn't already Arrow 1 target
     if "perm" in med_dict and "blk" in med_dict and layout_target != "blk":
         p_perm, y_perm = med_dict["perm"]
         p_blk,  y_blk  = med_dict["blk"]
         arrow_x = p_blk + 0.42
-        ax.plot([p_perm, arrow_x], [y_perm, y_perm],
-                color="#8e44ad", ls=":", lw=1, alpha=0.5)
-        ax.plot([p_blk, arrow_x], [y_blk, y_blk],
-                color="#8e44ad", ls=":", lw=1, alpha=0.5)
-        ax.annotate("", xy=(arrow_x, y_blk), xytext=(arrow_x, y_perm),
-                    arrowprops=dict(arrowstyle="<->", color="#8e44ad",
-                                   lw=1.5, shrinkA=2, shrinkB=2))
         mid_y = (y_perm + y_blk) / 2
-        ax.text(arrow_x + 0.08, mid_y,
-                "Better layout\nfor CPUs",
-                fontsize=7.5, color="#8e44ad", va="center", ha="left",
-                fontweight="bold")
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  Grid assembly
@@ -324,27 +322,25 @@ def main():
         except FileNotFoundError:
             print(f"[WARN] {csv_path} not found")
 
-    try_add(args.amd_cpu, parse_cpu, cpu_cats, "cpu", "amd", args.amd_cpu_label, False)
-    try_add(args.amd_gpu, parse_gpu, gpu_cats, "gpu", "amd", args.amd_gpu_label, True)
-    try_add(args.nv_cpu,  parse_cpu, cpu_cats, "cpu", "nv",  args.nv_cpu_label,  False)
-    try_add(args.nv_gpu,  parse_gpu, gpu_cats, "gpu", "nv",  args.nv_gpu_label,  True)
+    try_add(args.amd_cpu, parse_cpu, cpu_cats, "amd", "cpu", args.amd_cpu_label, False)
+    try_add(args.amd_gpu, parse_gpu, gpu_cats, "amd", "gpu", args.amd_gpu_label, True)
+    try_add(args.nv_cpu,  parse_cpu, cpu_cats, "nv",  "cpu", args.nv_cpu_label,  False)
+    try_add(args.nv_gpu,  parse_gpu, gpu_cats, "nv",  "gpu", args.nv_gpu_label,  True)
 
     if not grid:
         print("No data."); return
 
     # ── Determine active rows / cols ──
-    active_rows = sorted({r for r, c in grid}, key=["cpu", "gpu"].index)
-    active_cols = sorted({c for r, c in grid}, key=["amd", "nv"].index)
+    active_rows = sorted({r for r, c in grid}, key=["amd", "nv"].index)
+    active_cols = sorted({c for r, c in grid}, key=["cpu", "gpu"].index)
     nrows = len(active_rows)
     ncols = len(active_cols)
 
     print(f"Grid: {nrows}x{ncols}  rows={active_rows}  cols={active_cols}")
 
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(4.2 * ncols, 3.5 * nrows),
+                             figsize=(3.6 * ncols, 2.8 * nrows),
                              squeeze=False)
-
-    COL_TITLES = {"amd": "AMD MI300A", "nv": "NVIDIA GH200"}
 
     for ri, row_key in enumerate(active_rows):
         for ci, col_key in enumerate(active_cols):
@@ -359,15 +355,7 @@ def main():
                 ax.set_ylabel("Bandwidth [GB/s]", fontsize=11)
 
     fig.suptitle(r"Addition ($C[:] += A[:] + B[:]$) with Suboptimal Layouts",
-                 fontsize=14, y=1.02 if nrows > 1 else 0.98)
-
-    if ncols == 2:
-        for ci, col_key in enumerate(active_cols):
-            x = (axes[0, ci].get_position().x0 + axes[0, ci].get_position().x1) / 2
-            fig.text(x, 0.97 if nrows > 1 else 0.93,
-                     COL_TITLES.get(col_key, col_key),
-                     ha="center", fontsize=12, fontweight="bold",
-                     transform=fig.transFigure)
+                 fontsize=14, y=0.89 if nrows > 1 else 0.98)
 
     fig.tight_layout(rect=[0, 0, 1, 0.93 if nrows > 1 else 0.95])
 
