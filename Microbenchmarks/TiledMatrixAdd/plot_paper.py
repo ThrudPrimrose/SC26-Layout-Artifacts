@@ -27,7 +27,7 @@ from collections import defaultdict
 # ══════════════════════════════════════════════════════════════════════
 
 STREAM_PEAK = {
-    "MI300A Zen CPU": 1160.35,  "Grace CPU": 1700.62,
+    "MI300A Zen CPU": 1228,  "Grace CPU": 1700.62,
     "MI300A GPU":       4294,     "GH200 GPU": 3780,
 }
 

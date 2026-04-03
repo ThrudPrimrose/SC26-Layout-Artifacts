@@ -50,11 +50,11 @@ template <typename T> static T *numa_alloc(size_t c) {
         perror("mmap");
         std::abort();
     }
-#if NOHUGEPAGE
+//#if NOHUGEPAGE
     madvise(p, b, MADV_NOHUGEPAGE);
-#else
-    madvise(p, b, MADV_HUGEPAGE);
-#endif
+//#else
+//    madvise(p, b, MADV_HUGEPAGE);
+//#endif
     return (T *)p;
 }
 template <typename T> static void numa_dealloc(T *p, size_t c) {
@@ -130,23 +130,35 @@ static void apply_numa(void *ptr, size_t tot, int N, int SB, bool blk, bool is_o
     }
     int NB = N / SB, NB2 = NB * NB;
     size_t bb = (size_t)SB * SB * sizeof(float);
-    int per = (NB2 + D - 1) / D;
     std::vector<int> nm(NB2);
-    if (pol == NP_CONTIG)
-        for (int b = 0; b < NB2; b++)
-            nm[b] = std::min(b / per, D - 1);
-    else if (pol == NP_CYCLIC)
+
+    if (pol == NP_CYCLIC) {
         for (int b = 0; b < NB2; b++)
             nm[b] = b % D;
-    else if (pol == NP_TRANSPOSE) {
-        if (!is_out)
-            for (int b = 0; b < NB2; b++)
-                nm[b] = std::min(b / per, D - 1);
-        else
-            for (int ob = 0; ob < NB2; ob++) {
-                int bc = ob / NB, br = ob % NB;
-                nm[ob] = std::min((br * NB + bc) / per, D - 1);
+    } else {
+        /* NP_CONTIG / NP_TRANSPOSE:
+         * Distribute by block-ROWS (not by linear block index).
+         * Input:  block (br,bc) at linear index br*NB+bc → node of br
+         * Output: block at linear index bc*NB+br → node of br (= column index)
+         *
+         * This way a thread doing block-row br reads from its local node
+         * and writes the transposed blocks to the same node. */
+        int rows_per_d = (NB + D - 1) / D;
+        if (!is_out) {
+            /* Input: bind by block-rows */
+            for (int b = 0; b < NB2; b++) {
+                int br = b / NB;
+                nm[b] = std::min(br / rows_per_d, D - 1);
             }
+        } else {
+            /* Output: bind by block-columns (= transposed block-rows)
+             * Output block at linear index ob has bc=ob/NB, br=ob%NB.
+             * Map to same node as input block-row br. */
+            for (int ob = 0; ob < NB2; ob++) {
+                int br = ob % NB;
+                nm[ob] = std::min(br / rows_per_d, D - 1);
+            }
+        }
     }
     bind_by_map(ptr, NB2, bb, nm);
 }

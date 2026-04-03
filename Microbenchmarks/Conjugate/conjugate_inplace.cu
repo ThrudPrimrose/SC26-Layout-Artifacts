@@ -1,120 +1,141 @@
 #include <cuda_runtime.h>
-#include <omp.h>
 #include <cstdio>
 #include <cstdlib>
-#include <type_traits>
+#include <cstdint>
 
-constexpr int64_t N    = 1 << 27;   // 128M elements
-constexpr int64_t BLK  = 256;
-constexpr int64_t GRID = (N + BLK - 1) / BLK;
-constexpr int64_t RUNS = 100;
+/*  GPU in-place: negate all K fields.
+ *  TOTAL = K * N_base = const.   BW = 2·K·N_base·8 (read+writeback). */
+constexpr int64_t TOTAL = 1LL << 27;
+constexpr int64_t BLK   = 256;
+constexpr int64_t RUNS  = 100;
+constexpr int64_t GPU_MAX_VL = 64;
 
-struct C2 { double re, im; };
+template<int K>
+struct AoS { double f[K]; };
 
-template<int VL>
-struct C2V { double re[VL], im[VL]; };
+template<int K, int VL>
+struct AoSoA { double f[K][VL]; };
 
-static_assert(std::is_trivially_copyable<C2>::value, "C2 must be trivially copyable");
-static_assert(sizeof(C2) == 2 * sizeof(double), "C2 has unexpected padding");
+/* ═══ GPU kernels (in-place) ═══ */
 
-#define CHECK_C2V(VL) \
-    static_assert(std::is_trivially_copyable<C2V<VL>>::value, "C2V<" #VL "> must be trivially copyable"); \
-    static_assert(sizeof(C2V<VL>) == 2 * (VL) * sizeof(double), "C2V<" #VL "> has unexpected padding");
-CHECK_C2V(2) CHECK_C2V(4) CHECK_C2V(8)
-CHECK_C2V(16) CHECK_C2V(32) CHECK_C2V(64)
-#undef CHECK_C2V
-
-/* ═══ GPU Kernels ═══ */
-
-__global__ void g_aos(C2* __restrict__ in, C2* __restrict__ out, int n) {
+template<int K>
+__global__ void g_aos(AoS<K> *__restrict__ buf, int n) {
     int i = blockIdx.x * BLK + threadIdx.x;
-    if (i < n) { out[i].im = -in[i].im; };
+    if (i < n)
+        for (int k = 0; k < K; k++)
+            buf[i].f[k] = -buf[i].f[k];
 }
 
-__global__ void g_soa(double* __restrict__ ri, double* __restrict__ ii,
-                      double* __restrict__ ro, double* __restrict__ io, int n) {
+template<int K>
+__global__ void g_soa(double *__restrict__ base, int n) {
     int i = blockIdx.x * BLK + threadIdx.x;
-    if (i < n) { io[i] = -ii[i]; }
+    if (i < n)
+        for (int k = 0; k < K; k++)
+            base[(int64_t)k * n + i] = -base[(int64_t)k * n + i];
 }
 
-template<int VL>
-__global__ void g_aosoa(C2V<VL>* __restrict__ in, C2V<VL>* __restrict__ out, int n) {
+template<int K, int VL>
+__global__ void g_aosoa(AoSoA<K,VL> *__restrict__ buf, int n) {
     int i = blockIdx.x * BLK + threadIdx.x;
     if (i < n) {
-        int blk = i / VL, lane = i % VL;
-        out[blk].im[lane] = -in[blk].im[lane];
+        int blk  = i / VL;
+        int lane = i % VL;
+        for (int k = 0; k < K; k++)
+            buf[blk].f[k][lane] = -buf[blk].f[k][lane];
     }
 }
 
 /* ═══ Reporting ═══ */
 
 static FILE *csv;
-static double bw(double ms) { return 4.0 * N * sizeof(double) / (ms * 1e6); }
 
-static void emit_header() {
-    fprintf(csv, "device,layout,run,ms,gbps\n");
+static double bw_ip(int K, int64_t n, double ms) {
+    return 2.0 * K * n * sizeof(double) / (ms * 1e6);
 }
 
-static void emit_run(const char *dev, const char *layout, int run, double ms) {
-    fprintf(csv, "%s,%s,%d,%.6f,%.2f\n", dev, layout, run, ms, bw(ms));
-}
-
-/* ═══ GPU bench (CUDA events) ═══ */
-
-#define GPU_BENCH(label, call) do { \
-    call; call; call; call; call; cudaDeviceSynchronize(); \
+#define GPU_BENCH(K_val, n_base, label, call) do { \
+    for (int w = 0; w < 5; w++) { call; } \
+    cudaDeviceSynchronize(); \
     for (int r = 0; r < RUNS; r++) { \
         cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b); \
         cudaEventRecord(a); \
         call; \
         cudaEventRecord(b); cudaEventSynchronize(b); \
         float ms; cudaEventElapsedTime(&ms, a, b); \
-        emit_run("GPU", label, r, ms); \
+        fprintf(csv, "%d,%s,%d,%.6f,%.2f\n", \
+                K_val, label, r, (double)ms, bw_ip(K_val, n_base, ms)); \
         cudaEventDestroy(a); cudaEventDestroy(b); \
     } \
+    printf("  %-14s  (see csv)\n", label); \
 } while (0)
 
-/* ═══ CPU bench (omp_get_wtime) ═══ */
+template<int K>
+static void bench_aos(int64_t n, double *dbuf) {
+    int64_t grid = (n + BLK - 1) / BLK;
+    GPU_BENCH(K, n, "AoS",
+              (g_aos<K><<<grid, BLK>>>((AoS<K>*)dbuf, n)));
+}
+
+template<int K>
+static void bench_soa(int64_t n, double *dbuf) {
+    int64_t grid = (n + BLK - 1) / BLK;
+    GPU_BENCH(K, n, "SoA",
+              (g_soa<K><<<grid, BLK>>>(dbuf, n)));
+}
+
+template<int K, int VL>
+static void bench_aosoa(int64_t n, double *dbuf, const char *label) {
+    int64_t grid = (n + BLK - 1) / BLK;
+    GPU_BENCH(K, n, label,
+              (g_aosoa<K,VL><<<grid, BLK>>>(
+                  (AoSoA<K,VL>*)dbuf, n)));
+}
+
+template<int K>
+static void run_all(double *dbuf) {
+    int64_t n = (TOTAL / K / GPU_MAX_VL) * GPU_MAX_VL;
+    printf("\n── K=%d  N_base=%lld  total=%.1f GB ──\n",
+           K, (long long)n, (double)K * n * 8 / 1e9);
+
+    bench_aos<K>(n, dbuf);
+    bench_soa<K>(n, dbuf);
+    bench_aosoa<K,  2>(n, dbuf, "AoSoA-2");
+    bench_aosoa<K,  4>(n, dbuf, "AoSoA-4");
+    bench_aosoa<K,  8>(n, dbuf, "AoSoA-8");
+    bench_aosoa<K, 16>(n, dbuf, "AoSoA-16");
+    bench_aosoa<K, 32>(n, dbuf, "AoSoA-32");
+    bench_aosoa<K, 64>(n, dbuf, "AoSoA-64");
+}
 
 int main() {
-    size_t bytes = 2ULL * N * sizeof(double);
-
-    double *hi = (double*)malloc(bytes), *ho = (double*)malloc(bytes);
-    for (int i = 0; i < 2 * N; i++) hi[i] = (double)(i % 997) * 0.001;
-
     csv = fopen("results_gpu_inplace.csv", "w");
-    emit_header();
+    fprintf(csv, "K,layout,run,ms,gbps\n");
 
-    printf("conj: N=%lldM  block=%ld  runs=%d dtype=double\n\n",
-           (long long)(N >> 20), (long)BLK, (int)RUNS);
+    printf("conj IN-PLACE (GPU): TOTAL=%lldM  runs=%d  dtype=double\n",
+           (long long)(TOTAL >> 20), (int)RUNS);
 
-    /* --- GPU --- */
-    int devcount = 0;
-    cudaGetDeviceCount(&devcount);
-    if (devcount > 0 && cudaSetDevice(0) == cudaSuccess) {
-        double *di, *dout;
-        if (cudaMalloc(&di, bytes) != cudaSuccess ||
-            cudaMalloc(&dout, bytes) != cudaSuccess) {
-            printf("[GPU] cudaMalloc failed, skipping\n\n");
-        } else {
-            cudaMemcpy(di, hi, bytes, cudaMemcpyHostToDevice);
-            printf("[GPU]\n");
-            GPU_BENCH("AoS",      (g_aos<<<GRID,BLK>>>((C2*)di, (C2*)dout, N)));
-            GPU_BENCH("SoA",      (g_soa<<<GRID,BLK>>>(di, di+N, dout, dout+N, N)));
-            GPU_BENCH("AoSoA-2",  (g_aosoa< 2><<<GRID,BLK>>>((C2V< 2>*)di, (C2V< 2>*)dout, N)));
-            GPU_BENCH("AoSoA-4",  (g_aosoa< 4><<<GRID,BLK>>>((C2V< 4>*)di, (C2V< 4>*)dout, N)));
-            GPU_BENCH("AoSoA-8",  (g_aosoa< 8><<<GRID,BLK>>>((C2V< 8>*)di, (C2V< 8>*)dout, N)));
-            GPU_BENCH("AoSoA-16", (g_aosoa<16><<<GRID,BLK>>>((C2V<16>*)di, (C2V<16>*)dout, N)));
-            GPU_BENCH("AoSoA-32", (g_aosoa<32><<<GRID,BLK>>>((C2V<32>*)di, (C2V<32>*)dout, N)));
-            GPU_BENCH("AoSoA-64", (g_aosoa<64><<<GRID,BLK>>>((C2V<64>*)di, (C2V<64>*)dout, N)));
-            cudaFree(di); cudaFree(dout);
-        }
-    } else {
-        printf("[GPU] no device available, skipping\n\n");
+    size_t bytes = TOTAL * sizeof(double);
+    double *dbuf;
+    if (cudaMalloc(&dbuf, bytes) != cudaSuccess) {
+        printf("cudaMalloc failed\n"); return 1;
     }
 
+    {
+        double *h = (double *)malloc(bytes);
+        for (int64_t i = 0; i < TOTAL; i++) h[i] = (double)(i % 997) * 0.001;
+        cudaMemcpy(dbuf, h, bytes, cudaMemcpyHostToDevice);
+        free(h);
+    }
 
+    run_all< 3>(dbuf);
+    run_all< 6>(dbuf);
+    run_all< 9>(dbuf);
+    run_all<12>(dbuf);
+    run_all<15>(dbuf);
+    run_all<18>(dbuf);
+    run_all<21>(dbuf);
+
+    cudaFree(dbuf);
     fclose(csv);
-    free(hi); free(ho);
     printf("\nwrote results_gpu_inplace.csv\n");
 }

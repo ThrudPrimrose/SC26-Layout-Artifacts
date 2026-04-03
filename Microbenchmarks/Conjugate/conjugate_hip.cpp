@@ -2,120 +2,167 @@
 #include <hip/hip_runtime.h>
 #include <cstdio>
 #include <cstdlib>
-#include <type_traits>
+#include <cstdint>
 
-constexpr int64_t N    = 1 << 27;   // 128M elements
-constexpr int64_t BLK  = 256;
-constexpr int64_t GRID = (N + BLK - 1) / BLK;
-constexpr int64_t RUNS = 100;
+/*  GPU out-of-place: negate all K fields.
+ *  TOTAL = K * N_base = const.   BW = 2·K·N_base·8.
+ *  VL sweep: 2 … 64.                                                 */
+constexpr int64_t TOTAL = 1LL << 27;          // ~1 GB per side on GPU
+constexpr int64_t BLK   = 256;
+constexpr int64_t RUNS  = 100;
+constexpr int64_t GPU_MAX_VL = 64;
 
-struct C2 { double re, im; };
+/* ═══ Layout structs ═══ */
 
-template<int VL>
-struct C2V { double re[VL], im[VL]; };
+template<int K>
+struct AoS { double f[K]; };
 
-static_assert(std::is_trivially_copyable<C2>::value, "C2 must be trivially copyable");
-static_assert(sizeof(C2) == 2 * sizeof(double), "C2 has unexpected padding");
+template<int K, int VL>
+struct AoSoA { double f[K][VL]; };
 
-#define CHECK_C2V(VL) \
-    static_assert(std::is_trivially_copyable<C2V<VL>>::value, "C2V<" #VL "> must be trivially copyable"); \
-    static_assert(sizeof(C2V<VL>) == 2 * (VL) * sizeof(double), "C2V<" #VL "> has unexpected padding");
-CHECK_C2V(2) CHECK_C2V(4) CHECK_C2V(8)
-CHECK_C2V(16) CHECK_C2V(32) CHECK_C2V(64)
-#undef CHECK_C2V
+/* ═══ GPU kernels ═══ */
 
-/* ═══ GPU Kernels ═══ */
-
-__global__ void g_aos(const C2* __restrict__ in, C2* __restrict__ out, int n) {
+template<int K>
+__global__ void g_aos(const AoS<K> *__restrict__ in,
+                      AoS<K> *__restrict__ out, int n) {
     int i = blockIdx.x * BLK + threadIdx.x;
-    if (i < n) out[i] = {in[i].re, -in[i].im};
+    if (i < n)
+        for (int k = 0; k < K; k++)
+            out[i].f[k] = -in[i].f[k];
 }
 
-__global__ void g_soa(const double* __restrict__ ri, const double* __restrict__ ii,
-                      double* __restrict__ ro, double* __restrict__ io, int n) {
+/* SoA: K separate arrays packed into contiguous in/out buffers.
+ * in_ptrs[k]  = base_in  + k * n_base
+ * out_ptrs[k] = base_out + k * n_base                                */
+template<int K>
+__global__ void g_soa(const double *__restrict__ base_in,
+                      double *__restrict__ base_out,
+                      int n) {
     int i = blockIdx.x * BLK + threadIdx.x;
-    if (i < n) { ro[i] = ri[i]; io[i] = -ii[i]; }
+    if (i < n)
+        for (int k = 0; k < K; k++)
+            base_out[(int64_t)k * n + i] = -base_in[(int64_t)k * n + i];
 }
 
-template<int VL>
-__global__ void g_aosoa(const C2V<VL>* __restrict__ in, C2V<VL>* __restrict__ out, int n) {
+template<int K, int VL>
+__global__ void g_aosoa(const AoSoA<K,VL> *__restrict__ in,
+                        AoSoA<K,VL> *__restrict__ out, int n) {
     int i = blockIdx.x * BLK + threadIdx.x;
     if (i < n) {
-        int blk = i / VL, lane = i % VL;
-        out[blk].re[lane] =  in[blk].re[lane];
-        out[blk].im[lane] = -in[blk].im[lane];
+        int blk  = i / VL;
+        int lane = i % VL;
+        for (int k = 0; k < K; k++)
+            out[blk].f[k][lane] = -in[blk].f[k][lane];
     }
 }
-
 
 /* ═══ Reporting ═══ */
 
 static FILE *csv;
-static double bw(double ms) { return 4.0 * N * sizeof(double) / (ms * 1e6); }
 
-static void emit_header() {
-    fprintf(csv, "device,layout,run,ms,gbps\n");
+static double bw_oop(int K, int64_t n, double ms) {
+    return 2.0 * K * n * sizeof(double) / (ms * 1e6);
 }
 
-static void emit_run(const char *dev, const char *layout, int run, double ms) {
-    fprintf(csv, "%s,%s,%d,%.6f,%.2f\n", dev, layout, run, ms, bw(ms));
-}
-
-/* ═══ GPU bench (CUDA events) ═══ */
-
-#define GPU_BENCH(label, call) do { \
-    call; call; call; call; call; hipDeviceSynchronize(); \
+#define GPU_BENCH(K_val, n_base, label, call) do { \
+    for (int w = 0; w < 5; w++) { call; } \
+    hipDeviceSynchronize(); \
     for (int r = 0; r < RUNS; r++) { \
         hipEvent_t a, b; hipEventCreate(&a); hipEventCreate(&b); \
         hipEventRecord(a); \
         call; \
         hipEventRecord(b); hipEventSynchronize(b); \
         float ms; hipEventElapsedTime(&ms, a, b); \
-        emit_run("GPU", label, r, ms); \
+        fprintf(csv, "%d,%s,%d,%.6f,%.2f\n", \
+                K_val, label, r, (double)ms, bw_oop(K_val, n_base, ms)); \
         hipEventDestroy(a); hipEventDestroy(b); \
+    } \
+    { /* print avg */ \
+        float tot = 0; \
+        for (int r = 0; r < 1; r++) { \
+            hipEvent_t a, b; hipEventCreate(&a); hipEventCreate(&b); \
+            hipEventRecord(a); call; \
+            hipEventRecord(b); hipEventSynchronize(b); \
+            float ms; hipEventElapsedTime(&ms, a, b); tot += ms; \
+            hipEventDestroy(a); hipEventDestroy(b); \
+        } \
+        printf("  %-14s  (see csv)\n", label); \
     } \
 } while (0)
 
+/* ═══ Per-K bench functions ═══ */
+
+template<int K>
+static void bench_aos(int64_t n, double *di, double *dout) {
+    int64_t grid = (n + BLK - 1) / BLK;
+    GPU_BENCH(K, n, "AoS",
+              (g_aos<K><<<grid, BLK>>>((AoS<K>*)di, (AoS<K>*)dout, n)));
+}
+
+template<int K>
+static void bench_soa(int64_t n, double *di, double *dout) {
+    int64_t grid = (n + BLK - 1) / BLK;
+    GPU_BENCH(K, n, "SoA",
+              (g_soa<K><<<grid, BLK>>>(di, dout, n)));
+}
+
+template<int K, int VL>
+static void bench_aosoa(int64_t n, double *di, double *dout, const char *label) {
+    int64_t grid = (n + BLK - 1) / BLK;
+    GPU_BENCH(K, n, label,
+              (g_aosoa<K,VL><<<grid, BLK>>>(
+                  (AoSoA<K,VL>*)di, (AoSoA<K,VL>*)dout, n)));
+}
+
+template<int K>
+static void run_all(double *di, double *dout) {
+    int64_t n = (TOTAL / K / GPU_MAX_VL) * GPU_MAX_VL;
+    printf("\n── K=%d  N_base=%lld  total=%.1f GB (per side) ──\n",
+           K, (long long)n, (double)K * n * 8 / 1e9);
+
+    bench_aos<K>(n, di, dout);
+    bench_soa<K>(n, di, dout);
+    bench_aosoa<K,  2>(n, di, dout, "AoSoA-2");
+    bench_aosoa<K,  4>(n, di, dout, "AoSoA-4");
+    bench_aosoa<K,  8>(n, di, dout, "AoSoA-8");
+    bench_aosoa<K, 16>(n, di, dout, "AoSoA-16");
+    bench_aosoa<K, 32>(n, di, dout, "AoSoA-32");
+    bench_aosoa<K, 64>(n, di, dout, "AoSoA-64");
+}
 
 int main() {
-    size_t bytes = 2ULL * N * sizeof(double);
-
-    double *hi = (double*)malloc(bytes), *ho = (double*)malloc(bytes);
-    for (int i = 0; i < 2 * N; i++) hi[i] = (double)(i % 997) * 0.001;
-
     csv = fopen("results_gpu_oop.csv", "w");
-    emit_header();
+    fprintf(csv, "K,layout,run,ms,gbps\n");
 
-    printf("conj: N=%lldM  block=%ld  runs=%d dtype=double\n\n",
-           (long long)(N >> 20), (long)BLK, (int)RUNS);
+    printf("conj OOP (GPU): TOTAL=%lldM  runs=%d  dtype=double\n",
+           (long long)(TOTAL >> 20), (int)RUNS);
 
-    /* --- GPU --- */
-    int devcount = 0;
-    hipGetDeviceCount(&devcount);
-    if (devcount > 0 && hipSetDevice(0) == hipSuccess) {
-        double *di, *dout;
-        if (hipMalloc(&di, bytes) != hipSuccess ||
-            hipMalloc(&dout, bytes) != hipSuccess) {
-            printf("[GPU] hipMalloc failed, skipping\n\n");
-        } else {
-            hipMemcpy(di, hi, bytes, hipMemcpyHostToDevice);
-            printf("[GPU]\n");
-            GPU_BENCH("AoS",      (g_aos<<<GRID,BLK>>>((C2*)di, (C2*)dout, N)));
-            GPU_BENCH("SoA",      (g_soa<<<GRID,BLK>>>(di, di+N, dout, dout+N, N)));
-            GPU_BENCH("AoSoA-2",  (g_aosoa< 2><<<GRID,BLK>>>((C2V< 2>*)di, (C2V< 2>*)dout, N)));
-            GPU_BENCH("AoSoA-4",  (g_aosoa< 4><<<GRID,BLK>>>((C2V< 4>*)di, (C2V< 4>*)dout, N)));
-            GPU_BENCH("AoSoA-8",  (g_aosoa< 8><<<GRID,BLK>>>((C2V< 8>*)di, (C2V< 8>*)dout, N)));
-            GPU_BENCH("AoSoA-16", (g_aosoa<16><<<GRID,BLK>>>((C2V<16>*)di, (C2V<16>*)dout, N)));
-            GPU_BENCH("AoSoA-32", (g_aosoa<32><<<GRID,BLK>>>((C2V<32>*)di, (C2V<32>*)dout, N)));
-            GPU_BENCH("AoSoA-64", (g_aosoa<64><<<GRID,BLK>>>((C2V<64>*)di, (C2V<64>*)dout, N)));
-            hipFree(di); hipFree(dout);
-        }
-    } else {
-        printf("[GPU] no device available, skipping\n\n");
+    /* Allocate max needed: K=3 has largest N_base, needs K*N_base*8 per side.
+     * But K*N_base = TOTAL (const), so each side = TOTAL*8 bytes.           */
+    size_t bytes = TOTAL * sizeof(double);
+    double *di, *dout;
+    if (hipMalloc(&di, bytes) != hipSuccess ||
+        hipMalloc(&dout, bytes) != hipSuccess) {
+        printf("hipMalloc failed\n"); return 1;
     }
 
+    /* Init with some pattern */
+    {
+        double *h = (double *)malloc(bytes);
+        for (int64_t i = 0; i < TOTAL; i++) h[i] = (double)(i % 997) * 0.001;
+        hipMemcpy(di, h, bytes, hipMemcpyHostToDevice);
+        free(h);
+    }
 
+    run_all< 3>(di, dout);
+    run_all< 6>(di, dout);
+    run_all< 9>(di, dout);
+    run_all<12>(di, dout);
+    run_all<15>(di, dout);
+    run_all<18>(di, dout);
+    run_all<21>(di, dout);
+
+    hipFree(di); hipFree(dout);
     fclose(csv);
-    free(hi); free(ho);
     printf("\nwrote results_gpu_oop.csv\n");
 }
