@@ -241,6 +241,8 @@ int main() {
     run_all< 9>(n_base( 9));
     run_all<12>(n_base(12));
     run_all<15>(n_base(15));
+    run_all<18>(n_base(18));
+    run_all<21>(n_base(21));
 
     fclose(csv);
     flush_free();

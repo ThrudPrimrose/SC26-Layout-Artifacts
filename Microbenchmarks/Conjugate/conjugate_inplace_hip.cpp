@@ -133,6 +133,8 @@ int main() {
     run_all< 9>(dbuf);
     run_all<12>(dbuf);
     run_all<15>(dbuf);
+    run_all<18>(dbuf);
+    run_all<21>(dbuf);
 
     hipFree(dbuf);
     fclose(csv);

@@ -158,6 +158,8 @@ int main() {
     run_all< 9>(di, dout);
     run_all<12>(di, dout);
     run_all<15>(di, dout);
+    run_all<18>(di, dout);
+    run_all<21>(di, dout);
 
     cudaFree(di); cudaFree(dout);
     fclose(csv);
