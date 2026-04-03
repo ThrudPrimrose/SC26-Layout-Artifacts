@@ -360,7 +360,7 @@ def main():
             xmap = XLABEL_GPU if is_gpu else XLABEL_CPU
             draw_panel(ax, cats, title, peak, args.add_peak, xmap, is_gpu)
             if ci == 0:
-                ax.set_ylabel("Bandwidth [GB/s]", fontsize=11)
+                ax.set_ylabel("Bandwidth [TB/s]", fontsize=11)
 
     #import matplotlib
     #matplotlib.rcParams['text.usetex'] = True
@@ -388,8 +388,8 @@ def main():
         for vk in ["naive", "tiled", "perm", "blk"]:
             if vk not in cats: continue
             med = float(np.median(cats[vk]))
-            pk = f"  ({100 * med / peak:.0f}%)" if peak else ""
-            print(f"    {xmap[vk]:<24} {med:8.1f} GB/s{pk}")
+            pk = f"  ({100 * med / peak:.2f}%)" if peak else ""
+            print(f"    {xmap[vk]:<24} {med:8.2f} TB/s{pk}")
 
 if __name__ == "__main__":
     main()
