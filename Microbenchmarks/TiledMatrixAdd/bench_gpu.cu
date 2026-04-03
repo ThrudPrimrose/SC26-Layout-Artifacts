@@ -16,7 +16,7 @@
  *   TX, TY   — elements per thread (thread computes TX × TY rectangle)
  *   Tile dims derived: TILE_COLS = BX*TX,  TILE_ROWS = BY*TY
  *
- * Compile: nvcc -O3 -arch=sm_90 -std=c++17 -o bench_gpu bench_gpu.cu
+ * Compile: nvcc -O3 -arch=sm_90 -std=c++17 -o bench_gpu bench_gpu.cpp
  * Run:     ./bench_gpu [csv_file]
  */
 
