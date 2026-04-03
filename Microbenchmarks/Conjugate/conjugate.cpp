@@ -17,7 +17,7 @@
  *  OOP BW = 2 × (2·P·N_base) × 8   (read all + write all).
  *  SoA has 4·P distinct streams (2P in + 2P out).                    */
 
-constexpr int64_t TOTAL_DOUBLES = 1LL << 28;   // ~2 GB per side
+constexpr int64_t TOTAL_DOUBLES = 1LL << 29;   // ~2 GB per side
 constexpr int64_t RUNS  = 100;
 constexpr int64_t MAX_VL = 512;
 

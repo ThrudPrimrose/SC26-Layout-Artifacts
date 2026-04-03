@@ -21,7 +21,7 @@
  *  We report useful BW = 2·P·N_base·8 uniformly so all layouts
  *  are compared on the same "work done" basis.                       */
 
-constexpr int64_t TOTAL_DOUBLES = 1LL << 28;
+constexpr int64_t TOTAL_DOUBLES = 1LL << 29;
 constexpr int64_t RUNS  = 100;
 constexpr int64_t MAX_VL = 512;
 
