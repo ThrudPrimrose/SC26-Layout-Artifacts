@@ -1,21 +1,22 @@
 #!/bin/bash
-#SBATCH --job-name=transpose_daint
+#SBATCH --job-name=transpose_cpu_daint
 #SBATCH --nodes=1
 #SBATCH --partition=normal
 #SBATCH --time=02:00:00
-#SBATCH --output=transpose_daint_%j.out
-#SBATCH --error=transpose_daint_%j.err
+#SBATCH --output=transpose_cpu_daint_%j.out
+#SBATCH --error=transpose_cpu_daint_%j.err
 #SBATCH --ntasks=1
+#SBATHC --gpus-per-task=1
 #SBATCH --account=g177-1
 #SBATCH --cpus-per-task=288
+#SBATCH --exclusive
 
 # -------------------------------
 # OpenMP configuration
 # -------------------------------
 export OMP_NUM_THREADS=288
-export OMP_PROC_BIND="{0}:72:1,{72}:72:1,{144}:72:1,{216}:72:1"
-export OMP_PLACES=cores
-
+export OMP_PLACES="{0}:72:1,{72}:72:1,{144}:72:1,{216}:72:1"
+export OMP_PROC_BIND=close
 # Optional: better NUMA behavior
 export OMP_DISPLAY_ENV=TRUE
 
@@ -60,5 +61,5 @@ export BEVERIN=0
 export HPTT_ROOT=$SCRATCH
 
 
-python run_cpu_transpose.py --compile --hptt-only
+python run_cpu_transpose.py --compile
 

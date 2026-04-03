@@ -147,18 +147,24 @@ def get_roofline():
     return dict(name=name, peak_fp64=peak_fp64, peak_bw=peak_bw, emp_bw=emp_bw)
 
 # ── Compile ──
-def compile():
+def compile_kernels(force=False):
+    if Path(BINARY).exists() and not force:
+        print(f"  {BINARY} exists, skipping (use --compile to force)")
+        return True
     if not AMD:
         cmd = f"nvcc -O3 -std=c++17 -arch=native -o {BINARY} transpose_gpu.cu"
     else:
         cmd = f"hipcc {AMD_FLAGS} -o {BINARY} transpose_gpu_hip.cpp"
-    print(f"Compiling kernels: {cmd}")
-    subprocess.run(cmd, shell=True, check=True)
+    print(f"  Compiling kernels: {cmd}")
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  [ERROR] kernel compile failed:\n{r.stderr.strip()}")
+        return False
+    return True
 
-def compile_lib():
-    # Skip if already compiled
-    if Path(BINARY_LIB).exists():
-        print(f"[INFO] {BINARY_LIB} already exists, skipping compilation.")
+def compile_lib(force=False):
+    if Path(BINARY_LIB).exists() and not force:
+        print(f"  {BINARY_LIB} exists, skipping")
         return True
 
     if not AMD:
@@ -169,11 +175,11 @@ def compile_lib():
                f"-o {BINARY_LIB} transpose_hiptensor.cpp -lhiptensor")
         lib = "hipTensor"
 
-    print(f"Compiling {lib}: {cmd}")
+    print(f"  Compiling {lib}: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
     if r.returncode != 0:
-        print(f"  [WARN] {lib} compile failed: {r.stderr.strip()[:120]}")
+        print(f"  [WARN] {lib} compile failed: {r.stderr.strip()[:200]}")
         print(f"  Library benchmark will be skipped.")
         return False
 
@@ -314,25 +320,48 @@ def report(roof, rows):
 
 # ── Main ──
 if __name__ == "__main__":
+    force    = "--compile" in sys.argv
+    lib_only = "--lib-only" in sys.argv
+
     print("── Roofline ──")
     roof = get_roofline()
     print(f"  Emp BW: {roof['emp_bw']:.0f} GB/s")
 
-    need_compile = not os.path.exists(BINARY) or "--compile" in sys.argv
-    if need_compile:
-        compile()
+    print("\n── Compile ──")
 
-    has_lib = False
-    if need_compile or not os.path.exists(BINARY_LIB):
-        has_lib = compile_lib()
-    else:
-        has_lib = os.path.exists(BINARY_LIB)
+    if lib_only:
+        # --lib-only: recompile library, strip old lib rows, run only lib sweep
+        has_lib = compile_lib(force=True)
+        if not has_lib:
+            print("  [ERROR] Library not available"); sys.exit(1)
 
-    print(f"\n── Sweep: N={N} reps={REPS} warmup={WARMUP} ──")
-    sweep()
-    if has_lib:
+        # Strip old library rows from CSV, keep kernel rows
+        if os.path.exists(CSV_RAW):
+            lib_prefixes = tuple(LIB_NAMES)
+            with open(CSV_RAW) as f:
+                lines = [l for l in f if not l.split(",", 1)[0] in LIB_NAMES]
+            with open(CSV_RAW, "w") as f:
+                f.writelines(lines)
+            print(f"  Stripped old library rows from {CSV_RAW} "
+                  f"({len(lines)} kernel rows kept)")
+        else:
+            open(CSV_RAW, "w").close()
+
+        print(f"\n── Lib-only sweep (appending to {CSV_RAW}): "
+              f"N={N} reps={REPS} warmup={WARMUP} ──")
         sweep_lib()
+    else:
+        # Full sweep
+        if not compile_kernels(force):
+            sys.exit(1)
+        has_lib = compile_lib(force)
 
+        print(f"\n── Sweep: N={N} reps={REPS} warmup={WARMUP} ──")
+        sweep()
+        if has_lib:
+            sweep_lib()
+
+    print(f"\n── Aggregate ──")
     rows = aggregate(roof)
     if rows:
         report(roof, rows)

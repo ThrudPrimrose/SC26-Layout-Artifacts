@@ -1,20 +1,22 @@
 #!/bin/bash
-#SBATCH --job-name=transpose_daint
+#SBATCH --job-name=transpose_gpu_daint
 #SBATCH --nodes=1
 #SBATCH --partition=normal
 #SBATCH --time=02:00:00
-#SBATCH --output=transpose_daint_%j.out
-#SBATCH --error=transpose_daint_%j.err
+#SBATCH --output=transpose_gpu_daint_%j.out
+#SBATCH --error=transpose_gpu_daint_%j.err
 #SBATCH --ntasks=1
+#SBATHC --gpus-per-task=1
 #SBATCH --account=g177-1
 #SBATCH --cpus-per-task=288
+#SBATCH --exclusive
 
 # -------------------------------
 # OpenMP configuration
 # -------------------------------
 export OMP_NUM_THREADS=288
-export OMP_PROC_BIND="{0}:72:1,{72}:72:1,{144}:72:1,{216}:72:1"
-export OMP_PLACES=cores
+export OMP_PLACES="{0}:72:1,{72}:72:1,{144}:72:1,{216}:72:1"
+export OMP_PROC_BIND=close
 # Optional: better NUMA behavior
 export OMP_DISPLAY_ENV=TRUE
 
@@ -43,4 +45,4 @@ export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$CUTENSOR_HOME/lib/12:$CUDA_H
 export PATH=$SCRATCH/bin:$CUTENSOR_HOME/bin:$PATH
 
 export HPTT_ROOT=$SCRATCH
-python run_transpose.py --compile
+python run_transpose.py --compile --lib-only
