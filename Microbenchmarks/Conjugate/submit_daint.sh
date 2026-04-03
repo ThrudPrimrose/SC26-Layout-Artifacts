@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=conj_bench
+#SBATCH --job-name=conjugate_bench
 #SBATCH --nodes=1
 #SBATCH --partition=normal
 #SBATCH --time=00:50:00
-#SBATCH --output=conj_%j.out
-#SBATCH --error=conj_%j.err
+#SBATCH --output=conjugate_%j.out
+#SBATCH --error=conjugate_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=72
 #SBATCH --mem-bind=local
@@ -24,35 +24,35 @@ CFLAGS="-O3 -fopenmp -mtune=native -ftree-vectorize -fno-vect-cost-model -march=
 NVFLAGS="-O3 -arch=sm_90 -ffast-math -std=c++17 ${CFLAGS}"
 
 echo "═══ build ═══"
-echo "[1/4] conj_cpu_inplace.cpp    (CPU in-place)"
-g++ $CFLAGS -o conj_cpu_inplace conj_cpu_inplace.cpp -lnuma
+echo "[1/4] conjugate_inplace.cpp    (CPU in-place)"
+g++ $CFLAGS -o conjugate_cpu_inplace conjugate_inplace.cpp -lnuma
 
-echo "[2/4] conj_cpu_oop.cpp        (CPU out-of-place)"
-g++ $CFLAGS -o conj_cpu_oop conj_cpu_oop.cpp -lnuma
+echo "[2/4] conjugate.cpp        (CPU out-of-place)"
+g++ $CFLAGS -o conjugate_cpu_oop conjugate.cpp -lnuma
 
-echo "[3/4] conj_gpu_inplace.cpp    (GPU in-place)"
-nvcc $NVFLAGS -o conj_gpu_inplace conj_gpu_inplace.cu
+echo "[3/4] conjugate_inplace.cu    (GPU in-place)"
+nvcc $NVFLAGS -o conjugate_gpu_inplace conjugate_inplace.cu
 
-echo "[4/4] conj_gpu_oop.cpp        (GPU out-of-place)"
-nvcc $NVFLAGS -o conj_gpu_oop conj_gpu_oop.cu
+echo "[4/4] conjugate.cu        (GPU out-of-place)"
+nvcc $NVFLAGS -o conjugate_gpu_oop conjugate.cu
 
 echo ""
 echo "═══ run ═══"
 
 echo "--- CPU in-place ---"
-./conj_cpu_inplace
+./conjugate_cpu_inplace
 echo ""
 
 echo "--- CPU out-of-place ---"
-./conj_cpu_oop
+./conjugate_cpu_oop
 echo ""
 
 echo "--- GPU in-place ---"
-./conj_gpu_inplace
+./conjugate_gpu_inplace
 echo ""
 
 echo "--- GPU out-of-place ---"
-./conj_gpu_oop
+./conjugate_gpu_oop
 echo ""
 
 echo "═══ CSV files ═══"
