@@ -1,49 +1,36 @@
 /*
- * Layout-conflict benchmark (CPU) — NUMA-aware, per-iteration CSV
- * ================================================================
- * C[i,j] = A[i,j] + B[i,j]
+ * Layout-conflict benchmark (GPU) — parameterized sweep
+ * ======================================================
+ * C[i,j] += A[i,j] + B[i,j]
  *
- * Row-major schedules:
- *   row_major     — for i, for j  (A,C stream; B stride-M)
- *   col_major     — for j, for i  (B streams; A,C stride-N)
- *   tiled_T       — T×T tiles, stack-local B transpose
- *   all_rowmajor  — control (B also row-major)
+ * Layouts:  A row-major, B col-major, C row-major
  *
- * Blocked-storage schedules (SB×SB contiguous blocks):
- *   blk_all_rm    — A,B,C all row-major-in-block  (control)
- *   blk_conflict  — A,C row-major-in-block; B col-major-in-block
+ * Kernels:
+ *   direct       — no shared memory; threadIdx.x → j (row-coalesced for A,C)
+ *   direct_T     — no shared memory; threadIdx.x → i (col-coalesced for B)
+ *   tiled+smem   — cooperative load/store with per-layout coalescing
+ *   all_rowmajor — control (B also row-major → peak BW)
  *
- * NUMA: mmap + MADV_NOHUGEPAGE + per-thread mbind(MPOL_BIND) + first-touch
- * CSV:  one row per iteration for violin plots
+ * Parameterized by:
+ *   BX, BY   — thread block dimensions
+ *   TX, TY   — elements per thread (thread computes TX × TY rectangle)
+ *   Tile dims derived: TILE_COLS = BX*TX,  TILE_ROWS = BY*TY
  *
- * Compile: g++ -O3 -march=native -std=c++17 -fopenmp -o bench_cpu bench_cpu.cpp
- * Run:     ./bench_cpu <csv_file> [nthreads]
+ * Compile: nvcc -O3 -arch=sm_90 -std=c++17 -o bench_gpu bench_gpu.cpp
+ * Run:     ./bench_gpu [csv_file]
  */
 
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
+#include <cstdint>
 #include <cmath>
-#include <chrono>
 #include <vector>
 #include <string>
 #include <algorithm>
 #include <functional>
+#include <cuda_runtime.h>
 
-#include <omp.h>
-#include <sys/mman.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-
-#if __has_include(<numaif.h>)
-  #include <numaif.h>
-  #define HAS_NUMA 1
-#else
-  #define HAS_NUMA 0
-  #define MPOL_BIND 2
-  static int mbind(void*, size_t, int, const unsigned long*, unsigned long, unsigned) { return 0; }
-#endif
-
+/* ---- dimensions ---- */
 #ifndef M_DIM
 #define M_DIM 16384
 #endif
@@ -51,563 +38,621 @@
 #define N_DIM 16384
 #endif
 
-static const int M = M_DIM;
-static const int N = N_DIM;
+static constexpr int Md = M_DIM;
+static constexpr int Nd = N_DIM;
 
-#define NREP    100
-#define NWARMUP 5
+#define NWARMUP  5
+#define NREP     100
 
-/* ── index helpers ────────────────────────────────────────────────── */
-static inline int idx_rm(int i, int j) { return i * N + j; }
-static inline int idx_cm(int i, int j) { return j * M + i; }
+#define CUDA_CHECK(call) do {                                       \
+    cudaError_t _e = (call);                                        \
+    if (_e != cudaSuccess) {                                        \
+        fprintf(stderr, "CUDA error %s:%d: %s\n",                  \
+                __FILE__, __LINE__, cudaGetErrorString(_e));        \
+        exit(1);                                                    \
+    }                                                               \
+} while (0)
 
-/* Blocked storage: block (br,bc) is contiguous SB*SB.
- * Within block: row-major = lr*SB+lc, col-major = lc*SB+lr. */
-template <int SB>
-static inline int idx_blk_rm(int i, int j) {
-    int NB = N / SB;
-    return (i / SB * NB + j / SB) * SB * SB + (i % SB) * SB + (j % SB);
-}
-template <int SB>
-static inline int idx_blk_cm(int i, int j) {
-    int NB = N / SB;
-    return (i / SB * NB + j / SB) * SB * SB + (j % SB) * SB + (i % SB);
-}
 
-/* ── timing ───────────────────────────────────────────────────────── */
-using Clock = std::chrono::high_resolution_clock;
-static inline double elapsed_sec(Clock::time_point t0, Clock::time_point t1) {
-    return std::chrono::duration<double>(t1 - t0).count();
-}
-
-/* ════════════════════════════════════════════════════════════════════
- *  NUMA-aware allocation
- * ════════════════════════════════════════════════════════════════════ */
-static long PAGE_SZ;
-
-static int get_numa_node() {
-    unsigned cpu, node;
-    syscall(__NR_getcpu, &cpu, &node, nullptr);
-    return (int)node;
-}
-
-static void *numa_alloc(size_t bytes) {
-    void *p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) { perror("mmap"); std::abort(); }
-    madvise(p, bytes, MADV_HUGEPAGE);
-    return p;
-}
-
-static void numa_free(void *p, size_t bytes) { munmap(p, bytes); }
-
-static void bind_and_touch(void *base, size_t total_bytes) {
-    int64_t n_pages = (total_bytes + PAGE_SZ - 1) / PAGE_SZ;
-    #pragma omp parallel
-    {
-        int tid  = omp_get_thread_num();
-        int nthr = omp_get_num_threads();
-        int64_t chunk = (n_pages + nthr - 1) / nthr;
-        int64_t lo = tid * chunk;
-        int64_t hi = std::min(lo + chunk, n_pages);
-        if (lo < n_pages && lo < hi) {
-            uintptr_t pbeg = (uintptr_t)base + lo * PAGE_SZ;
-            uintptr_t pend = (uintptr_t)base + hi * PAGE_SZ;
-            if (pend > (uintptr_t)base + total_bytes)
-                pend = (uintptr_t)base + total_bytes;
-
-            int node = get_numa_node();
-            unsigned long mask[16] = {};
-            mask[node / (8 * sizeof(unsigned long))] =
-                1UL << (node % (8 * sizeof(unsigned long)));
-            mbind((void *)pbeg, pend - pbeg, MPOL_BIND, mask,
-                  sizeof(mask) * 8 + 1, 0);
-
-            for (uintptr_t addr = pbeg; addr < pend; addr += PAGE_SZ)
-                *(volatile char *)addr = 0;
-        }
-    }
-}
-
-/* First-touch init for row-major */
-static void ft_init_rm(double *buf, size_t total, int M_, int N_, bool is_B) {
-    bind_and_touch(buf, total * sizeof(double));
-    #pragma omp parallel for schedule(static)
-    for (size_t k = 0; k < total; k++) {
-        int i = (int)(k / N_), j = (int)(k % N_);
-        buf[k] = is_B ? (double)((i * 13 + j * 37) % 1000) / 100.0
-                       : (double)((i * 17 + j * 31) % 1000) / 100.0;
-    }
-}
-
-/* First-touch init for col-major B[j*M+i] */
-static void ft_init_cm(double *buf, size_t total, int M_, int N_) {
-    bind_and_touch(buf, total * sizeof(double));
-    #pragma omp parallel for schedule(static)
-    for (int j = 0; j < N_; j++)
-        for (int i = 0; i < M_; i++)
-            buf[j * M_ + i] = (double)((i * 13 + j * 37) % 1000) / 100.0;
-}
-
-/* First-touch init for blocked-rowmajor */
-template <int SB>
-static void ft_init_blk_rm(double *buf, size_t total, int M_, int N_, bool is_B) {
-    bind_and_touch(buf, total * sizeof(double));
-    int NB = N_ / SB;
-    #pragma omp parallel for schedule(static) collapse(2)
-    for (int br = 0; br < M_ / SB; br++)
-        for (int bc = 0; bc < NB; bc++) {
-            double *blk = buf + (br * NB + bc) * SB * SB;
-            for (int lr = 0; lr < SB; lr++)
-                for (int lc = 0; lc < SB; lc++) {
-                    int i = br * SB + lr, j = bc * SB + lc;
-                    blk[lr * SB + lc] = is_B
-                        ? (double)((i * 13 + j * 37) % 1000) / 100.0
-                        : (double)((i * 17 + j * 31) % 1000) / 100.0;
-                }
-        }
-}
-
-/* First-touch init for blocked-colmajor (B with col-major inner layout) */
-template <int SB>
-static void ft_init_blk_cm(double *buf, size_t total, int M_, int N_) {
-    bind_and_touch(buf, total * sizeof(double));
-    int NB = N_ / SB;
-    #pragma omp parallel for schedule(static) collapse(2)
-    for (int br = 0; br < M_ / SB; br++)
-        for (int bc = 0; bc < NB; bc++) {
-            double *blk = buf + (br * NB + bc) * SB * SB;
-            for (int lr = 0; lr < SB; lr++)
-                for (int lc = 0; lc < SB; lc++) {
-                    int i = br * SB + lr, j = bc * SB + lc;
-                    /* col-major within block: index = lc*SB + lr */
-                    blk[lc * SB + lr] = (double)((i * 13 + j * 37) % 1000) / 100.0;
-                }
-        }
-}
-
-/* ════════════════════════════════════════════════════════════════════
- *  Cache flush
- * ════════════════════════════════════════════════════════════════════ */
-static constexpr int64_t FLUSH_N = 1 << 27;
-static double *g_flush_buf = nullptr;
-
-static void cache_flush() {
-    if (!g_flush_buf) {
-        g_flush_buf = (double *)numa_alloc(FLUSH_N * sizeof(double));
-        bind_and_touch(g_flush_buf, FLUSH_N * sizeof(double));
-    }
-    #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < FLUSH_N; i++)
-        g_flush_buf[i] = (double)i;
-    volatile double sink = g_flush_buf[FLUSH_N - 1];
-    (void)sink;
-}
-
-/* ════════════════════════════════════════════════════════════════════
- *  Row-major kernels (unchanged)
- * ════════════════════════════════════════════════════════════════════ */
-
-static void kernel_row_major(const double *__restrict__ A,
-                             const double *__restrict__ B,
-                             double *__restrict__ C) {
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < M; i++)
-        #pragma omp simd 
-        for (int j = 0; j < N; j++)
-            C[idx_rm(i, j)] += A[idx_rm(i, j)] + B[idx_cm(i, j)];
-}
-
-static void kernel_col_major(const double *__restrict__ A,
-                             const double *__restrict__ B,
-                             double *__restrict__ C) {
-    #pragma omp parallel for schedule(static)
-    for (int j = 0; j < N; j++)
-        #pragma omp simd 
-        for (int i = 0; i < M; i++)
-            C[idx_rm(i, j)] += A[idx_rm(i, j)] + B[idx_cm(i, j)];
-}
-
-template <int T>
-static void kernel_tiled(const double *__restrict__ A,
-                         const double *__restrict__ B,
-                         double *__restrict__ C) {
-    const int ntiles_i = (M + T - 1) / T;
-    const int ntiles_j = (N + T - 1) / T;
-    #pragma omp parallel for schedule(static) collapse(2)
-    for (int ti = 0; ti < ntiles_i; ti++) {
-        for (int tj = 0; tj < ntiles_j; tj++) {
-            const int ii = ti * T, jj = tj * T;
-            const int iend = (ii + T < M) ? ii + T : M;
-            const int jend = (jj + T < N) ? jj + T : N;
-
-            double b_local[T * T];
-            for (int j = jj; j < jend; j++)
-                #pragma omp simd
-                for (int i = ii; i < iend; i++)
-                    b_local[(i - ii) * T + (j - jj)] = B[idx_cm(i, j)];
-
-            for (int i = ii; i < iend; i++)
-                #pragma omp simd 
-                for (int j = jj; j < jend; j++)
-                    C[idx_rm(i, j)] += A[idx_rm(i, j)]
-                                    + b_local[(i - ii) * T + (j - jj)];
-        }
-    }
-}
-
-static void kernel_all_rowmajor(const double *__restrict__ A,
-                                const double *__restrict__ B_rm,
-                                double *__restrict__ C) {
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < M; i++)
-        #pragma omp simd 
-        for (int j = 0; j < N; j++)
-            C[idx_rm(i, j)] += A[idx_rm(i, j)] + B_rm[idx_rm(i, j)];
-}
-
-/* ════════════════════════════════════════════════════════════════════
- *  Blocked-storage kernels
+/* ================================================================
+ *  COALESCED LOAD / STORE PRIMITIVES
+ * ================================================================
  *
- *  Block (br,bc) for each array is contiguous SB*SB doubles.
- *  Within each block, arrays use either row-major or col-major layout.
- *  The block fits in L1 cache for SB ≤ ~64, so even conflicting
- *  inner layouts (A row-major, B col-major) incur no DRAM-level
- *  cache line waste — the "conflict cost" is absorbed by L1.
- * ════════════════════════════════════════════════════════════════════ */
+ * Design principle: consecutive threads (consecutive linear tid)
+ * must hit consecutive addresses in global memory.
+ *
+ *   ROW_MAJOR A[i*N + j]:  consecutive j → consecutive addrs
+ *     → linearize tile as k = li * TILE_C + lj
+ *       so consecutive k → consecutive lj → consecutive j  ✓
+ *
+ *   COL_MAJOR B[j*M + i]:  consecutive i → consecutive addrs
+ *     → linearize tile as k = lj * TILE_R + li
+ *       so consecutive k → consecutive li → consecutive i  ✓
+ *
+ * Shared memory is always row-major with +1 padding to avoid
+ * bank conflicts: smem[li * (TILE_C+1) + lj].
+ * ================================================================ */
 
-/* blk_all_rm: A,B,C all row-major-in-block.  Control — no conflict. */
-template <int SB>
-static void kernel_blk_all_rm(const double *__restrict__ A,
-                              const double *__restrict__ B,
-                              double *__restrict__ C) {
-    const int NB_i = M / SB;
-    const int NB_j = N / SB;
-    const int NB = NB_j;  /* blocks per row */
-    #pragma omp parallel for schedule(static) collapse(2)
-    for (int br = 0; br < NB_i; br++) {
-        for (int bc = 0; bc < NB_j; bc++) {
-            const double *a_blk = A + (br * NB + bc) * SB * SB;
-            const double *b_blk = B + (br * NB + bc) * SB * SB;
-            double       *c_blk = C + (br * NB + bc) * SB * SB;
-            #pragma unroll
-            for (int lr = 0; lr < SB; lr++)
-                #pragma omp simd
-                for (int lc = 0; lc < SB; lc++)
-                    c_blk[lr * SB + lc] += a_blk[lr * SB + lc]
-                                        + b_blk[lr * SB + lc];
+enum Layout { ROW_MAJOR = 0, COL_MAJOR = 1 };
+
+/*
+ * coop_load<TILE_R, TILE_C, L>
+ *   Cooperatively loads a TILE_R × TILE_C tile from global memory
+ *   into shared memory.  Access pattern is coalesced for layout L.
+ *   Shared memory stride is TILE_C + 1 (bank-conflict padding).
+ */
+template<int TILE_R, int TILE_C, Layout L>
+__device__ __forceinline__
+void coop_load(double* __restrict__ smem,
+               const double* __restrict__ gmem,
+               int bi, int bj,              /* tile origin in global coords */
+               int tid, int nthreads)        /* linear thread id, block size */
+{
+    constexpr int STRIDE = TILE_C + 1;      /* padded smem row stride */
+    constexpr int TOTAL  = TILE_R * TILE_C;
+
+    for (int k = tid; k < TOTAL; k += nthreads) {
+        int li, lj;
+        if constexpr (L == ROW_MAJOR) {
+            /* consecutive k → consecutive lj → consecutive j → coalesced */
+            li = k / TILE_C;
+            lj = k % TILE_C;
+        } else {
+            /* consecutive k → consecutive li → consecutive i → coalesced */
+            li = k % TILE_R;
+            lj = k / TILE_R;
+        }
+
+        int gi = bi + li, gj = bj + lj;
+        double val = 0.0;
+        if (gi < Md && gj < Nd) {
+            if constexpr (L == ROW_MAJOR)
+                val = gmem[gi * Nd + gj];      /* A[i*N + j] */
+            else
+                val = gmem[gj * Md + gi];      /* B[j*M + i] */
+        }
+        smem[li * STRIDE + lj] = val;          /* always row-major in smem */
+    }
+}
+
+/*
+ * coop_store<TILE_R, TILE_C, L>
+ *   Cooperatively stores a TILE_R × TILE_C tile from shared memory
+ *   to global memory.  Access pattern is coalesced for layout L.
+ */
+template<int TILE_R, int TILE_C, Layout L>
+__device__ __forceinline__
+void coop_store(const double* __restrict__ smem,
+                double* __restrict__ gmem,
+                int bi, int bj,
+                int tid, int nthreads)
+{
+    constexpr int STRIDE = TILE_C + 1;
+    constexpr int TOTAL  = TILE_R * TILE_C;
+
+    for (int k = tid; k < TOTAL; k += nthreads) {
+        int li, lj;
+        if constexpr (L == ROW_MAJOR) {
+            li = k / TILE_C;
+            lj = k % TILE_C;
+        } else {
+            li = k % TILE_R;
+            lj = k / TILE_R;
+        }
+
+        int gi = bi + li, gj = bj + lj;
+        if (gi < Md && gj < Nd) {
+            if constexpr (L == ROW_MAJOR)
+                gmem[gi * Nd + gj] += smem[li * STRIDE + lj];
+            else
+                gmem[gj * Md + gi] += smem[li * STRIDE + lj];
         }
     }
 }
 
-/* blk_conflict: A,C row-major-in-block; B col-major-in-block.
- * B is stored as blk[lc*SB + lr] instead of blk[lr*SB + lc]. */
-template <int SB>
-static void kernel_blk_conflict(const double *__restrict__ A,
-                                const double *__restrict__ B,
-                                double *__restrict__ C) {
-    const int NB_i = M / SB;
-    const int NB_j = N / SB;
-    const int NB = NB_j;
-    #pragma omp parallel for schedule(static) collapse(2)
-    for (int br = 0; br < NB_i; br++) {
-        for (int bc = 0; bc < NB_j; bc++) {
-            const double *a_blk = A + (br * NB + bc) * SB * SB;
-            const double *b_blk = B + (br * NB + bc) * SB * SB;
-            double       *c_blk = C + (br * NB + bc) * SB * SB;
-            #pragma unroll
-            for (int lr = 0; lr < SB; lr++)
-                #pragma omp simd
-                for (int lc = 0; lc < SB; lc++)
-                    c_blk[lr * SB + lc] += a_blk[lr * SB + lc]
-                                        + b_blk[lc * SB + lr];  /* col-major B */
+
+/* ================================================================
+ *  KERNEL: direct global (threadIdx.x → j, row-coalesced for A,C)
+ *  A,C coalesced ✓   B uncoalesced ✗
+ * ================================================================ */
+template<int BX, int BY, int TX, int TY>
+__global__ void __launch_bounds__(BX * BY)
+kernel_direct(const double* __restrict__ A,
+              const double* __restrict__ B,
+              double*       __restrict__ C)
+{
+    constexpr int TILE_COLS = BX * TX;
+    constexpr int TILE_ROWS = BY * TY;
+
+    int base_j = blockIdx.x * TILE_COLS + threadIdx.x;
+    int base_i = blockIdx.y * TILE_ROWS + threadIdx.y;
+
+    #pragma unroll
+    for (int dy = 0; dy < TY; dy++) {
+        int i = base_i + dy * BY;
+        #pragma unroll
+        for (int dx = 0; dx < TX; dx++) {
+            int j = base_j + dx * BX;
+            if (i < Md && j < Nd)
+                C[i * Nd + j] += A[i * Nd + j] + B[j * Md + i];
         }
     }
 }
 
-/* ════════════════════════════════════════════════════════════════════
- *  Benchmark infrastructure
- * ════════════════════════════════════════════════════════════════════ */
-using KernelFn = void (*)(const double *, const double *, double *);
+/* ================================================================
+ *  KERNEL: direct transposed (threadIdx.x → i, col-coalesced for B)
+ *  B coalesced ✓   A,C uncoalesced ✗
+ * ================================================================ */
+template<int BX, int BY, int TX, int TY>
+__global__ void __launch_bounds__(BX * BY)
+kernel_direct_T(const double* __restrict__ A,
+                const double* __restrict__ B,
+                double*       __restrict__ C)
+{
+    constexpr int TILE_ROWS = BX * TX;    /* note: BX maps to i */
+    constexpr int TILE_COLS = BY * TY;
 
-struct IterRecord {
-    std::string variant;
-    int tile;
-    int nthreads;
-    int rep;
-    double time_s;
-    double bw_gbs;
-    double checksum;
-    const char *status;
+    int base_i = blockIdx.x * TILE_ROWS + threadIdx.x;  /* tidx → i */
+    int base_j = blockIdx.y * TILE_COLS + threadIdx.y;
+
+    #pragma unroll
+    for (int dx = 0; dx < TX; dx++) {
+        int i = base_i + dx * BX;
+        #pragma unroll
+        for (int dy = 0; dy < TY; dy++) {
+            int j = base_j + dy * BY;
+            if (i < Md && j < Nd)
+                C[i * Nd + j] += A[i * Nd + j] + B[j * Md + i];
+        }
+    }
+}
+
+/* ================================================================
+ *  KERNEL: tiled + shared memory (coalesced loads for all layouts)
+ *
+ *  Uses coop_load<ROW_MAJOR> for A  (tidx sweeps j → coalesced)
+ *        coop_load<COL_MAJOR> for B  (tidx sweeps i → coalesced)
+ *        coop_store<ROW_MAJOR> for C
+ *
+ *  Each thread computes a TX × TY sub-tile from shared memory.
+ * ================================================================ */
+template<int BX, int BY, int TX, int TY>
+__global__ void __launch_bounds__(BX * BY)
+kernel_tiled(const double* __restrict__ A,
+             const double* __restrict__ B,
+             double*       __restrict__ C)
+{
+    constexpr int TILE_COLS = BX * TX;
+    constexpr int TILE_ROWS = BY * TY;
+    constexpr int STRIDE    = TILE_COLS + 1;       /* padded smem stride */
+    constexpr int SMEM_TILE = TILE_ROWS * STRIDE;
+
+    extern __shared__ double smem[];
+    double* __restrict__ As = smem;
+    double* __restrict__ Bs = smem + SMEM_TILE;
+    double* __restrict__ Cs = smem + 2 * SMEM_TILE;
+
+    const int bi  = blockIdx.y * TILE_ROWS;
+    const int bj  = blockIdx.x * TILE_COLS;
+    const int tid = threadIdx.y * BX + threadIdx.x;
+    constexpr int NTHREADS = BX * BY;
+
+    /* ---- cooperative load (coalesced per source layout) ---- */
+    coop_load<TILE_ROWS, TILE_COLS, ROW_MAJOR>(As, A, bi, bj, tid, NTHREADS);
+    coop_load<TILE_ROWS, TILE_COLS, COL_MAJOR>(Bs, B, bi, bj, tid, NTHREADS);
+
+    __syncthreads();
+
+    /* ---- per-thread compute from shared memory ---- */
+    #pragma unroll
+    for (int dy = 0; dy < TY; dy++) {
+        int li = threadIdx.y + dy * BY;
+        #pragma unroll
+        for (int dx = 0; dx < TX; dx++) {
+            int lj = threadIdx.x + dx * BX;
+            int si = li * STRIDE + lj;
+            Cs[si] = As[si] + Bs[si];
+        }
+    }
+
+    __syncthreads();
+
+    /* ---- cooperative store (coalesced for row-major C) ---- */
+    coop_store<TILE_ROWS, TILE_COLS, ROW_MAJOR>(Cs, C, bi, bj, tid, NTHREADS);
+}
+
+/* ================================================================
+ *  KERNEL: all row-major control (B also row-major → peak BW)
+ * ================================================================ */
+template<int BX, int BY, int TX, int TY>
+__global__ void __launch_bounds__(BX * BY)
+kernel_control(const double* __restrict__ A,
+               const double* __restrict__ B_rm,
+               double*       __restrict__ C)
+{
+    constexpr int TILE_COLS = BX * TX;
+    constexpr int TILE_ROWS = BY * TY;
+
+    int base_j = blockIdx.x * TILE_COLS + threadIdx.x;
+    int base_i = blockIdx.y * TILE_ROWS + threadIdx.y;
+
+    #pragma unroll
+    for (int dy = 0; dy < TY; dy++) {
+        int i = base_i + dy * BY;
+        #pragma unroll
+        for (int dx = 0; dx < TX; dx++) {
+            int j = base_j + dx * BX;
+            if (i < Md && j < Nd) {
+                int idx = i * Nd + j;
+                C[idx] += A[idx] + B_rm[idx];
+            }
+        }
+    }
+}
+
+
+/* ================================================================
+ *  INIT
+ * ================================================================ */
+__global__ void init_kernel(double* __restrict__ A,
+                            double* __restrict__ B_cm,
+                            double* __restrict__ B_rm)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = Md * Nd;
+    for (; idx < total; idx += blockDim.x * gridDim.x) {
+        int i = idx / Nd, j = idx % Nd;
+        double va = (double)((i * 17 + j * 31) % 1000) / 100.0;
+        double vb = (double)((i * 13 + j * 37) % 1000) / 100.0;
+        A[i * Nd + j]     = va;       /* row-major */
+        B_cm[j * Md + i]  = vb;       /* col-major */
+        B_rm[i * Nd + j]  = vb;       /* row-major copy */
+    }
+}
+
+
+/* ================================================================
+ *  Configuration & benchmark infrastructure
+ * ================================================================ */
+
+/* Unified launch signature: (A, B, C) — B is col-major or row-major
+   depending on config. */
+using LaunchFn = std::function<void(const double*, const double*, double*)>;
+
+struct KernelConfig {
+    std::string name;
+    LaunchFn    launch;
+    int         tile_rows;
+    int         tile_cols;
+    size_t      smem_bytes;
+    bool        uses_B_rm;       /* true = uses row-major B (control) */
 };
 
-static std::vector<IterRecord> g_records;
+static std::vector<KernelConfig> g_configs;
 
-static void bench(const char *variant_name, int tile_sz, KernelFn fn,
-                  const double *A, const double *B, double *C,
-                  double ref_checksum, int nthreads) {
-    const size_t total = (size_t)M * N;
-    /* C += A + B:  read A + read B + read C + write C = 4 array transfers */
-    const double data_bytes = (double)total * sizeof(double) * 4.0;
+/* ---- registration helpers ---- */
+template<int BX, int BY, int TX, int TY>
+void reg_direct() {
+    constexpr int TR = BY * TY, TC = BX * TX;
+    dim3 blk(BX, BY);
+    dim3 grd((Nd + TC - 1) / TC, (Md + TR - 1) / TR);
+    char name[128];
+    snprintf(name, sizeof(name),
+             "direct        BX=%-3d BY=%-3d TX=%-2d TY=%-2d  tile=%dx%d",
+             BX, BY, TX, TY, TR, TC);
+    g_configs.push_back({name,
+        [blk, grd](const double* A, const double* B, double* C) {
+            kernel_direct<BX, BY, TX, TY><<<grd, blk>>>(A, B, C);
+        }, TR, TC, 0, false});
+}
 
-    /* Zero C before warmup */
-    #pragma omp parallel for schedule(static)
-    for (size_t k = 0; k < total; k++)
-        C[k] = 0.0;
+template<int BX, int BY, int TX, int TY>
+void reg_direct_T() {
+    constexpr int TR = BX * TX, TC = BY * TY;
+    dim3 blk(BX, BY);
+    dim3 grd((Md + TR - 1) / TR, (Nd + TC - 1) / TC);
+    char name[128];
+    snprintf(name, sizeof(name),
+             "direct_T      BX=%-3d BY=%-3d TX=%-2d TY=%-2d  tile=%dx%d",
+             BX, BY, TX, TY, TR, TC);
+    g_configs.push_back({name,
+        [blk, grd](const double* A, const double* B, double* C) {
+            kernel_direct_T<BX, BY, TX, TY><<<grd, blk>>>(A, B, C);
+        }, TR, TC, 0, false});
+}
 
+template<int BX, int BY, int TX, int TY>
+void reg_tiled() {
+    constexpr int TR = BY * TY, TC = BX * TX;
+    constexpr int STRIDE = TC + 1;
+    constexpr size_t smem = 3 * TR * STRIDE * sizeof(double);
+    dim3 blk(BX, BY);
+    dim3 grd((Nd + TC - 1) / TC, (Md + TR - 1) / TR);
+    char name[128];
+    snprintf(name, sizeof(name),
+             "tiled+smem    BX=%-3d BY=%-3d TX=%-2d TY=%-2d  tile=%dx%d",
+             BX, BY, TX, TY, TR, TC);
+    g_configs.push_back({name,
+        [blk, grd, smem](const double* A, const double* B, double* C) {
+            kernel_tiled<BX, BY, TX, TY><<<grd, blk, smem>>>(A, B, C);
+        }, TR, TC, smem, false});
+}
+
+template<int BX, int BY, int TX, int TY>
+void reg_control() {
+    constexpr int TR = BY * TY, TC = BX * TX;
+    dim3 blk(BX, BY);
+    dim3 grd((Nd + TC - 1) / TC, (Md + TR - 1) / TR);
+    char name[128];
+    snprintf(name, sizeof(name),
+             "all_rowmajor  BX=%-3d BY=%-3d TX=%-2d TY=%-2d  (control)",
+             BX, BY, TX, TY);
+    g_configs.push_back({name,
+        [blk, grd](const double* A, const double* B_rm, double* C) {
+            kernel_control<BX, BY, TX, TY><<<grd, blk>>>(A, B_rm, C);
+        }, TR, TC, 0, true});
+}
+
+/* ================================================================
+ *  Register all configurations to sweep
+ * ================================================================ */
+void register_configs() {
+    /*
+     * Notation:  BX×BY thread block,  TX×TY per-thread work
+     *            Tile = (BY*TY) rows × (BX*TX) cols
+     */
+
+    /* ==== direct: threadIdx.x → j  (A,C coalesced, B strided) ==== */
+    reg_direct<  32,  1,  1,  1>();   /* tile  1×32   — minimal */
+    reg_direct<  32,  1,  4,  1>();   /* tile  1×128  — wide */
+    reg_direct< 128,  1,  1,  1>();   /* tile  1×128  — wide block */
+    reg_direct< 256,  1,  1,  1>();   /* tile  1×256  — max 1D */
+    reg_direct<  16, 16,  1,  1>();   /* tile 16×16   — square */
+    reg_direct<  32,  8,  1,  1>();   /* tile  8×32   — common */
+    reg_direct<  32,  8,  2,  2>();   /* tile 16×64   — 2×2 work */
+    reg_direct<  32,  4,  4,  4>();   /* tile 16×128  — 4×4 work */
+    reg_direct<  32,  8,  4,  4>();   /* tile 32×128  — big tile */
+
+    /* ==== direct_T: threadIdx.x → i  (B coalesced, A,C strided) ==== */
+    reg_direct_T<  32,  1,  1,  1>();
+    reg_direct_T< 128,  1,  1,  1>();
+    reg_direct_T<  16, 16,  1,  1>();
+    reg_direct_T<  32,  8,  1,  1>();
+    reg_direct_T<  32,  8,  2,  2>();
+
+    /* ==== tiled + shared memory (all coalesced) ==== */
+    reg_tiled<  16, 16,  1,  1>();   /* tile 16×16   */
+    reg_tiled<  16, 16,  2,  2>();   /* tile 32×32   */
+    reg_tiled<  32,  1,  1, 32>();   /* tile 32×32   (1D block) */
+    reg_tiled<  32,  8,  1,  1>();   /* tile  8×32   */
+    reg_tiled<  32,  8,  2,  2>();   /* tile 16×64   */
+    reg_tiled<  32,  8,  2,  4>();   /* tile 32×64   */
+    reg_tiled<  32,  4,  2,  8>();   /* tile 32×64   (narrow block) */
+    reg_tiled<  32,  8,  4,  4>();   /* tile 32×128  */
+    reg_tiled<  16, 16,  4,  4>();   /* tile 64×64   */
+    reg_tiled<  32,  8,  4,  8>();   /* tile 64×128  */
+    reg_tiled<  32,  8,  8,  8>();   /* tile 64×256  */
+    reg_tiled<  32,  4,  8, 16>();   /* tile 64×256  (narrow block) */
+
+    /* ==== all row-major control (peak) ==== */
+    reg_control<  32,  8,  1,  1>();
+    reg_control<  32,  8,  4,  4>();
+}
+
+
+/*
+ *  Per-iteration recording for CSV
+ * ================================================================ */
+struct IterRecord {
+    std::string kernel;
+    int tile_rows, tile_cols;
+    int rep;
+    float time_ms;
+    double bw_gbs;
+    double checksum;
+    bool ok;
+};
+
+static std::vector<IterRecord> g_iter_records;
+
+/* Summary per kernel (for console + final table) */
+struct Result {
+    std::string name;
+    double median_ms;
+    double bw_GBs;
+    bool ok;
+};
+
+static Result run_bench(const KernelConfig& cfg,
+                        const double* dA, const double* dB_cm,
+                        const double* dB_rm, double* dC,
+                        double* hC, double ref_cs, double ref_cs_rm)
+{
+    const size_t total = (size_t)Md * Nd;
+    const double data_bytes = (double)total * sizeof(double) * 4.0;  /* 2R + 1RW (C+=) */
+
+    const double* dB = cfg.uses_B_rm ? dB_rm : dB_cm;
+    double expected_cs = cfg.uses_B_rm ? ref_cs_rm : ref_cs;
+
+    /* check smem limit */
+    if (cfg.smem_bytes > 0) {
+        cudaDeviceProp prop;
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+        if (cfg.smem_bytes > (size_t)prop.sharedMemPerBlock) {
+            printf("  %-62s  SKIP (smem %zu > %d)\n",
+                   cfg.name.c_str(), cfg.smem_bytes, prop.sharedMemPerBlock);
+            return {cfg.name, 0, 0, false};
+        }
+    }
+
+    /* warmup */
     for (int w = 0; w < NWARMUP; w++) {
-        cache_flush();
-        fn(A, B, C);
+        CUDA_CHECK(cudaMemset(dC, 0, total * sizeof(double)));
+        cfg.launch(dA, dB, dC);
     }
+    CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* Zero C and run once for correctness check */
-    #pragma omp parallel for schedule(static)
-    for (size_t k = 0; k < total; k++)
-        C[k] = 0.0;
-    fn(A, B, C);
-
+    /* correctness */
+    CUDA_CHECK(cudaMemcpy(hC, dC, total * sizeof(double), cudaMemcpyDeviceToHost));
     double cs = 0.0;
-    #pragma omp parallel for schedule(static) reduction(+:cs)
-    for (size_t k = 0; k < total; k++)
-        cs += C[k];
-    bool ok = (std::fabs(cs - ref_checksum) <= 1e-3 * std::fabs(ref_checksum));
-    const char *status = ok ? "PASS" : "FAIL";
-
+    for (size_t k = 0; k < total; k++) cs += hC[k];
+    bool ok = (std::fabs(cs - expected_cs) <= 1e-3 * std::fabs(expected_cs));
     if (!ok)
-        fprintf(stderr, "  [%s T=%d] CHECKSUM MISMATCH: got %.6e expected %.6e\n",
-                variant_name, tile_sz, cs, ref_checksum);
+        fprintf(stderr, "  [%s] CHECKSUM MISMATCH: got %.6e expected %.6e\n",
+                cfg.name.c_str(), cs, expected_cs);
 
+    /* timed runs -- record every iteration */
+    cudaEvent_t t0, t1;
+    CUDA_CHECK(cudaEventCreate(&t0));
+    CUDA_CHECK(cudaEventCreate(&t1));
+
+    float times[NREP];
     for (int r = 0; r < NREP; r++) {
-        cache_flush();
-        auto t0 = Clock::now();
-        fn(A, B, C);
-        auto t1 = Clock::now();
-        double dt = elapsed_sec(t0, t1);
-        double bw = data_bytes / dt / 1e9;
-        g_records.push_back({variant_name, tile_sz, nthreads, r, dt, bw, cs, status});
-    }
+        CUDA_CHECK(cudaMemset(dC, 0, total * sizeof(double)));
+        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaEventRecord(t0));
+        cfg.launch(dA, dB, dC);
+        CUDA_CHECK(cudaEventRecord(t1));
+        CUDA_CHECK(cudaEventSynchronize(t1));
+        CUDA_CHECK(cudaEventElapsedTime(&times[r], t0, t1));
 
-    std::vector<double> bws;
-    for (int i = (int)g_records.size() - NREP; i < (int)g_records.size(); i++)
-        bws.push_back(g_records[i].bw_gbs);
-    std::sort(bws.begin(), bws.end());
-    printf("  %-28s T=%-4d  median %7.1f GB/s  [%7.1f .. %7.1f]  %s\n",
-           variant_name, tile_sz, bws[NREP / 2], bws[0], bws[NREP - 1], status);
+        double bw_r = data_bytes / ((double)times[r] * 1e-3) / 1e9;
+        g_iter_records.push_back({cfg.name, cfg.tile_rows, cfg.tile_cols,
+                                  r, times[r], bw_r, cs, ok});
+    }
+    CUDA_CHECK(cudaEventDestroy(t0));
+    CUDA_CHECK(cudaEventDestroy(t1));
+
+    std::sort(times, times + NREP);
+    double med = times[NREP / 2];
+    double bw  = data_bytes / ((double)med * 1e-3) / 1e9;
+
+    printf("  %-62s  %8.3f ms  %8.1f GB/s  %s\n",
+           cfg.name.c_str(), med, bw, ok ? "OK" : "FAIL");
+
+    return {cfg.name, med, bw, ok};
 }
 
-/* ════════════════════════════════════════════════════════════════════
- *  Blocked-storage benchmark wrapper
- *
- *  Allocates separate blocked arrays, inits with NUMA first-touch,
- *  computes reference checksum, runs the benchmark, frees arrays.
- * ════════════════════════════════════════════════════════════════════ */
 
-template <int SB>
-static void bench_blocked(int nthreads) {
-    static_assert(M_DIM % SB == 0 && N_DIM % SB == 0,
-                  "M and N must be divisible by SB");
+/* ================================================================ */
+int main(int argc, char** argv)
+{
+    const char* csv_path = (argc > 1) ? argv[1] : nullptr;
 
-    const size_t total = (size_t)M * N;
-    const size_t bytes = total * sizeof(double);
-
-    printf("\n  --- Blocked SB=%d ---\n", SB);
-
-    double *A_blk = (double *)numa_alloc(bytes);
-    double *B_blk_rm = (double *)numa_alloc(bytes);  /* B row-major-in-block */
-    double *B_blk_cm = (double *)numa_alloc(bytes);  /* B col-major-in-block */
-    double *C_blk = (double *)numa_alloc(bytes);
-
-    ft_init_blk_rm<SB>(A_blk, total, M, N, false);
-    ft_init_blk_rm<SB>(B_blk_rm, total, M, N, true);
-    ft_init_blk_cm<SB>(B_blk_cm, total, M, N);
-    bind_and_touch(C_blk, bytes);
-    #pragma omp parallel for schedule(static)
-    for (size_t k = 0; k < total; k++)
-        C_blk[k] = 0.0;
-
-    /* Reference checksum (blk_all_rm) */
-    kernel_blk_all_rm<SB>(A_blk, B_blk_rm, C_blk);
-    double ref_cs = 0.0;
-    #pragma omp parallel for schedule(static) reduction(+:ref_cs)
-    for (size_t k = 0; k < total; k++)
-        ref_cs += C_blk[k];
-
-    bench("blk_all_rm", SB, kernel_blk_all_rm<SB>, A_blk, B_blk_rm, C_blk,
-          ref_cs, nthreads);
-    bench("blk_conflict", SB, kernel_blk_conflict<SB>, A_blk, B_blk_cm, C_blk,
-          ref_cs, nthreads);
-
-    numa_free(A_blk, bytes);
-    numa_free(B_blk_rm, bytes);
-    numa_free(B_blk_cm, bytes);
-    numa_free(C_blk, bytes);
-}
-
-/* ════════════════════════════════════════════════════════════════════ */
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr,
-                "Usage: %s <csv_file> [nthreads]\n"
-                "  csv_file:  output CSV (one row per iteration)\n"
-                "  nthreads:  override OMP_NUM_THREADS (0 = use env)\n",
-                argv[0]);
-        return 1;
-    }
-
-    const char *csv_path = argv[1];
-    int req_threads = (argc > 2) ? atoi(argv[2]) : 0;
-    if (req_threads > 0)
-        omp_set_num_threads(req_threads);
-
-    PAGE_SZ = sysconf(_SC_PAGESIZE);
-    int nthreads;
-    #pragma omp parallel
-    { nthreads = omp_get_num_threads(); }
-
-    const size_t total = (size_t)M * N;
-    const size_t bytes = total * sizeof(double);
-
-    printf("Layout-conflict benchmark (CPU)\n");
-    printf("  M=%d  N=%d  reps=%d  warmup=%d\n", M, N, NREP, NWARMUP);
-    printf("  threads=%d  page=%ld B  NUMA=%s\n",
-           nthreads, PAGE_SZ, HAS_NUMA ? "yes" : "fallback");
+    cudaDeviceProp prop;
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+    printf("Layout-conflict benchmark (GPU: %s)\n", prop.name);
+    printf("  M=%d  N=%d  reps=%d\n", Md, Nd, NREP);
     printf("  A: row-major   B: col-major   C: row-major\n");
-    printf("  cache line = 64 B  ->  %.0f doubles/line\n\n",
-           64.0 / sizeof(double));
+    printf("  Warp=32  L2-line=128B → %d doubles/txn\n\n",
+           128 / (int)sizeof(double));
 
-    /* ── Row-major arrays ──────────────────────────────────────────── */
-    double *A = (double *)numa_alloc(bytes);
-    double *B_cm = (double *)numa_alloc(bytes);
-    double *B_rm = (double *)numa_alloc(bytes);
-    double *C = (double *)numa_alloc(bytes);
+    const size_t total = (size_t)Md * Nd;
+    const size_t bytes = total * sizeof(double);
 
-    printf("Initializing row-major arrays (NUMA bind+touch) ...\n");
-    ft_init_rm(A, total, M, N, false);
-    ft_init_cm(B_cm, total, M, N);
-    ft_init_rm(B_rm, total, M, N, true);
-    bind_and_touch(C, bytes);
-    #pragma omp parallel for schedule(static)
-    for (size_t k = 0; k < total; k++)
-        C[k] = 0.0;
+    double *dA, *dB_cm, *dB_rm, *dC;
+    CUDA_CHECK(cudaMalloc(&dA,    bytes));
+    CUDA_CHECK(cudaMalloc(&dB_cm, bytes));
+    CUDA_CHECK(cudaMalloc(&dB_rm, bytes));
+    CUDA_CHECK(cudaMalloc(&dC,    bytes));
 
-    /* Reference checksums — zero C before each to get single-pass result */
-    #pragma omp parallel for schedule(static)
-    for (size_t k = 0; k < total; k++)
-        C[k] = 0.0;
-    kernel_row_major(A, B_cm, C);
+    double* hC = (double*)malloc(bytes);
+    if (!hC) { fprintf(stderr, "host malloc failed\n"); return 1; }
+
+    /* init all arrays */
+    {
+        int nblk = ((int)total + 255) / 256;
+        init_kernel<<<nblk, 256>>>(dA, dB_cm, dB_rm);
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    /* reference checksum for col-major B */
+    CUDA_CHECK(cudaMemset(dC, 0, bytes));
+    {
+        dim3 blk(32, 8);
+        dim3 grd((Nd + 31) / 32, (Md + 7) / 8);
+        kernel_direct<32, 8, 1, 1><<<grd, blk>>>(dA, dB_cm, dC);
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+    CUDA_CHECK(cudaMemcpy(hC, dC, bytes, cudaMemcpyDeviceToHost));
     double ref_cs = 0.0;
-    #pragma omp parallel for schedule(static) reduction(+:ref_cs)
-    for (size_t k = 0; k < total; k++)
-        ref_cs += C[k];
+    for (size_t k = 0; k < total; k++) ref_cs += hC[k];
 
-    #pragma omp parallel for schedule(static)
-    for (size_t k = 0; k < total; k++)
-        C[k] = 0.0;
-    kernel_all_rowmajor(A, B_rm, C);
+    /* reference checksum for row-major B (control) */
+    CUDA_CHECK(cudaMemset(dC, 0, bytes));
+    {
+        dim3 blk(32, 8);
+        dim3 grd((Nd + 31) / 32, (Md + 7) / 8);
+        kernel_control<32, 8, 1, 1><<<grd, blk>>>(dA, dB_rm, dC);
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+    CUDA_CHECK(cudaMemcpy(hC, dC, bytes, cudaMemcpyDeviceToHost));
     double ref_cs_rm = 0.0;
-    #pragma omp parallel for schedule(static) reduction(+:ref_cs_rm)
-    for (size_t k = 0; k < total; k++)
-        ref_cs_rm += C[k];
+    for (size_t k = 0; k < total; k++) ref_cs_rm += hC[k];
 
-    /* ── Row-major benchmarks ──────────────────────────────────────── */
-    printf("\n=== Naive schedules ===\n");
-    bench("row_major", 0, kernel_row_major, A, B_cm, C, ref_cs, nthreads);
-    bench("col_major", 0, kernel_col_major, A, B_cm, C, ref_cs, nthreads);
-    bench("all_rowmajor", 0, kernel_all_rowmajor, A, B_rm, C, ref_cs_rm, nthreads);
+    /* register and run all configs */
+    register_configs();
 
-    printf("\n=== Tiled schedules (stack-local B transpose) ===\n");
-    bench("tiled", 8, kernel_tiled<8>, A, B_cm, C, ref_cs, nthreads);
-    bench("tiled", 16, kernel_tiled<16>, A, B_cm, C, ref_cs, nthreads);
-    bench("tiled", 32, kernel_tiled<32>, A, B_cm, C, ref_cs, nthreads);
-    bench("tiled", 64, kernel_tiled<64>, A, B_cm, C, ref_cs, nthreads);
-    bench("tiled", 128, kernel_tiled<128>, A, B_cm, C, ref_cs, nthreads);
+    printf("%-64s  %10s  %10s\n", "Kernel", "Median", "BW");
+    printf("%s\n", std::string(96, '-').c_str());
 
-    numa_free(A, bytes);
-    numa_free(B_cm, bytes);
-    numa_free(B_rm, bytes);
-    numa_free(C, bytes);
+    std::vector<Result> results;
+    for (auto& cfg : g_configs)
+        results.push_back(run_bench(cfg, dA, dB_cm, dB_rm, dC, hC, ref_cs, ref_cs_rm));
 
-    /* ── Blocked-storage benchmarks ────────────────────────────────── */
-    printf("\n=== Blocked storage (SB×SB contiguous blocks) ===\n");
-    bench_blocked<8>(nthreads);
-    bench_blocked<16>(nthreads);
-    bench_blocked<32>(nthreads);
-    bench_blocked<64>(nthreads);
-    bench_blocked<128>(nthreads);
-
-    /* ── Write CSV ─────────────────────────────────────────────────── */
-    FILE *fp = fopen(csv_path, "w");
-    if (!fp) {
-        fprintf(stderr, "Cannot open %s\n", csv_path);
-        return 1;
-    }
-    fprintf(fp, "variant,M,N,tile,nthreads,rep,time_s,bw_gbs,checksum,status\n");
-    for (auto &r : g_records)
-        fprintf(fp, "%s,%d,%d,%d,%d,%d,%.9f,%.3f,%.6e,%s\n",
-                r.variant.c_str(), M, N, r.tile, r.nthreads,
-                r.rep, r.time_s, r.bw_gbs, r.checksum, r.status);
-    fclose(fp);
-    printf("\nWrote %zu records to %s\n", g_records.size(), csv_path);
-
-    /* ── Summary ───────────────────────────────────────────────────── */
-    auto median_bw = [&](const char *name, int tile) -> double {
-        std::vector<double> bws;
-        for (auto &r : g_records)
-            if (r.variant == name && r.tile == tile)
-                bws.push_back(r.bw_gbs);
-        if (bws.empty())
-            return 0;
-        std::sort(bws.begin(), bws.end());
-        return bws[bws.size() / 2];
-    };
-
-    double best_tiled = 0;
-    for (int t : {8, 16, 32, 64, 128})
-        best_tiled = std::max(best_tiled, median_bw("tiled", t));
-    double bw_row = median_bw("row_major", 0);
-    double bw_col = median_bw("col_major", 0);
-    double bw_ctrl = median_bw("all_rowmajor", 0);
-
-    double best_blk_all = 0, best_blk_conflict = 0;
-    int best_blk_all_sb = 0, best_blk_conflict_sb = 0;
-    for (int sb : {8, 16, 32, 64, 128}) {
-        double bw;
-        bw = median_bw("blk_all_rm", sb);
-        if (bw > best_blk_all) { best_blk_all = bw; best_blk_all_sb = sb; }
-        bw = median_bw("blk_conflict", sb);
-        if (bw > best_blk_conflict) { best_blk_conflict = bw; best_blk_conflict_sb = sb; }
+    /* ---- summary ---- */
+    double best_tiled = 1e30, best_direct = 1e30, best_direct_T = 1e30;
+    double best_ctrl = 1e30;
+    for (auto& r : results) {
+        if (!r.ok || r.median_ms == 0) continue;
+        if (r.name.find("tiled") != std::string::npos)
+            best_tiled = std::min(best_tiled, r.median_ms);
+        else if (r.name.find("direct_T") != std::string::npos)
+            best_direct_T = std::min(best_direct_T, r.median_ms);
+        else if (r.name.find("direct") != std::string::npos)
+            best_direct = std::min(best_direct, r.median_ms);
+        else if (r.name.find("all_rowmajor") != std::string::npos)
+            best_ctrl = std::min(best_ctrl, r.median_ms);
     }
 
-    double B_eff = 64.0 / sizeof(double);
-    printf("\n=== Summary ===\n");
-    printf("  Row-major schedules:\n");
-    printf("    best tiled:   %7.1f GB/s\n", best_tiled);
-    printf("    row_major:    %7.1f GB/s  (%.1fx vs tiled)\n",
-           bw_row, best_tiled / std::max(bw_row, 0.1));
-    printf("    col_major:    %7.1f GB/s  (%.1fx vs tiled)\n",
-           bw_col, best_tiled / std::max(bw_col, 0.1));
-    printf("    all_rowmajor: %7.1f GB/s  (peak control)\n", bw_ctrl);
-    printf("  Blocked storage:\n");
-    printf("    blk_all_rm:   %7.1f GB/s  SB=%d  (%.1f%% of all_rowmajor)\n",
-           best_blk_all, best_blk_all_sb,
-           100.0 * best_blk_all / std::max(bw_ctrl, 0.1));
-    printf("    blk_conflict: %7.1f GB/s  SB=%d  (%.1f%% of blk_all_rm)\n",
-           best_blk_conflict, best_blk_conflict_sb,
-           100.0 * best_blk_conflict / std::max(best_blk_all, 0.1));
-    printf("  Conflict cost absorbed by blocking:\n");
-    printf("    row_major conflict:  %.1fx slowdown vs all_rowmajor\n",
-           bw_ctrl / std::max(bw_row, 0.1));
-    printf("    blocked conflict:    %.1fx slowdown vs blk_all_rm\n",
-           best_blk_all / std::max(best_blk_conflict, 0.1));
+    printf("\n=== Summary (best of each category) ===\n");
+    if (best_tiled < 1e30)
+        printf("  Best tiled+smem : %.3f ms  (baseline)\n", best_tiled);
+    if (best_direct < 1e30)
+        printf("  Best direct     : %.3f ms  (%.1fx vs tiled)  — B uncoalesced\n",
+               best_direct, best_direct / best_tiled);
+    if (best_direct_T < 1e30)
+        printf("  Best direct_T   : %.3f ms  (%.1fx vs tiled)  — A,C uncoalesced\n",
+               best_direct_T, best_direct_T / best_tiled);
+    if (best_ctrl < 1e30)
+        printf("  Best control    : %.3f ms  (%.2fx vs tiled)  — all row-major\n",
+               best_ctrl, best_ctrl / best_tiled);
 
-    printf("\n=== Model (B_eff=%.0f) ===\n", B_eff);
-    printf("  row_major predicted:  %.1fx  (cost %g vs 3)\n",
-           (2 + B_eff) / 3.0, 2 + B_eff);
-    printf("  col_major predicted:  %.1fx  (cost %g vs 3)\n",
-           (1 + 2 * B_eff) / 3.0, 1 + 2 * B_eff);
+    const double data_bytes = (double)total * sizeof(double) * 4.0;  /* 2R + 1RW (C+=) */
+    printf("\n  Peak BW (best control): %.1f GB/s\n",
+           data_bytes / (best_ctrl * 1e-3) / 1e9);
+    printf("  Tiled recovery:         %.1f GB/s\n",
+           data_bytes / (best_tiled * 1e-3) / 1e9);
 
-    if (g_flush_buf)
-        numa_free(g_flush_buf, FLUSH_N * sizeof(double));
+    /* CSV dump — one row per iteration for violin plots */
+    if (csv_path) {
+        FILE* fp = fopen(csv_path, "w");
+        if (fp) {
+            fprintf(fp, "kernel,M,N,tile_rows,tile_cols,rep,time_ms,bw_gbs,checksum,status\n");
+            for (auto& ir : g_iter_records)
+                fprintf(fp, "\"%s\",%d,%d,%d,%d,%d,%.6f,%.3f,%.6e,%s\n",
+                        ir.kernel.c_str(), Md, Nd, ir.tile_rows, ir.tile_cols,
+                        ir.rep, (double)ir.time_ms, ir.bw_gbs, ir.checksum,
+                        ir.ok ? "PASS" : "FAIL");
+            fclose(fp);
+            printf("\nWrote %zu records to %s\n", g_iter_records.size(), csv_path);
+        }
+    }
 
+    CUDA_CHECK(cudaFree(dA));
+    CUDA_CHECK(cudaFree(dB_cm));
+    CUDA_CHECK(cudaFree(dB_rm));
+    CUDA_CHECK(cudaFree(dC));
+    free(hC);
     return 0;
 }
