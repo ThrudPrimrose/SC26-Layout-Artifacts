@@ -1,0 +1,626 @@
+Running on nid002920
+Threads: 96
+═══ build ═══
+[o/4] conj_prof.cpp    (CPU profiling)
+[1/4] conjugate_inplace.cpp    (CPU in-place)
+[2/4] conjugate.cpp        (CPU out-of-place)
+[3/4] conjugate_inplace_hip.cpp    (GPU in-place)
+[4/4] conjugate_hip.cpp        (GPU out-of-place)
+
+═══ run ═══
+branch-instructions
+branch-misses
+cache-misses
+cache-references
+cpu-cycles
+instructions
+stalled-cycles-frontend
+  dTLB-loads OR cpu/dTLB-loads/
+  dTLB-load-misses OR cpu/dTLB-load-misses/
+  iTLB-loads OR cpu/iTLB-loads/
+  iTLB-load-misses OR cpu/iTLB-load-misses/
+  bp_l1_tlb_fetch_hit.all
+       [Instruction fetches that hit in the L1 ITLB for all page sizes]
+  bp_l1_tlb_fetch_hit.if1g
+       [Instruction fetches that hit in the L1 ITLB for 1G pages]
+  bp_l1_tlb_fetch_hit.if2m
+       [Instruction fetches that hit in the L1 ITLB for 2M pages]
+  bp_l1_tlb_fetch_hit.if4k
+       [Instruction fetches that hit in the L1 ITLB for 4k or coalesced pages.
+  bp_l1_tlb_miss_l2_tlb_hit
+       [Instruction fetches that miss in the L1 ITLB but hit in the L2 ITLB]
+  bp_l1_tlb_miss_l2_tlb_miss.all
+       [Instruction fetches that miss in both the L1 and L2 ITLBs (page-table
+  bp_l1_tlb_miss_l2_tlb_miss.coalesced_4k
+       [Instruction fetches that miss in both the L1 and L2 ITLBs (page-table
+  bp_l1_tlb_miss_l2_tlb_miss.if1g
+       [Instruction fetches that miss in both the L1 and L2 ITLBs (page-table
+  bp_l1_tlb_miss_l2_tlb_miss.if2m
+       [Instruction fetches that miss in both the L1 and L2 ITLBs (page-table
+  bp_l1_tlb_miss_l2_tlb_miss.if4k
+       [Instruction fetches that miss in both the L1 and L2 ITLBs (page-table
+  ls_l1_d_tlb_miss.all
+       [L1 DTLB misses for all page sizes]
+  ls_l1_d_tlb_miss.all_l2_miss
+       [L1 DTLB misses with L2 DTLB misses (page-table walks are requested)
+  ls_l1_d_tlb_miss.tlb_reload_1g_l2_hit
+       [L1 DTLB misses with L2 DTLB hits for 1G pages]
+  ls_l1_d_tlb_miss.tlb_reload_1g_l2_miss
+       [L1 DTLB misses with L2 DTLB misses (page-table walks are requested)
+  ls_l1_d_tlb_miss.tlb_reload_2m_l2_hit
+       [L1 DTLB misses with L2 DTLB hits for 2M pages]
+  ls_l1_d_tlb_miss.tlb_reload_2m_l2_miss
+       [L1 DTLB misses with L2 DTLB misses (page-table walks are requested)
+  ls_l1_d_tlb_miss.tlb_reload_4k_l2_hit
+       [L1 DTLB misses with L2 DTLB hits for 4k pages]
+  ls_l1_d_tlb_miss.tlb_reload_4k_l2_miss
+       [L1 DTLB misses with L2 DTLB misses (page-table walks are requested)
+  ls_l1_d_tlb_miss.tlb_reload_coalesced_page_hit
+       [L1 DTLB misses with L2 DTLB hits for coalesced pages. A coalesced page
+  ls_l1_d_tlb_miss.tlb_reload_coalesced_page_miss
+       [L1 DTLB misses with L2 DTLB misses (page-table walks are requested)
+  ls_tlb_flush.all
+       [All TLB Flushes]
+        bottleneck in the frontend (such as instruction cache or TLB misses)]
+        bottleneck in the frontend (such as instruction cache or TLB misses)]
+tlb:
+  all_tlbs_flushed
+       [All TLBs flushed]
+  l1_dtlb_misses
+       [L1 data TLB misses]
+  l1_itlb_misses
+       [L1 instruction TLB misses]
+  l2_dtlb_misses
+       [L2 data TLB misses and data page walks]
+  l2_itlb_misses
+       [L2 instruction TLB misses and instruction page walks]
+  cache-misses                                       [Hardware event]
+  cache-references                                   [Hardware event]
+  L1-dcache-loads OR cpu/L1-dcache-loads/
+  L1-dcache-load-misses OR cpu/L1-dcache-load-misses/
+  L1-dcache-prefetches OR cpu/L1-dcache-prefetches/
+  L1-icache-loads OR cpu/L1-icache-loads/
+  L1-icache-load-misses OR cpu/L1-icache-load-misses/
+  cache-misses OR cpu/cache-misses/                  [Kernel PMU event]
+  cache-references OR cpu/cache-references/          [Kernel PMU event]
+cache:
+cache:
+  ic_cache_fill_l2
+       [Instruction cache lines (64 bytes) fulfilled from the L2 cache]
+  ic_cache_fill_sys
+       [Instruction cache lines (64 bytes) fulfilled from system memory or
+        another cache]
+  ic_tag_hit_miss.all_instruction_cache_accesses
+       [Instruction cache accesses of all types]
+  ic_tag_hit_miss.instruction_cache_hit
+       [Instruction cache hits]
+  ic_tag_hit_miss.instruction_cache_miss
+       [Instruction cache misses]
+  l2_cache_req_stat.all
+       [Core to L2 cache requests (not including L2 prefetch) for data and
+        instruction cache access]
+  l2_cache_req_stat.dc_access_in_l2
+       [Core to L2 cache requests (not including L2 prefetch) for data cache
+  l2_cache_req_stat.dc_hit_in_l2
+       [Core to L2 cache requests (not including L2 prefetch) for data cache
+  l2_cache_req_stat.ic_access_in_l2
+       [Core to L2 cache requests (not including L2 prefetch) for instruction
+        cache access]
+  l2_cache_req_stat.ic_dc_hit_in_l2
+       [Core to L2 cache requests (not including L2 prefetch) for data and
+        instruction cache hits]
+  l2_cache_req_stat.ic_dc_miss_in_l2
+       [Core to L2 cache requests (not including L2 prefetch) for data and
+        instruction cache misses]
+  l2_cache_req_stat.ic_fill_hit_s
+       [Core to L2 cache requests (not including L2 prefetch) with status:
+        instruction cache hit non-modifiable line in L2]
+  l2_cache_req_stat.ic_fill_hit_x
+       [Core to L2 cache requests (not including L2 prefetch) with status:
+        instruction cache hit modifiable line in L2]
+  l2_cache_req_stat.ic_fill_miss
+       [Core to L2 cache requests (not including L2 prefetch) with status:
+        instruction cache request miss in L2]
+  l2_cache_req_stat.ic_hit_in_l2
+       [Core to L2 cache requests (not including L2 prefetch) for instruction
+        cache hits]
+  l2_cache_req_stat.ls_rd_blk_c
+       [Core to L2 cache requests (not including L2 prefetch) with status:
+        data cache request miss in L2]
+  l2_cache_req_stat.ls_rd_blk_cs
+       [Core to L2 cache requests (not including L2 prefetch) with status:
+        data cache shared read hit in L2]
+  l2_cache_req_stat.ls_rd_blk_l_hit_s
+       [Core to L2 cache requests (not including L2 prefetch) with status:
+        data cache read hit non-modifiable line in L2]
+  l2_cache_req_stat.ls_rd_blk_l_hit_x
+       [Core to L2 cache requests (not including L2 prefetch) with status:
+        data cache read hit modifiable line in L2]
+  l2_cache_req_stat.ls_rd_blk_x
+       [Core to L2 cache requests (not including L2 prefetch) with status:
+        data cache store or state change hit in L2]
+       [L2 prefetches accepted by the L2 pipeline which hit in the L2 cache of
+       [L2 prefetches accepted by the L2 pipeline which hit in the L2 cache of
+        type L1Region (fetch additional lines into L1 cache when the data
+       [L2 prefetches accepted by the L2 pipeline which hit in the L2 cache of
+        type L1Stream (fetch additional sequential lines into L1 cache)]
+       [L2 prefetches accepted by the L2 pipeline which hit in the L2 cache of
+        type L1Stride (fetch additional lines into L1 cache when each access
+       [L2 prefetches accepted by the L2 pipeline which hit in the L2 cache of
+        cache)]
+       [L2 prefetches accepted by the L2 pipeline which hit in the L2 cache of
+        type L2NextLine (fetch the next line into L2 cache)]
+       [L2 prefetches accepted by the L2 pipeline which hit in the L2 cache of
+        type L2Stream (fetch additional sequential lines into L2 cache)]
+       [L2 prefetches accepted by the L2 pipeline which hit in the L2 cache of
+        type L2Stride (fetch additional lines into L2 cache when each access
+       [L2 prefetches accepted by the L2 pipeline which hit in the L2 cache of
+        type L2UpDown (fetch the next or previous line into L2 cache for all
+       [L2 prefetches accepted by the L2 pipeline which miss the L2 cache and
+        hit in the L3 cache cache of all types]
+       [L2 prefetches accepted by the L2 pipeline which miss the L2 cache and
+        hit in the L3 cache of type L1Region (fetch additional lines into L1
+        cache when the data access for a given instruction tends to be
+       [L2 prefetches accepted by the L2 pipeline which miss the L2 cache and
+        hit in the L3 cache of type L1Stream (fetch additional sequential
+        lines into L1 cache)]
+       [L2 prefetches accepted by the L2 pipeline which miss the L2 cache and
+        hit in the L3 cache of type L1Stride (fetch additional lines into L1
+        cache when each access is a constant distance from the previous)]
+       [L2 prefetches accepted by the L2 pipeline which miss the L2 cache and
+        hit in the L3 cache of type L2Burst (aggressively fetch additional
+        sequential lines into L2 cache)]
+       [L2 prefetches accepted by the L2 pipeline which miss the L2 cache and
+        hit in the L3 cache of type L2NextLine (fetch the next line into L2
+        cache)]
+       [L2 prefetches accepted by the L2 pipeline which miss the L2 cache and
+        hit in the L3 cache of type L2Stream (fetch additional sequential
+        lines into L2 cache)]
+       [L2 prefetches accepted by the L2 pipeline which miss the L2 cache and
+        hit in the L3 cache of type L2Stride (fetch additional lines into L2
+        cache when each access is a constant distance from the previous)]
+       [L2 prefetches accepted by the L2 pipeline which miss the L2 cache and
+        hit in the L3 cache of type L2UpDown (fetch the next or previous line
+        into L2 cache for all memory accesses)]
+        caches of all types]
+        caches of type L1Region (fetch additional lines into L1 cache when the
+        caches of type L1Stream (fetch additional sequential lines into L1
+        cache)]
+        caches of type L1Stride (fetch additional lines into L1 cache when
+        caches of type L2Burst (aggressively fetch additional sequential lines
+        into L2 cache)]
+        caches of type L2NextLine (fetch the next line into L2 cache)]
+        caches of type L2Stream (fetch additional sequential lines into L2
+        cache)]
+        caches of type L2Stride (fetch additional lines into L2 cache when
+        caches of type L2UpDown (fetch the next or previous line into L2 cache
+       [L2 cache requests of all types]
+       [L2 cache requests of common types from L1 data cache (including
+       [L2 cache requests of common types not including prefetches]
+  l2_request_g1.cacheable_ic_read
+       [L2 cache requests: instruction cache reads]
+       [L2 cache requests: data cache state change to writable, check L2 for
+       [L2 cache requests of non-cacheable type (non-cached data and
+       [L2 cache requests: from hardware prefetchers to prefetch directly into
+       [L2 cache requests: data cache shared reads]
+       [L2 cache requests: prefetch directly into L2]
+       [L2 cache requests: data cache reads including hardware and software
+       [L2 cache requests: data cache stores]
+       [In-flight L1 data cache misses i.e. Miss Address Buffer (MAB)
+       [Any data cache fills from all types of data sources]
+       [Any data cache fills from either DRAM or MMIO in any NUMA node (same
+       [Any data cache fills from extension memory]
+       [Any data cache fills from either DRAM or MMIO in any NUMA node (same
+       [Any data cache fills from either DRAM or MMIO in a different NUMA node
+       [Any data cache fills from either DRAM or MMIO in the same NUMA node]
+       [Any data cache fills from either cache of another CCX, DRAM or MMIO
+  ls_any_fills_from_sys.far_cache
+       [Any data cache fills from cache of another CCX when the address was in
+       [Any data cache fills from local L2 cache or L3 cache or different L2
+        cache in the same CCX]
+       [Any data cache fills from L3 cache or different L2 cache in the same
+       [Any data cache fills from local L2 cache]
+  ls_any_fills_from_sys.near_cache
+       [Any data cache fills from cache of another CCX when the address was in
+  ls_any_fills_from_sys.remote_cache
+       [Any data cache fills from cache of another CCX when the address was in
+       [Demand data cache fills from all types of data sources]
+       [Demand data cache fills from extension memory]
+       [Demand data cache fills from either DRAM or MMIO in a different NUMA
+       [Demand data cache fills from either DRAM or MMIO in the same NUMA node]
+  ls_dmnd_fills_from_sys.far_cache
+       [Demand data cache fills from cache of another CCX when the address was
+       [Demand data cache fills from L3 cache or different L2 cache in the
+       [Demand data cache fills from local L2 cache]
+  ls_dmnd_fills_from_sys.near_cache
+       [Demand data cache fills from cache of another CCX when the address was
+       [Hardware prefetch data cache fills from all types of data sources]
+       [Hardware prefetch data cache fills from extension memory]
+       [Hardware prefetch data cache fills from either DRAM or MMIO in a
+       [Hardware prefetch data cache fills from either DRAM or MMIO in the
+  ls_hw_pf_dc_fills.far_cache
+       [Hardware prefetch data cache fills from cache of another CCX when the
+       [Hardware prefetch data cache fills from L3 cache or different L2 cache
+       [Hardware prefetch data cache fills from local L2 cache]
+  ls_hw_pf_dc_fills.near_cache
+       [Hardware prefetch data cache fills from cache of another CCX when the
+        core as the PREFETCH instruction saw a data cache hit]
+        PrefetchT0 (move data to all cache levels), T1 (move data to all cache
+        levels except L1) and T2 (move data to all cache levels except L1 and
+        PrefetchNTA (move data with minimum cache pollution i.e. non-temporal
+        PrefetchW (move data to L1 cache and mark it modifiable)]
+       [Software prefetch data cache fills from all types of data sources]
+       [Software prefetch data cache fills from extension memory]
+       [Software prefetch data cache fills from either DRAM or MMIO in a
+       [Software prefetch data cache fills from either DRAM or MMIO in the
+  ls_sw_pf_dc_fills.far_cache
+       [Software prefetch data cache fills from cache of another CCX in a
+       [Software prefetch data cache fills from L3 cache or different L2 cache
+       [Software prefetch data cache fills from local L2 cache]
+  ls_sw_pf_dc_fills.near_cache
+       [Software prefetch data cache fills from cache of another CCX in the
+  op_cache_hit_miss.all_op_cache_accesses
+       [Op cache accesses of all types]
+  op_cache_hit_miss.op_cache_hit
+       [Op cache hits]
+  op_cache_hit_miss.op_cache_miss
+       [Op cache misses]
+       [L3 cache requests for all coherent accesses. Unit: amd_l3]
+       [L3 cache hits. Unit: amd_l3]
+       [L3 cache misses. Unit: amd_l3]
+  l3_xi_sampled_latency.far_cache
+       [Average sampled latency when data is sourced from another CCX's cache
+  l3_xi_sampled_latency.near_cache
+       [Average sampled latency when data is sourced from another CCX's cache
+       [L3 cache fill requests sourced from all data sources. Unit: amd_l3]
+       [L3 cache fill requests sourced from DRAM in a different NUMA node.
+       [L3 cache fill requests sourced from DRAM in the same NUMA node. Unit:
+       [L3 cache fill requests sourced from extension memory (CXL) in a
+       [L3 cache fill requests sourced from extension memory (CXL) in the same
+  l3_xi_sampled_latency_requests.far_cache
+       [L3 cache fill requests sourced from another CCX's cache when the
+  l3_xi_sampled_latency_requests.near_cache
+       [L3 cache fill requests sourced from another CCX's cache when the
+       [64B misaligned (cacheline crossing) loads]
+       [Non-cacheable store commits cancelled due to the non-cacheable commit
+       [Ops fetched from instruction cache and dispatched]
+  de_src_op_disp.op_cache
+       [Ops fetched from op cache and dispatched]
+  all_data_cache_accesses
+       [All data cache accesses]
+       [Instruction cache miss ratio for all fetches. An instruction cache
+  op_cache_fetch_miss_ratio
+       [Op cache miss ratio for all fetches]
+        bottleneck in the frontend (such as decode or op cache fetch
+        bottleneck in the frontend (such as instruction cache or TLB misses)]
+        bottleneck in the frontend (such as decode or op cache fetch
+        bottleneck in the frontend (such as instruction cache or TLB misses)]
+l1_dcache:
+  all_l1_data_cache_fills
+       [All L1 data cache fills]
+  l1_data_cache_fills_from_different_ccx
+       [L1 data cache fills from another CCX cache in any NUMA node]
+  l1_data_cache_fills_from_memory
+       [L1 data cache fills from DRAM or MMIO in any NUMA node]
+  l1_data_cache_fills_from_remote_node
+       [L1 data cache fills from a different NUMA node]
+  l1_data_cache_fills_from_same_ccx
+       [L1 data cache fills from within the same CCX]
+  l1_demand_data_cache_fills_from_far_cache
+       [L1 demand data cache fills from another CCX cache in a different NUMA
+  l1_demand_data_cache_fills_from_far_memory
+       [L1 demand data cache fills from DRAM or MMIO in a different NUMA node]
+  l1_demand_data_cache_fills_from_local_l2
+       [L1 demand data cache fills from local L2 cache]
+  l1_demand_data_cache_fills_from_near_cache
+       [L1 demand data cache fills from another CCX cache in the same NUMA
+  l1_demand_data_cache_fills_from_near_memory
+       [L1 demand data cache fills from DRAM or MMIO in the same NUMA node]
+  l1_demand_data_cache_fills_from_same_ccx
+       [L1 demand data cache fills from within the same CCX]
+l2_cache:
+  all_l2_cache_accesses
+       [All L2 cache accesses]
+  all_l2_cache_hits
+       [All L2 cache hits]
+  all_l2_cache_misses
+       [All L2 cache misses]
+  l2_cache_accesses_from_l1_dc_misses
+       [L2 cache accesses from L1 data cache misses (including prefetch)]
+  l2_cache_accesses_from_l1_ic_misses
+       [L2 cache accesses from L1 instruction cache misses (including
+  l2_cache_accesses_from_l2_hwpf
+       [L2 cache accesses from L2 cache hardware prefetcher]
+  l2_cache_hits_from_l1_dc_miss
+       [L2 cache hits from L1 data cache misses]
+  l2_cache_hits_from_l1_ic_miss
+       [L2 cache hits from L1 instruction cache misses]
+  l2_cache_hits_from_l2_hwpf
+       [L2 cache hits from L2 cache hardware prefetcher]
+  l2_cache_misses_from_l1_dc_miss
+       [L2 cache misses from L1 data cache misses]
+  l2_cache_misses_from_l1_ic_miss
+       [L2 cache misses from L1 instruction cache misses]
+  l2_cache_misses_from_l2_hwpf
+       [L2 cache misses from L2 cache hardware prefetcher]
+l3_cache:
+  l3_cache_accesses
+       [L3 cache accesses]
+       [L3 misses (including cacheline state change requests)]
+  ex_tagged_ibs_ops.ibs_tagged_ops
+       [Ops tagged by IBS]
+  ex_tagged_ibs_ops.ibs_tagged_ops_ret
+       [Ops tagged by IBS that retired]
+--- CPU profiling ---
+Conjugate in-place profiling (CPU)
+  TOTAL_DOUBLES=256M  runs=50  warmup=5  threads=96  page=4096
+  NUMA=yes
+
+  PMC: ACTIVE — 11 events × 96 threads
+  Available events: cycles instructions cache-refs cache-misses L1d-load-miss dTLB-load-miss amd:L1dTLB-miss-all amd:L1dTLB-miss-4K amd:L1dTLB-miss-coalesced amd:L1dTLB-miss-2M amd:L1dTLB-miss-1G
+
+── P=3 complex pairs  N_base=44739072  total=2.1 GB ──
+  P=3  AoS              582.0 GB/s  [  572.8..  597.3]
+  P=3  SoA             1068.4 GB/s  [ 1030.4.. 1090.6]
+  P=3  AoSoA-8          686.1 GB/s  [  662.8..  704.9]
+  P=3  AoSoA-16         769.5 GB/s  [  732.9..  794.4]
+  P=3  AoSoA-32         698.0 GB/s  [  619.1..  733.9]
+  P=3  AoSoA-64         743.2 GB/s  [  598.9..  816.2]
+  P=3  AoSoA-128        780.5 GB/s  [  681.7..  820.3]
+  P=3  AoSoA-256        723.4 GB/s  [  646.9..  752.1]
+  P=3  AoSoA-512        792.8 GB/s  [  752.6..  815.9]
+
+── P=6 complex pairs  N_base=22369280  total=2.1 GB ──
+  P=6  AoS              579.9 GB/s  [  536.3..  597.3]
+  P=6  SoA             1033.9 GB/s  [  785.3.. 1080.8]
+  P=6  AoSoA-8          698.8 GB/s  [  678.6..  716.9]
+  P=6  AoSoA-16         766.4 GB/s  [  728.4..  797.2]
+  P=6  AoSoA-32         731.2 GB/s  [  587.9..  776.8]
+  P=6  AoSoA-64         731.3 GB/s  [  686.5..  815.9]
+  P=6  AoSoA-128        788.4 GB/s  [  710.0..  846.4]
+  P=6  AoSoA-256        712.5 GB/s  [  672.6..  737.9]
+  P=6  AoSoA-512        795.5 GB/s  [  754.9..  818.8]
+
+── P=9 complex pairs  N_base=14913024  total=2.1 GB ──
+  P=9  AoS              578.0 GB/s  [  559.5..  590.9]
+  P=9  SoA              665.6 GB/s  [  440.2..  680.9]
+  P=9  AoSoA-8          702.5 GB/s  [  674.4..  719.4]
+  P=9  AoSoA-16         772.8 GB/s  [  737.7..  801.0]
+  P=9  AoSoA-32         712.8 GB/s  [  590.4..  772.2]
+  P=9  AoSoA-64         736.9 GB/s  [  678.9..  819.1]
+  P=9  AoSoA-128        781.8 GB/s  [  643.5..  817.2]
+  P=9  AoSoA-256        713.5 GB/s  [  648.8..  751.2]
+  P=9  AoSoA-512        786.3 GB/s  [  737.7..  827.6]
+
+── P=12 complex pairs  N_base=11184640  total=2.1 GB ──
+  P=12 AoS              578.9 GB/s  [  569.8..  595.2]
+  P=12 SoA              317.8 GB/s  [  313.8..  320.5]
+  P=12 AoSoA-8          705.6 GB/s  [  693.8..  720.6]
+  P=12 AoSoA-16         770.5 GB/s  [  738.2..  795.4]
+  P=12 AoSoA-32         724.1 GB/s  [  591.2..  775.5]
+  P=12 AoSoA-64         736.0 GB/s  [  670.1..  842.1]
+  P=12 AoSoA-128        785.5 GB/s  [  692.5..  822.9]
+  P=12 AoSoA-256        714.6 GB/s  [  634.1..  734.8]
+  P=12 AoSoA-512        796.1 GB/s  [  761.5..  817.9]
+
+── P=15 complex pairs  N_base=8947712  total=2.1 GB ──
+  P=15 AoS              578.8 GB/s  [  570.7..  592.5]
+  P=15 SoA              245.1 GB/s  [  241.8..  247.6]
+  P=15 AoSoA-8          715.0 GB/s  [  697.0..  730.6]
+  P=15 AoSoA-16         764.4 GB/s  [  631.7..  796.2]
+  P=15 AoSoA-32         745.4 GB/s  [  580.7..  778.8]
+  P=15 AoSoA-64         735.1 GB/s  [  593.5..  820.6]
+  P=15 AoSoA-128        787.1 GB/s  [  699.4..  829.4]
+  P=15 AoSoA-256        718.0 GB/s  [  684.9..  816.6]
+  P=15 AoSoA-512        790.5 GB/s  [  741.1..  824.3]
+
+── P=18 complex pairs  N_base=7456256  total=2.1 GB ──
+  P=18 AoS              577.1 GB/s  [  568.8..  596.0]
+  P=18 SoA              194.9 GB/s  [  178.2..  197.3]
+  P=18 AoSoA-8          666.9 GB/s  [  655.3..  687.5]
+  P=18 AoSoA-16         776.9 GB/s  [  741.4..  793.5]
+  P=18 AoSoA-32         744.9 GB/s  [  590.9..  777.9]
+  P=18 AoSoA-64         776.5 GB/s  [  686.6..  816.8]
+  P=18 AoSoA-128        789.5 GB/s  [  708.8..  829.0]
+  P=18 AoSoA-256        721.9 GB/s  [  612.8..  835.9]
+  P=18 AoSoA-512        795.4 GB/s  [  761.0..  909.8]
+
+── P=21 complex pairs  N_base=6391296  total=2.1 GB ──
+  P=21 AoS              579.2 GB/s  [  565.4..  598.1]
+  P=21 SoA              135.1 GB/s  [  133.0..  138.5]
+  P=21 AoSoA-8          669.3 GB/s  [  584.5..  691.0]
+  P=21 AoSoA-16         770.2 GB/s  [  741.0..  790.3]
+  P=21 AoSoA-32         731.3 GB/s  [  593.1..  777.9]
+  P=21 AoSoA-64         758.8 GB/s  [  686.0..  816.9]
+  P=21 AoSoA-128        773.4 GB/s  [  646.1..  873.5]
+  P=21 AoSoA-256        721.0 GB/s  [  638.9..  766.7]
+  P=21 AoSoA-512        794.1 GB/s  [  741.6..  882.3]
+
+══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  PMC Summary  (per-element = sum_threads / (N_base × RUNS),  RUNS=50  threads=96)
+══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+   P layout            GB/s            cycles      instructions        cache-refs      cache-misses     L1d-load-miss    dTLB-load-miss  amd:L1dTLB-miss-all  amd:L1dTLB-miss-4K  amd:L1dTLB-miss-coalesced  amd:L1dTLB-miss-2M  amd:L1dTLB-miss-1G
+  -- -------------- -------  ----------------  ----------------  ----------------  ----------------  ----------------  ----------------  ----------------  ----------------  ----------------  ----------------  ----------------
+   3 AoS              582.0           35.9394            8.9770            0.9255            0.0007            0.4032            0.0003            0.0004            0.0000            0.0000            0.0000            0.0000
+   3 SoA             1068.4           27.8743            3.0360            0.5514            0.0026            0.2267            0.0012            0.0012            0.0000            0.0000            0.0000            0.0000
+   3 AoSoA-8          686.1           33.1018            3.0451            0.6511            0.0343            0.2088            0.0004            0.0004            0.0000            0.0000            0.0000            0.0000
+   3 AoSoA-16         769.5           32.4062            6.1789            0.4942            0.1231            0.2023            0.0003            0.0003            0.0000            0.0000            0.0000            0.0000
+   3 AoSoA-32         698.0           32.9683            4.4807            0.4699            0.1378            0.2286            0.0003            0.0003            0.0000            0.0000            0.0000            0.0000
+   3 AoSoA-64         743.2           32.9002            3.7525            0.3873            0.1459            0.2245            0.0003            0.0003            0.0000            0.0000            0.0000            0.0000
+   3 AoSoA-128        780.5           32.1174            3.2775            0.4016            0.1379            0.2268            0.0003            0.0004            0.0000            0.0000            0.0000            0.0000
+   3 AoSoA-256        723.4           32.6614            3.8761            0.5138            0.1071            0.2127            0.0004            0.0004            0.0000            0.0000            0.0000            0.0000
+   3 AoSoA-512        792.8           31.5132            3.6822            0.4849            0.0705            0.2227            0.0003            0.0003            0.0000            0.0000            0.0000            0.0000
+
+   6 AoS              579.9           71.9111           16.1108            1.8643            0.0014            0.8188            0.0006            0.0007            0.0000            0.0000            0.0000            0.0000
+   6 SoA             1033.9           58.0831           16.1104            0.9614            0.0022            0.4166            0.0042            0.0043            0.0001            0.0000            0.0000            0.0000
+   6 AoSoA-8          698.8           67.1779            5.9100            1.2068            0.0513            0.4073            0.0005            0.0005            0.0000            0.0000            0.0000            0.0000
+   6 AoSoA-16         766.4           63.9541           11.9235            0.9945            0.2612            0.4129            0.0005            0.0005            0.0000            0.0000            0.0000            0.0000
+   6 AoSoA-32         731.2           66.6350            8.8625            0.6584            0.3449            0.4357            0.0007            0.0008            0.0000            0.0000            0.0000            0.0000
+   6 AoSoA-64         731.3           64.9672            7.3694            0.7704            0.2939            0.4598            0.0007            0.0007            0.0001            0.0000            0.0000            0.0000
+   6 AoSoA-128        788.4           63.3930            6.4197            0.7710            0.2805            0.4570            0.0007            0.0007            0.0001            0.0000            0.0000            0.0000
+   6 AoSoA-256        712.5           65.6894            7.7917            1.0110            0.2160            0.4236            0.0007            0.0007            0.0000            0.0000            0.0000            0.0000
+   6 AoSoA-512        795.5           63.0799            7.4349            0.9729            0.1427            0.4450            0.0005            0.0005            0.0000            0.0000            0.0000            0.0000
+
+   9 AoS              578.0          108.1337           23.3636            2.8311            0.0024            1.2334            0.0010            0.0011            0.0001            0.0000            0.0000            0.0000
+   9 SoA              665.6          102.4263           23.4703            4.0087            0.0186            2.3743            0.0062            0.0063            0.0002            0.0000            0.0000            0.0000
+   9 AoSoA-8          702.5           99.9200            8.4393            1.9753            0.0827            0.6163            0.0009            0.0010            0.0001            0.0000            0.0000            0.0000
+   9 AoSoA-16         772.8           96.2639           17.7489            1.4746            0.3765            0.6138            0.0010            0.0010            0.0001            0.0000            0.0000            0.0000
+   9 AoSoA-32         712.8           98.9644           13.1999            0.9933            0.5332            0.6587            0.0010            0.0011            0.0001            0.0000            0.0000            0.0000
+   9 AoSoA-64         736.9           97.7404           10.9974            1.1484            0.4429            0.6810            0.0010            0.0011            0.0001            0.0000            0.0000            0.0000
+   9 AoSoA-128        781.8           95.6513            9.6293            1.2049            0.4107            0.6888            0.0009            0.0010            0.0001            0.0000            0.0000            0.0000
+   9 AoSoA-256        713.5           98.5960           11.5461            1.5361            0.3017            0.6424            0.0011            0.0012            0.0001            0.0000            0.0000            0.0000
+   9 AoSoA-512        786.3           95.2412           11.1595            1.4254            0.2242            0.6602            0.0008            0.0009            0.0001            0.0000            0.0000            0.0000
+
+  12 AoS              578.9          143.9983           30.7153            3.7440            0.0032            1.6372            0.0013            0.0014            0.0001            0.0000            0.0000            0.0000
+  12 SoA              317.8          196.0770           30.5064           14.6992            0.0272            9.7820            0.0076            0.0079            0.0002            0.0000            0.0000            0.0000
+  12 AoSoA-8          705.6          132.8198           11.2275            2.3499            0.1260            0.8204            0.0014            0.0015            0.0001            0.0000            0.0000            0.0000
+  12 AoSoA-16         770.5          129.0929           23.6223            1.9096            0.4788            0.8214            0.0014            0.0015            0.0001            0.0000            0.0000            0.0000
+  12 AoSoA-32         724.1          132.2905           17.5227            1.2909            0.7000            0.8741            0.0014            0.0015            0.0001            0.0000            0.0000            0.0000
+  12 AoSoA-64         736.0          128.7263           14.4731            1.5156            0.6014            0.9184            0.0007            0.0008            0.0001            0.0000            0.0000            0.0000
+  12 AoSoA-128        785.5          127.1837           12.8552            1.6183            0.5505            0.9114            0.0014            0.0015            0.0001            0.0000            0.0000            0.0000
+  12 AoSoA-256        714.6          131.9217           15.3850            2.0942            0.4064            0.8529            0.0014            0.0015            0.0001            0.0000            0.0000            0.0000
+  12 AoSoA-512        796.1          126.7629           14.8571            1.9144            0.2930            0.8833            0.0010            0.0011            0.0001            0.0000            0.0000            0.0000
+
+  15 AoS              578.8          179.9728           37.9599            4.7048            0.0043            2.0513            0.0017            0.0019            0.0001            0.0000            0.0000            0.0000
+  15 SoA              245.1          288.2446           40.1736           21.8998            0.0429           14.2633            0.0100            0.0105            0.0004            0.0000            0.0001            0.0000
+  15 AoSoA-8          715.0          165.0945           14.0367            2.5608            0.1760            1.0236            0.0017            0.0018            0.0001            0.0000            0.0000            0.0000
+  15 AoSoA-16         764.4          160.6741           29.5642            2.4229            0.5988            1.0228            0.0016            0.0017            0.0001            0.0000            0.0000            0.0000
+  15 AoSoA-32         745.4          164.2936           21.6820            1.5585            0.8928            1.0737            0.0014            0.0015            0.0001            0.0000            0.0000            0.0000
+  15 AoSoA-64         735.1          161.7855           18.1631            1.9614            0.7212            1.1494            0.0018            0.0019            0.0001            0.0000            0.0000            0.0000
+  15 AoSoA-128        787.1          159.2203           16.0371            2.1033            0.6605            1.1503            0.0018            0.0019            0.0001            0.0000            0.0000            0.0000
+  15 AoSoA-256        718.0          162.0243           19.2835            2.4517            0.5466            1.0733            0.0016            0.0018            0.0001            0.0000            0.0000            0.0000
+  15 AoSoA-512        790.5          157.9608           18.6404            2.2970            0.3952            1.0997            0.0012            0.0013            0.0001            0.0000            0.0000            0.0000
+
+  18 AoS              577.1          216.2849           35.3337            5.8519            0.0055            2.4613            0.0018            0.0019            0.0002            0.0000            0.0000            0.0000
+  18 SoA              194.9          406.8640           97.9773           29.0662            0.0548           20.8542            0.0163            0.0179            0.0006            0.0000            0.0009            0.0000
+  18 AoSoA-8          666.9          202.3103           20.3004            3.9895            0.2160            1.2370            0.0022            0.0023            0.0001            0.0000            0.0000            0.0000
+  18 AoSoA-16         776.9          192.7875           35.0898            2.9382            0.7458            1.2294            0.0019            0.0020            0.0001            0.0000            0.0000            0.0000
+  18 AoSoA-32         744.9          197.3774           26.0925            1.9219            1.0765            1.2972            0.0023            0.0025            0.0001            0.0000            0.0000            0.0000
+  18 AoSoA-64         776.5          192.5075           21.4489            2.3940            0.8609            1.3877            0.0015            0.0017            0.0001            0.0000            0.0000            0.0000
+  18 AoSoA-128        789.5          190.0629           19.0961            2.4681            0.8386            1.3904            0.0019            0.0021            0.0001            0.0000            0.0000            0.0000
+  18 AoSoA-256        721.9          198.5595           23.2852            2.8014            0.6785            1.2574            0.0020            0.0021            0.0001            0.0000            0.0000            0.0000
+  18 AoSoA-512        795.4          191.8428           22.5740            2.7400            0.4950            1.3114            0.0014            0.0016            0.0001            0.0000            0.0000            0.0000
+
+  21 AoS              579.2          250.2416           42.4359            6.7846            0.0066            2.9081            0.0022            0.0024            0.0002            0.0000            0.0000            0.0000
+  21 SoA              135.1          607.2361          122.1970           33.9634            0.2396           21.8140            0.0690            0.1175            0.0189            0.0000            0.0295            0.0000
+  21 AoSoA-8          669.3          235.9923           23.6872            4.6642            0.2518            1.4553            0.0022            0.0024            0.0002            0.0000            0.0000            0.0000
+  21 AoSoA-16         770.2          225.5997           40.8575            3.4203            0.8704            1.4382            0.0023            0.0024            0.0002            0.0000            0.0000            0.0000
+  21 AoSoA-32         731.3          231.7422           30.5589            2.2936            1.2220            1.5276            0.0026            0.0028            0.0002            0.0000            0.0000            0.0000
+  21 AoSoA-64         758.8          225.0021           25.1236            2.8113            0.9994            1.6388            0.0025            0.0026            0.0002            0.0000            0.0000            0.0000
+  21 AoSoA-128        773.4          222.5317           22.4718            2.8651            0.9491            1.6094            0.0022            0.0024            0.0002            0.0000            0.0000            0.0000
+  21 AoSoA-256        721.0          231.5537           27.4012            3.4216            0.8366            1.4645            0.0012            0.0014            0.0002            0.0000            0.0000            0.0000
+  21 AoSoA-512        794.1          221.5326           26.0153            3.3948            0.5025            1.5556            0.0021            0.0023            0.0002            0.0000            0.0000            0.0000
+══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  DTLB miss ratio  (SoA / AoS)  per P:
+    P    dTLB-load-miss  amd:L1dTLB-miss-all  amd:L1dTLB-miss-4K  amd:L1dTLB-miss-coalesced  amd:L1dTLB-miss-2M  amd:L1dTLB-miss-1G
+    3             3.59x             3.34x             1.45x               n/a             0.95x               n/a
+    6             6.71x             6.28x             1.74x               n/a             1.08x               n/a
+    9             6.19x             5.95x             2.09x               n/a             2.72x               n/a
+   12             5.79x             5.63x             2.26x               n/a             8.94x               n/a
+   15             5.72x             5.64x             3.58x               n/a            13.76x               n/a
+   18             9.30x             9.48x             4.14x               n/a           127.25x               n/a
+   21            31.62x            49.53x           115.76x               n/a          3630.81x               n/a
+
+Wrote results_cpu_inplace_prof.csv  (per-run BW)
+Wrote results_cpu_inplace_pmc.csv   (per-variant PMC summary)
+
+--- CPU in-place ---
+conjugate IN-PLACE (CPU): TOTAL_DOUBLES=256M  runs=100  threads=96
+BW = 2·P·N_base·8  (read P im + write P im)
+  thread spread: N0=24 N1=24 N2=24 N3=24
+
+── P=3 complex pairs  (3 im streams IP)  N_base=44739072  total=2.1 GB ──
+  AoS              3.3648 ms    638.2 GB/s
+  SoA              1.6812 ms   1277.4 GB/s
+  AoSoA-2          3.3436 ms    642.3 GB/s
+  AoSoA-4          3.3900 ms    633.5 GB/s
+  AoSoA-8          3.0482 ms    704.5 GB/s
+  AoSoA-16         2.5536 ms    841.0 GB/s
+  AoSoA-32         2.5521 ms    841.4 GB/s
+  AoSoA-64         1.9471 ms   1102.9 GB/s
+  AoSoA-128        1.8585 ms   1155.5 GB/s
+  AoSoA-256        2.1229 ms   1011.6 GB/s
+  AoSoA-512        2.2898 ms    937.9 GB/s
+
+── P=6 complex pairs  (6 im streams IP)  N_base=22369280  total=2.1 GB ──
+  AoS              3.3321 ms    644.5 GB/s
+  SoA              1.7673 ms   1215.1 GB/s
+  AoSoA-2          3.3891 ms    633.6 GB/s
+  AoSoA-4          3.4580 ms    621.0 GB/s
+  AoSoA-8          2.9670 ms    723.8 GB/s
+  AoSoA-16         2.7135 ms    791.4 GB/s
+  AoSoA-32         2.5247 ms    850.6 GB/s
+  AoSoA-64         1.9382 ms   1107.9 GB/s
+  AoSoA-128        1.8795 ms   1142.5 GB/s
+  AoSoA-256        2.1864 ms    982.2 GB/s
+  AoSoA-512        2.2022 ms    975.2 GB/s
+
+── P=9 complex pairs  (9 im streams IP)  N_base=14913024  total=2.1 GB ──
+  AoS              3.3570 ms    639.7 GB/s
+  SoA              3.0666 ms    700.3 GB/s
+  AoSoA-2          3.3470 ms    641.6 GB/s
+  AoSoA-4          3.4226 ms    627.4 GB/s
+  AoSoA-8          2.9950 ms    717.0 GB/s
+  AoSoA-16         2.6180 ms    820.3 GB/s
+  AoSoA-32         2.4301 ms    883.7 GB/s
+  AoSoA-64         1.9729 ms   1088.5 GB/s
+  AoSoA-128        1.8925 ms   1134.7 GB/s
+  AoSoA-256        2.1089 ms   1018.3 GB/s
+  AoSoA-512        2.2539 ms    952.8 GB/s
+
+── P=12 complex pairs  (12 im streams IP)  N_base=11184640  total=2.1 GB ──
+  AoS              3.3430 ms    642.4 GB/s
+  SoA              6.5413 ms    328.3 GB/s
+  AoSoA-2          3.3832 ms    634.7 GB/s
+  AoSoA-4          3.4627 ms    620.2 GB/s
+  AoSoA-8          2.9706 ms    722.9 GB/s
+  AoSoA-16         2.6382 ms    814.0 GB/s
+  AoSoA-32         2.3985 ms    895.3 GB/s
+  AoSoA-64         2.0105 ms   1068.1 GB/s
+  AoSoA-128        1.8920 ms   1135.0 GB/s
+  AoSoA-256        2.1177 ms   1014.1 GB/s
+  AoSoA-512        2.1467 ms   1000.4 GB/s
+
+── P=15 complex pairs  (15 im streams IP)  N_base=8947712  total=2.1 GB ──
+  AoS              3.3506 ms    640.9 GB/s
+  SoA              8.6156 ms    249.3 GB/s
+  AoSoA-2          3.3918 ms    633.1 GB/s
+  AoSoA-4          3.3717 ms    636.9 GB/s
+  AoSoA-8          2.9182 ms    735.9 GB/s
+  AoSoA-16         2.6486 ms    810.8 GB/s
+  AoSoA-32         2.4777 ms    866.7 GB/s
+  AoSoA-64         1.9501 ms   1101.2 GB/s
+  AoSoA-128        1.8774 ms   1143.9 GB/s
+  AoSoA-256        2.1416 ms   1002.7 GB/s
+  AoSoA-512        2.2237 ms    965.7 GB/s
+
+── P=18 complex pairs  (18 im streams IP)  N_base=7456256  total=2.1 GB ──
+  AoS              3.3584 ms    639.4 GB/s
+  SoA             10.3152 ms    208.2 GB/s
+  AoSoA-2          3.3516 ms    640.7 GB/s
+  AoSoA-4          3.3977 ms    632.0 GB/s
+  AoSoA-8          3.0990 ms    692.9 GB/s
+  AoSoA-16         2.5069 ms    856.6 GB/s
+  AoSoA-32         2.3838 ms    900.8 GB/s
+  AoSoA-64         1.9657 ms   1092.4 GB/s
+  AoSoA-128        1.8556 ms   1157.3 GB/s
+  AoSoA-256        2.2264 ms    964.5 GB/s
+  AoSoA-512        2.2747 ms    944.0 GB/s
+
+── P=21 complex pairs  (21 im streams IP)  N_base=6391296  total=2.1 GB ──
+  AoS              3.3754 ms    636.2 GB/s
+  SoA             14.7563 ms    145.5 GB/s
+  AoSoA-2          3.3504 ms    641.0 GB/s
+  AoSoA-4          3.3552 ms    640.0 GB/s
+  AoSoA-8          3.1000 ms    692.7 GB/s
+  AoSoA-16         2.6205 ms    819.5 GB/s
+  AoSoA-32         2.4145 ms    889.4 GB/s
+  AoSoA-64         1.9740 ms   1087.9 GB/s
+  AoSoA-128        1.8430 ms   1165.2 GB/s
+  AoSoA-256        2.1125 ms   1016.6 GB/s
+  AoSoA-512        2.2510 ms    954.0 GB/s
+
+wrote results_cpu_inplace.csv
+
+--- CPU out-of-place ---
