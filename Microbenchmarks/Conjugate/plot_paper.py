@@ -26,18 +26,18 @@ from collections import defaultdict
 # ══════════════════════════════════════════════════════════════════════
 
 STREAM_PEAK = {
-    "MI300A Zen CPU":  1160.35,   "Grace CPU":  1700.62,
-    "MI300A GPU":  4294,      "GH200 GPU":  3780,
+    "MI300A Zen CPU":  1160.35,   "GH200 Grace CPU":  1946.62,
+    "MI300A GPU":  4294,      "GH200 Hopper GPU":  3780,
 }
 
-LAYOUTS = ["AoS", "SoA", "AoSoA-8", "AoSoA-16", "AoSoA-32"]
+LAYOUTS = ["AoS", "SoA", "AoSoA-16"] # , "AoSoA-16", "AoSoA-32"
 
 STYLE = {
-    "AoS":      dict(color="#e74c3c", marker="o",  ls="-",  lw=2.0),
-    "SoA":      dict(color="#2ecc71", marker="s",  ls="-",  lw=2.0),
-    "AoSoA-8":  dict(color="#3498db", marker="^",  ls="--", lw=1.6),
-    "AoSoA-16": dict(color="#9b59b6", marker="D",  ls="--", lw=1.6),
-    "AoSoA-32": dict(color="#e67e22", marker="v",  ls="--", lw=1.6),
+    "AoS":      dict(color="#e74c3c", marker="o",  ls="-",  lw=1.0),
+    "SoA":      dict(color="#2ecc71", marker="s",  ls="-",  lw=1.0),
+    #"AoSoA-8":  dict(color="#3498db", marker="^",  ls="--", lw=1.6),
+    "AoSoA-16": dict(color="#9b59b6", marker="D",  ls="--", lw=1.0),
+    #"AoSoA-32": dict(color="#e67e22", marker="v",  ls="--", lw=1.6),
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -166,7 +166,7 @@ def build_figure(grid, mode_label, out_stem):
     ncols = len(active_cols)
 
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(4.8 * ncols, 3.2 * nrows),
+                             figsize=(3.6 * ncols, 2.8 * nrows),
                              squeeze=False)
 
     for ri, rk in enumerate(active_rows):
@@ -179,7 +179,7 @@ def build_figure(grid, mode_label, out_stem):
             if ci == 0:
                 ax.set_ylabel("Bandwidth [GB/s]", fontsize=10)
             if ri == nrows - 1:
-                ax.set_xlabel("P  (complex-number pairs)", fontsize=10)
+                ax.set_xlabel("Number of complex arrays (P)", fontsize=10)
 
     # Legend from bottom-right panel (most likely to have all layouts)
     handles, labels = axes[-1, -1].get_legend_handles_labels()
@@ -193,11 +193,18 @@ def build_figure(grid, mode_label, out_stem):
                    fontsize=9, frameon=True, fancybox=True,
                    bbox_to_anchor=(0.5, -0.01))
 
-    fig.suptitle(f"Conjugate ({mode_label}):  bandwidth vs. number of complex pairs",
-                 fontsize=14, y=0.97 if nrows > 1 else 0.99)
-    fig.text(0.5, 0.93 if nrows > 1 else 0.95,
-             "Shaded band / error bars = P5–P95 spread;  dashed line = STREAM peak",
-             ha="center", va="top", fontsize=10, color="dimgray")
+    titles = {
+        "In-Place":      r"In-Place Conjugate: $A = \bar{A}$ for P Complex Arrays",
+        "Out-of-Place":  r"Out-of-Place Conjugate: $B = \bar{A}$ P Complex Arrays",
+    }
+    fig.suptitle(
+        f"{titles[mode_label]}"
+        if mode_label == "In-Place" else
+        f"{titles[mode_label]}",
+        fontsize=14, y=0.89 if nrows > 1 else 0.99)
+    #fig.text(0.5, 0.85 if nrows > 1 else 0.95,
+    #         "Shaded band / error bars = P5–P95 spread;  dashed line = STREAM peak",
+    #         ha="center", va="top", fontsize=10, color="dimgray")
     fig.tight_layout(rect=[0, 0.03, 1, 0.90 if nrows > 1 else 0.92])
 
     for ext in ("pdf", "png"):
@@ -221,10 +228,10 @@ def main():
     # ── File mapping ──
     # Each entry: (row_key, col_key, label, peak_key, filename)
     slots = [
-        ("amd", "cpu", "MI300A CPU",  "MI300A CPU",  args.bev_dir,   "results_cpu"),
+        ("amd", "cpu", "MI300A Zen CPU",  "MI300A Zen CPU",  args.bev_dir,   "results_cpu"),
         ("amd", "gpu", "MI300A GPU",  "MI300A GPU",  args.bev_dir,   "results_gpu"),
-        ("nv",  "cpu", "Grace CPU",   "Grace CPU",   args.daint_dir, "results_cpu"),
-        ("nv",  "gpu", "GH200 GPU",   "GH200 GPU",  args.daint_dir, "results_gpu"),
+        ("nv",  "cpu", "GH200 Grace CPU",   "GH200 Grace CPU",   args.daint_dir, "results_cpu"),
+        ("nv",  "gpu", "GH200 Hopper GPU",   "GH200 Hopper GPU",  args.daint_dir, "results_gpu"),
     ]
 
     for mode, mode_label in [("oop", "Out-of-Place"), ("inplace", "In-Place")]:
