@@ -60,4 +60,5 @@ export BEVERIN=0
 export HPTT_ROOT=$SCRATCH
 
 
-python run_cpu_transpose.py --compile
+python run_cpu_transpose.py --compile --hptt-only
+
