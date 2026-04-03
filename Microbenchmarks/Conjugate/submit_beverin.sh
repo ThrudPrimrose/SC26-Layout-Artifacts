@@ -18,12 +18,15 @@ export OMP_DISPLAY_ENV=TRUE
 
 echo "Running on $(hostname)"
 echo "Threads: $OMP_NUM_THREADS"
-set -e
 
 CFLAGS="-O3 -fopenmp -mtune=native -ftree-vectorize -fno-vect-cost-model -march=native -ffast-math -std=c++17"
-HIPFLAGS="-D__HIP_PLATFORM_AMD__ -fvect-cost-model=cheap -march=native -ffast-math --offload-arch=gfx942 -O3 -ffast-math -std=c++17 -fopenmp=libgomp"
+HIPFLAGS="-D__HIP_PLATFORM_AMD__ -march=native -ffast-math --offload-arch=gfx942 -O3 -ffast-math -std=c++17 -fopenmp=libgomp"
 
 echo "═══ build ═══"
+echo "[o/4] conj_prof.cpp    (CPU profiling)"
+g++ -O3 -march=native -mtune=native -fopenmp -ffast-math -std=c++17 \
+    -o conj_prof conj_prof.cpp -lnuma
+
 echo "[1/4] conjugate_inplace.cpp    (CPU in-place)"
 g++ $CFLAGS -o conjugate_cpu_inplace conjugate_inplace.cpp -lnuma
 
@@ -38,6 +41,24 @@ hipcc $HIPFLAGS -o conjugate_gpu_oop conjugate_hip.cpp
 
 echo ""
 echo "═══ run ═══"
+
+# What the kernel exposes
+ls /sys/bus/event_source/devices/cpu/events/
+cat /sys/bus/event_source/devices/cpu/events/ls_l1_d_tlb_miss*
+
+# All available via perf
+perf list | grep -i tlb
+perf list | grep -i cache
+
+# Quick test a raw event (0xFF45 = all L1 DTLB misses)
+perf stat -e r00ff45,dTLB-load-misses -- sleep 0.01
+
+# AMD IBS (Instruction-Based Sampling) for deeper analysis
+perf list | grep -i ibs
+
+echo "--- CPU profiling ---"
+./conj_prof
+echo ""
 
 echo "--- CPU in-place ---"
 ./conjugate_cpu_inplace
