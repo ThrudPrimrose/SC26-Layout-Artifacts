@@ -21,7 +21,7 @@
  *  We report useful BW = 2·P·N_base·8 uniformly so all layouts
  *  are compared on the same "work done" basis.                       */
 
-constexpr int64_t TOTAL_DOUBLES = 1LL << 29;
+constexpr int64_t TOTAL_DOUBLES = 1LL << 30;
 constexpr int64_t RUNS  = 100;
 constexpr int64_t MAX_VL = 512;
 
@@ -78,7 +78,7 @@ static void bind_and_touch(void *base, size_t total_bytes) {
 
 /* ═══ Cache flush ═══ */
 
-constexpr int64_t FLUSH_N = 1 << 27;   /* 1 GB — 4× per-CCX L3 on MI300A */
+constexpr int64_t FLUSH_N = 1 << 28;   /* 1 GB — 4× per-CCX L3 on MI300A */
 static double *flush_buf;
 
 static void flush_init() {
