@@ -6,7 +6,7 @@
 #SBATCH --output=beverin_cpu_transpose_%j.out
 #SBATCH --error=beverin_cpu_transpose_%j.err
 #SBATCH --ntasks=1
-#SBATCH --gpus-per-task=0
+#SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=192
 #SBATCH --exclusive
 
@@ -73,4 +73,4 @@ export HPTT_ROOT=$SCRATCH
 
 echo $(lscpu)
 
-python run_cpu_transpose.py --compile --hptt-only
+python run_cpu_transpose.py --compile

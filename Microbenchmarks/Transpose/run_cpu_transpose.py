@@ -134,7 +134,7 @@ def measure_bandwidth(threads):
     bbin = cache / "stream_copy"
 
     src.write_text(STREAM_SRC)
-    cmd = f"g++ -O3 -march=native -mtune=native -fvect-cost-model=cheap -fopenmp -o {bbin} {src}"
+    cmd = f"g++ -O3 -march=native -mtune=native -fno-vect-cost-model  -fopenmp -o {bbin} {src}"
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode != 0:
         print(f"  [ERROR] STREAM compile failed:\n{r.stderr.strip()}")
@@ -159,7 +159,7 @@ def compile_kernels(force=False):
     if Path(BINARY_KERN).exists() and not force:
         print(f"  {BINARY_KERN} exists, skipping (use --compile to force)")
         return True
-    cmd = f"g++ -O3 -march=native -mtune=native -fvect-cost-model=cheap -fopenmp -o {BINARY_KERN} transpose_cpu.cpp"
+    cmd = f"g++ -O3 -march=native -mtune=native -fno-vect-cost-model  -fopenmp -o {BINARY_KERN} transpose_cpu.cpp"
     print(f"  Compiling kernels: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode != 0:
@@ -194,7 +194,7 @@ def compile_hptt(force=False):
                 hptt_flags = f"-I{inc_dir}"
             break
 
-    cmd = (f"g++ -O3 -march=native -mtune=native -fvect-cost-model=cheap -fopenmp {hptt_flags} "
+    cmd = (f"g++ -O3 -march=native -mtune=native -fno-vect-cost-model  -fopenmp {hptt_flags} "
            f"-o {BINARY_LIB} transpose_hptt.cpp -lhptt")
     print(f"  Compiling HPTT: {cmd}")
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
