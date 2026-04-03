@@ -73,4 +73,4 @@ export HPTT_ROOT=$SCRATCH
 
 echo $(lscpu)
 
-python run_cpu_transpose.py --compile
+python run_cpu_transpose.py --compile --hptt-only

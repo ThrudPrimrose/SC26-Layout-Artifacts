@@ -1,5 +1,5 @@
-// transpose_cutensor.cu — cuTENSOR 2.x permutation: row-major + blocked (FP32)
-// Compile: nvcc -O3 -std=c++17 -o transpose_cutensor transpose_cutensor.cu -lcutensor
+// transpose_cutensor.du — cuTENSOR 2.x permutation: row-major + blocked (FP32)
+// Compile: nvcc -O3 -std=c++17 -o transpose_cutensor transpose_cutensor.du -lcutensor
 // variant=0: A[N,N] {r,c} -> B[N,N] {c,r}            (row-major)
 // variant=1: A[NB,NB,SB,SB] {a,b,r,c} -> {b,a,c,r}   (blocked layout)
 #include <cstdio>
@@ -97,26 +97,29 @@ int main(int argc, char** argv) {
     cutensorPlanPreference_t pref;
     cutensorPlan_t plan;
 
+    /* cuTENSOR 2.x: last arg to cutensorCreateTensorDescriptor is
+     * alignmentRequirement in bytes (NOT an op type).
+     * cudaMalloc guarantees 256-byte alignment; 128 is safe. */
+    const uint32_t ALIGN = 128;
+
     const char* vname;
     if(VAR==0){
         vname="cutensor";
         int64_t ext[]={N,N};
-        // FIX: A and B share the same strides; mode labels alone define the permutation.
         int64_t sA[]={N,1}, sB[]={N,1};
         int32_t mA[]={'r','c'}, mB[]={'c','r'};
-        CT(cutensorCreateTensorDescriptor(handle,&dscA,2,ext,sA,CUTENSOR_R_32F,CUTENSOR_OP_IDENTITY));
-        CT(cutensorCreateTensorDescriptor(handle,&dscB,2,ext,sB,CUTENSOR_R_32F,CUTENSOR_OP_IDENTITY));
+        CT(cutensorCreateTensorDescriptor(handle,&dscA,2,ext,sA,CUTENSOR_R_32F,ALIGN));
+        CT(cutensorCreateTensorDescriptor(handle,&dscB,2,ext,sB,CUTENSOR_R_32F,ALIGN));
         CT(cutensorCreatePermutation(handle,&opDesc,dscA,mA,CUTENSOR_OP_IDENTITY,dscB,mB,CUTENSOR_COMPUTE_DESC_32F));
     } else {
         vname="cutensor_blk";
         int NB=N/SB;
         int64_t ext4[]={NB,NB,SB,SB};
-        // FIX: A and B share the same strides; mode labels alone define the permutation.
         int64_t sA4[]={(int64_t)NB*SB*SB,(int64_t)SB*SB,(int64_t)SB,1};
         int64_t sB4[]={(int64_t)NB*SB*SB,(int64_t)SB*SB,(int64_t)SB,1};
         int32_t mA4[]={'a','b','r','c'}, mB4[]={'b','a','c','r'};
-        CT(cutensorCreateTensorDescriptor(handle,&dscA,4,ext4,sA4,CUTENSOR_R_32F,CUTENSOR_OP_IDENTITY));
-        CT(cutensorCreateTensorDescriptor(handle,&dscB,4,ext4,sB4,CUTENSOR_R_32F,CUTENSOR_OP_IDENTITY));
+        CT(cutensorCreateTensorDescriptor(handle,&dscA,4,ext4,sA4,CUTENSOR_R_32F,ALIGN));
+        CT(cutensorCreateTensorDescriptor(handle,&dscB,4,ext4,sB4,CUTENSOR_R_32F,ALIGN));
         CT(cutensorCreatePermutation(handle,&opDesc,dscA,mA4,CUTENSOR_OP_IDENTITY,dscB,mB4,CUTENSOR_COMPUTE_DESC_32F));
     }
 
