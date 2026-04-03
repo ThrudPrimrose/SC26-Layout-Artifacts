@@ -21,7 +21,7 @@ echo "Threads: $OMP_NUM_THREADS"
 set -e
 
 CFLAGS="-O3 -fopenmp -mtune=native -ftree-vectorize -fno-vect-cost-model -march=native -ffast-math -std=c++17"
-HIPFLAGS="--offload-arch=gfx942 -O3 -ffast-math -std=c++17 ${CFLAGS}"
+HIPFLAGS="-D__HIP_PLATFORM_AMD__ -fvect-cost-model=cheap -march=native -ffast-math --offload-arch=gfx942 -O3 -ffast-math -std=c++17 -fopenmp=libgomp"
 
 echo "═══ build ═══"
 echo "[1/4] conjugate_inplace.cpp    (CPU in-place)"

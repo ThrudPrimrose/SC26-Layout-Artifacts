@@ -9,22 +9,31 @@
 #include <numaif.h>
 #include <unistd.h>
 
-/*  Total doubles across all K fields is constant.
- *  TOTAL = K * N_base   =>   same memory footprint for every K.
- *  OOP bandwidth = 2 * TOTAL * 8  (read all + write all).            */
-constexpr int64_t TOTAL = 1LL << 28;          // ~2 GB per side
+/*  Conjugate P complex arrays out-of-place:
+ *      out[i].re_p =  in[i].re_p       (copy)
+ *      out[i].im_p = -in[i].im_p       (negate)
+ *
+ *  Total doubles = 2·P·N_base = const  ⇒  same footprint for every P.
+ *  OOP BW = 2 × (2·P·N_base) × 8   (read all + write all).
+ *  SoA has 4·P distinct streams (2P in + 2P out).                    */
+
+constexpr int64_t TOTAL_DOUBLES = 1LL << 28;   // ~2 GB per side
 constexpr int64_t RUNS  = 100;
-constexpr int64_t CPU_MAX_VL = 512;
+constexpr int64_t MAX_VL = 512;
 
-/* ═══ Generic layout structs ═══ */
+/* ═══ Layout structs ═══ */
 
-template<int K>
-struct AoS { double f[K]; };
+template<int P>
+struct AoS {
+    struct { double re, im; } c[P];   /* P interleaved (re,im) pairs */
+};
 
-template<int K, int VL>
-struct AoSoA { double f[K][VL]; };
+template<int P, int VL>
+struct AoSoA {
+    struct { double re[VL], im[VL]; } c[P];
+};
 
-/* ═══ NUMA helpers (same as original) ═══ */
+/* ═══ NUMA helpers ═══ */
 
 static long PAGE_SZ;
 
@@ -92,69 +101,82 @@ static void init_and_bind(double *buf, int64_t n) {
         buf[i] = (double)(i % 997) * 0.001;
 }
 
-template<int K>
-static void init_aos(AoS<K> *buf, int64_t n) {
-    bind_and_touch(buf, n * sizeof(AoS<K>));
+template<int P>
+static void init_aos(AoS<P> *buf, int64_t n) {
+    bind_and_touch(buf, n * sizeof(AoS<P>));
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < n; i++)
-        for (int k = 0; k < K; k++)
-            buf[i].f[k] = (double)((i * K + k) % 997) * 0.001;
+        for (int p = 0; p < P; p++) {
+            buf[i].c[p].re = (double)((i * P + p) % 997) * 0.001;
+            buf[i].c[p].im = (double)((i * P + p) % 991) * 0.001;
+        }
 }
 
-template<int K, int VL>
-static void init_aosoa(AoSoA<K,VL> *buf, int64_t n_base) {
+template<int P, int VL>
+static void init_aosoa(AoSoA<P,VL> *buf, int64_t n_base) {
     int64_t nblks = n_base / VL;
-    bind_and_touch(buf, nblks * sizeof(AoSoA<K,VL>));
+    bind_and_touch(buf, nblks * sizeof(AoSoA<P,VL>));
     #pragma omp parallel for schedule(static)
     for (int64_t b = 0; b < nblks; b++)
-        for (int k = 0; k < K; k++)
-            for (int l = 0; l < VL; l++)
-                buf[b].f[k][l] = (double)(((b * VL + l) * K + k) % 997) * 0.001;
+        for (int p = 0; p < P; p++)
+            for (int l = 0; l < VL; l++) {
+                int64_t idx = b * VL + l;
+                buf[b].c[p].re[l] = (double)((idx * P + p) % 997) * 0.001;
+                buf[b].c[p].im[l] = (double)((idx * P + p) % 991) * 0.001;
+            }
 }
 
-/* ═══ Kernels (out-of-place): negate all K fields ═══ */
+/* ═══ Kernels (out-of-place): copy re, negate im ═══ */
 
-template<int K>
-static void kern_aos(const AoS<K> *__restrict__ in,
-                     AoS<K> *__restrict__ out, int64_t n) {
+template<int P>
+static void kern_aos(const AoS<P> *__restrict__ in,
+                     AoS<P> *__restrict__ out, int64_t n) {
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < n; i++)
-        for (int k = 0; k < K; k++)
-            out[i].f[k] = -in[i].f[k];
+        for (int p = 0; p < P; p++) {
+            out[i].c[p].re =  in[i].c[p].re;
+            out[i].c[p].im = -in[i].c[p].im;
+        }
 }
 
-template<int K>
-static void kern_soa(double *const *__restrict__ in,
-                     double *const *__restrict__ out, int64_t n) {
-    /* Every thread touches all 2K streams → stresses TLB */
+template<int P>
+static void kern_soa(double *const *__restrict__ re_in,
+                     double *const *__restrict__ im_in,
+                     double *const *__restrict__ re_out,
+                     double *const *__restrict__ im_out,
+                     int64_t n) {
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < n; i++)
-        for (int k = 0; k < K; k++)
-            out[k][i] = -in[k][i];
+        for (int p = 0; p < P; p++) {
+            re_out[p][i] =  re_in[p][i];
+            im_out[p][i] = -im_in[p][i];
+        }
 }
 
-template<int K, int VL>
-static void kern_aosoa(const AoSoA<K,VL> *__restrict__ in,
-                       AoSoA<K,VL> *__restrict__ out, int64_t n_base) {
+template<int P, int VL>
+static void kern_aosoa(const AoSoA<P,VL> *__restrict__ in,
+                       AoSoA<P,VL> *__restrict__ out, int64_t n_base) {
     int64_t nblks = n_base / VL;
     #pragma omp parallel for schedule(static)
     for (int64_t b = 0; b < nblks; b++)
-        for (int k = 0; k < K; k++)
+        for (int p = 0; p < P; p++) {
             #pragma omp simd
-            for (int l = 0; l < VL; l++)
-                out[b].f[k][l] = -in[b].f[k][l];
+            for (int l = 0; l < VL; l++) {
+                out[b].c[p].re[l] =  in[b].c[p].re[l];
+                out[b].c[p].im[l] = -in[b].c[p].im[l];
+            }
+        }
 }
 
 /* ═══ Bench driver ═══ */
 
 static FILE *csv;
 
-/* BW = 2 * K * n_base * 8   (read K fields + write K fields) */
-static double bw_oop(int K, int64_t n_base, double ms) {
-    return 2.0 * K * n_base * sizeof(double) / (ms * 1e6);
+static double bw_oop(int P, int64_t n_base, double ms) {
+    return 4.0 * P * n_base * sizeof(double) / (ms * 1e6);
 }
 
-#define CPU_BENCH(K_val, n_base, label, call) do { \
+#define CPU_BENCH(P_val, n_base, label, call) do { \
     for (int w = 0; w < 5; w++) { flush_caches(); call; } \
     double times[RUNS]; \
     for (int r = 0; r < RUNS; r++) { \
@@ -166,66 +188,67 @@ static double bw_oop(int K, int64_t n_base, double ms) {
     double sum = 0; \
     for (int r = 0; r < RUNS; r++) { \
         fprintf(csv, "%d,%s,%d,%.6f,%.2f\n", \
-                K_val, label, r, times[r], bw_oop(K_val, n_base, times[r])); \
+                P_val, label, r, times[r], bw_oop(P_val, n_base, times[r])); \
         sum += times[r]; \
     } \
     double avg = sum / RUNS; \
-    printf("  %-14s %8.4f ms  %7.1f GB/s\n", label, avg, bw_oop(K_val, n_base, avg)); \
+    printf("  %-14s %8.4f ms  %7.1f GB/s\n", label, avg, bw_oop(P_val, n_base, avg)); \
 } while (0)
 
-template<int K>
+template<int P>
 static void bench_aos(int64_t n) {
-    size_t bytes = n * sizeof(AoS<K>);
-    auto *in  = (AoS<K> *)numa_alloc(bytes); init_aos<K>(in, n);
-    auto *out = (AoS<K> *)numa_alloc(bytes); init_aos<K>(out, n);
-    CPU_BENCH(K, n, "AoS", (kern_aos<K>(in, out, n)));
+    size_t bytes = n * sizeof(AoS<P>);
+    auto *in  = (AoS<P> *)numa_alloc(bytes); init_aos<P>(in, n);
+    auto *out = (AoS<P> *)numa_alloc(bytes); init_aos<P>(out, n);
+    CPU_BENCH(P, n, "AoS", (kern_aos<P>(in, out, n)));
     numa_free(in, bytes); numa_free(out, bytes);
 }
 
-template<int K>
+template<int P>
 static void bench_soa(int64_t n) {
     size_t bytes = n * sizeof(double);
-    double *in_arr[K], *out_arr[K];
-    for (int k = 0; k < K; k++) {
-        in_arr[k]  = (double *)numa_alloc(bytes); init_and_bind(in_arr[k], n);
-        out_arr[k] = (double *)numa_alloc(bytes); init_and_bind(out_arr[k], n);
+    double *re_in[P], *im_in[P], *re_out[P], *im_out[P];
+    for (int p = 0; p < P; p++) {
+        re_in[p]  = (double *)numa_alloc(bytes); init_and_bind(re_in[p], n);
+        im_in[p]  = (double *)numa_alloc(bytes); init_and_bind(im_in[p], n);
+        re_out[p] = (double *)numa_alloc(bytes); init_and_bind(re_out[p], n);
+        im_out[p] = (double *)numa_alloc(bytes); init_and_bind(im_out[p], n);
     }
-    double *const *ip = in_arr, *const *op = out_arr;
-    CPU_BENCH(K, n, "SoA", (kern_soa<K>(ip, op, n)));
-    for (int k = 0; k < K; k++) {
-        numa_free(in_arr[k], bytes); numa_free(out_arr[k], bytes);
+    CPU_BENCH(P, n, "SoA", (kern_soa<P>(re_in, im_in, re_out, im_out, n)));
+    for (int p = 0; p < P; p++) {
+        numa_free(re_in[p], bytes);  numa_free(im_in[p], bytes);
+        numa_free(re_out[p], bytes); numa_free(im_out[p], bytes);
     }
 }
 
-template<int K, int VL>
+template<int P, int VL>
 static void bench_aosoa(int64_t n, const char *label) {
     int64_t nblks = n / VL;
-    size_t bytes = nblks * sizeof(AoSoA<K,VL>);
-    auto *in  = (AoSoA<K,VL> *)numa_alloc(bytes); init_aosoa<K,VL>(in, n);
-    auto *out = (AoSoA<K,VL> *)numa_alloc(bytes); init_aosoa<K,VL>(out, n);
-    CPU_BENCH(K, n, label, (kern_aosoa<K,VL>(in, out, n)));
+    size_t bytes = nblks * sizeof(AoSoA<P,VL>);
+    auto *in  = (AoSoA<P,VL> *)numa_alloc(bytes); init_aosoa<P,VL>(in, n);
+    auto *out = (AoSoA<P,VL> *)numa_alloc(bytes); init_aosoa<P,VL>(out, n);
+    CPU_BENCH(P, n, label, (kern_aosoa<P,VL>(in, out, n)));
     numa_free(in, bytes); numa_free(out, bytes);
 }
 
-template<int K>
-static void run_all(int64_t n) {
-    printf("\n── K=%d  N_base=%lld  total=%.1f GB (per side) ──\n",
-           K, (long long)n, (double)K * n * 8 / 1e9);
-    bench_aos<K>(n);
-    bench_soa<K>(n);
-    bench_aosoa<K,   2>(n, "AoSoA-2");
-    bench_aosoa<K,   4>(n, "AoSoA-4");
-    bench_aosoa<K,   8>(n, "AoSoA-8");
-    bench_aosoa<K,  16>(n, "AoSoA-16");
-    bench_aosoa<K,  32>(n, "AoSoA-32");
-    bench_aosoa<K,  64>(n, "AoSoA-64");
-    bench_aosoa<K, 128>(n, "AoSoA-128");
-    bench_aosoa<K, 256>(n, "AoSoA-256");
-    bench_aosoa<K, 512>(n, "AoSoA-512");
-}
+template<int P>
+static void run_all() {
+    int64_t n = (TOTAL_DOUBLES / (2 * P) / MAX_VL) * MAX_VL;
+    printf("\n── P=%d complex pairs  (%d SoA streams)  N_base=%lld  "
+           "total=%.1f GB/side ──\n",
+           P, 4*P, (long long)n, 2.0 * P * n * 8 / 1e9);
 
-static int64_t n_base(int K) {
-    return (TOTAL / K / CPU_MAX_VL) * CPU_MAX_VL;
+    bench_aos<P>(n);
+    bench_soa<P>(n);
+    bench_aosoa<P,   2>(n, "AoSoA-2");
+    bench_aosoa<P,   4>(n, "AoSoA-4");
+    bench_aosoa<P,   8>(n, "AoSoA-8");
+    bench_aosoa<P,  16>(n, "AoSoA-16");
+    bench_aosoa<P,  32>(n, "AoSoA-32");
+    bench_aosoa<P,  64>(n, "AoSoA-64");
+    bench_aosoa<P, 128>(n, "AoSoA-128");
+    bench_aosoa<P, 256>(n, "AoSoA-256");
+    bench_aosoa<P, 512>(n, "AoSoA-512");
 }
 
 int main() {
@@ -233,11 +256,11 @@ int main() {
     flush_init();
 
     csv = fopen("results_cpu_oop.csv", "w");
-    fprintf(csv, "K,layout,run,ms,gbps\n");
+    fprintf(csv, "P,layout,run,ms,gbps\n");
 
-    printf("conj OOP: TOTAL=%lldM  runs=%d  threads=%d  page=%ld\n",
-           (long long)(TOTAL >> 20), (int)RUNS, omp_get_max_threads(), PAGE_SZ);
-    printf("BW = 2·K·N_base·8  (read+write all K fields)\n");
+    printf("conjugate OOP (CPU): TOTAL_DOUBLES=%lldM  runs=%d  threads=%d\n",
+           (long long)(TOTAL_DOUBLES >> 20), (int)RUNS, omp_get_max_threads());
+    printf("BW = 4·P·N_base·8  (read 2P + write 2P fields)\n");
 
     {
         int nodes[8] = {};
@@ -251,13 +274,13 @@ int main() {
         printf("\n");
     }
 
-    run_all< 3>(n_base( 3));
-    run_all< 6>(n_base( 6));
-    run_all< 9>(n_base( 9));
-    run_all<12>(n_base(12));
-    run_all<15>(n_base(15));
-    run_all<18>(n_base(18));
-    run_all<21>(n_base(21));
+    run_all< 3>();   //  6 re/im arrays →  12 SoA streams (in) + 12 (out)
+    run_all< 6>();   // 12 re/im arrays →  24 streams
+    run_all< 9>();   // 18 re/im arrays →  36 streams
+    run_all<12>();   // 24 re/im arrays →  48 streams
+    run_all<15>();   // 30 re/im arrays →  60 streams
+    run_all<18>();   // 36 re/im arrays →  72 streams
+    run_all<21>();   // 42 re/im arrays →  84 streams
 
     fclose(csv);
     flush_free();
