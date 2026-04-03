@@ -17,7 +17,7 @@
  *  OOP BW = 2 × (2·P·N_base) × 8   (read all + write all).
  *  SoA has 4·P distinct streams (2P in + 2P out).                    */
 
-constexpr int64_t TOTAL_DOUBLES = 1LL << 28;   // ~2 GB per side
+constexpr int64_t TOTAL_DOUBLES = 1LL << 29;   // ~2 GB per side
 constexpr int64_t RUNS  = 100;
 constexpr int64_t MAX_VL = 512;
 
@@ -90,7 +90,7 @@ static void flush_caches() {
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
     #pragma omp parallel
-    { asm volatile("mfence" ::: "memory"); }
+    for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
 }
 static void flush_free() { numa_free(flush_buf, FLUSH_N * sizeof(double)); }
 
