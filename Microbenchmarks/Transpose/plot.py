@@ -27,13 +27,10 @@ from collections import defaultdict
 #  Config
 # ══════════════════════════════════════════════════════════════════════
 
-STREAM_PEAK_GBS = {
-    "MI300A CPU":  1160.35,
-    "Grace CPU":   1700.62,
-    "MI300A GPU":  3457.5,
-    "H200 GPU":    3720.48,
+STREAM_PEAK = {
+    "MI300A Zen CPU": 1228*1e-3,  "GH200 Grace CPU": 1806.62*1e-3,
+    "MI300A GPU":       4294*1e-3,     "GH200 Hopper GPU": 3780*1e-3,
 }
-
 SUBPLOT_W = 5.5
 SUBPLOT_H = 3.8
 
