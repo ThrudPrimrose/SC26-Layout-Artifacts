@@ -21,10 +21,8 @@ CPU_AMD_CSV = "z_v_grad_w_cpu_b.csv"
 CPU_NV_CSV  = "z_v_grad_w_cpu_b.csv"
 
 STREAM_PEAK = {
-    "MI300A Zen Cores":   1160.35*1e-3,
-    "Grace Neoverse v2": 1700.62*1e-3,
-    "MI300A":   3457.5*1e-3,
-    "H200":    3720.48*1e-3,
+    "MI300A Zen CPU": 1228*1e-3,  "Grace CPU": 1700.62*1e-3,
+    "MI300A GPU":       4294*1e-3,     "GH200 GPU": 3780*1e-3,
 }
 
 SUBPLOT_W = 5.5   # wider to fit 3 distributions
