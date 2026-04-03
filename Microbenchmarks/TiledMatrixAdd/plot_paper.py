@@ -31,7 +31,7 @@ STREAM_PEAK = {
     "MI300A GPU":       4271,     "GH200 GPU": 3720.48,
 }
 
-VCOL = {"naive": "#e67e22", "tiled": "#27ae60", "perm": "#27ae60", "blk": "#9b59b6"}
+VCOL = {"naive": "#e67e22", "tiled": "#27ae60", "perm": "#2980b9", "blk": "#9b59b6"}
 
 XLABEL_CPU = {"naive": "Naive 1D", "tiled": "2D Tiled", "perm": "Permuted", "blk": "Blocked"}
 XLABEL_GPU = {"naive": "Naive 1D", "tiled": "2D Tiled", "perm": "Permuted", "blk": "Blocked"}
@@ -115,8 +115,10 @@ def gpu_cats(rows):
     if v is not None: out["naive"] = v
     gs = defaultdict(list)
     for r in rows:
-        if r["kernel"].startswith("tiled+smem") or r["kernel"].startswith("tiled_smem"):
-            gs[r["kernel"]].append(r["gbs"])
+        k = r["kernel"]
+        if (k.startswith("direct ") or k.startswith("direct_T")) and \
+           not k.startswith("tiled") and not k.startswith("all_"):
+            gs[k].append(r["gbs"])
     v = best_of(gs)
     if v is not None: out["tiled"] = v
     gs = defaultdict(list)
@@ -126,8 +128,9 @@ def gpu_cats(rows):
     if v is not None: out["perm"] = v
     gs = defaultdict(list)
     for r in rows:
-        if r["kernel"].startswith("blk_") or r["kernel"].startswith("blocked"):
-            gs[r["kernel"]].append(r["gbs"])
+        k = r["kernel"]
+        if k.startswith("tiled+smem") or k.startswith("tiled_smem"):
+            gs[k].append(r["gbs"])
     v = best_of(gs)
     if v is not None: out["blk"] = v
     return out
@@ -136,7 +139,7 @@ def gpu_cats(rows):
 #  Panel drawing
 # ══════════════════════════════════════════════════════════════════════
 
-def draw_panel(ax, cats, title, peak=None, add_peak=False):
+def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu=False):
     order = ["naive", "tiled", "perm", "blk"]
     present = [k for k in order if k in cats]
     if not present:
@@ -157,7 +160,7 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False):
         positions.append(pos)
         colors.append(VCOL[vk])
         medians.append((pos, float(np.median(arr)), vk))
-        xlabels.append(XLABEL[vk])
+        xlabels.append((xlabels_map or XLABEL_CPU)[vk])
         pos += 1
 
     # y-axis
@@ -174,7 +177,7 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False):
     if data:
         parts = ax.violinplot(data, positions=positions,
                               showmeans=True, showmedians=True,
-                              showextrema=False, widths=0.7)
+                              showextrema=False, widths=0.9)
         for i, body in enumerate(parts["bodies"]):
             body.set_facecolor(colors[i])
             body.set_edgecolor("black")
@@ -198,6 +201,7 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False):
     ax.set_ylim(0, top)
     ax.set_title(title, fontsize=11)
     ax.grid(axis="y", alpha=0.25)
+    ax.grid(axis="y", which='minor', alpha=0.12, ls=':')
 
     # STREAM peak
     if peak:
