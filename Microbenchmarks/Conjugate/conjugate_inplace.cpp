@@ -78,7 +78,7 @@ static void bind_and_touch(void *base, size_t total_bytes) {
 
 /* ═══ Cache flush ═══ */
 
-constexpr int64_t FLUSH_N = 1 << 26;
+constexpr int64_t FLUSH_N = 1 << 27;   /* 1 GB — 4× per-CCX L3 on MI300A */
 static double *flush_buf;
 
 static void flush_init() {
@@ -91,6 +91,10 @@ static void flush_init() {
 static void flush_caches() {
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
+    /* Full fence: ensure all stores (including write-backs) complete
+       before we start timing the next kernel invocation.             */
+    #pragma omp parallel
+    { asm volatile("mfence" ::: "memory"); }
 }
 static void flush_free() { numa_free(flush_buf, FLUSH_N * sizeof(double)); }
 

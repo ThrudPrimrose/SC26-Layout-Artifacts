@@ -89,34 +89,33 @@ struct PmcDef { const char *name; uint32_t type; uint64_t config; };
 /*
  * Event catalog:
  *   [0..5] Generic Linux events (work on any x86)
- *   [6]    AMD raw: ls_l1_d_tlb_miss.all (event=0x45, umask=0xFF)
- *          → counts ALL L1 DTLB misses (4K + 2M + 1G pages)
- *   [7]    AMD raw: ls_l1_d_tlb_miss.4k_only (event=0x45, umask=0x01)
- *   [8]    AMD raw: ls_l1_d_tlb_miss.2m_only (event=0x45, umask=0x04)
- *   [9]    AMD raw: ls_l1_d_tlb_miss.1g_only (event=0x45, umask=0x08)
- *   [10]   AMD raw: ls_l1_d_tlb_miss.coalesced (event=0x45, umask=0x02)
+ *   [6+]   AMD raw: PMCx045 [LS L1 DTLB Miss]
  *
  *  On non-AMD, the raw events simply fail to open and are skipped.
  *
- *  AMD Zen4 PPR (Processor Programming Reference):
- *    PMCx045 [LS L1 DTLB Miss]
- *      UnitMask bits:
- *        [0] = TlbReload4kPage
- *        [1] = TlbReloadCoalescedPage
- *        [2] = TlbReload2mPage
- *        [3] = TlbReload1gPage
+ *  AMD Zen4 PPR — PMCx045 UnitMask bits:
+ *    [0] TlbReload4kPage         (L1 miss, L2 HIT)
+ *    [1] TlbReloadCoalescedPage  (L1 miss, L2 HIT)
+ *    [2] TlbReload2mPage         (L1 miss, L2 HIT)
+ *    [3] TlbReload1gPage         (L1 miss, L2 HIT)
+ *    [4] TlbReload4kPage L2 MISS (page walk!)
+ *    [5] TlbReloadCoalescedPage L2 MISS
+ *    [6] TlbReload2mPage L2 MISS
+ *    [7] TlbReload1gPage L2 MISS
  *
- *  To encode raw:  config = (umask << 8) | event_select
- *    e.g. all L1 DTLB miss = (0xFF << 8) | 0x45 = 0xFF45
+ *  Encoding:  config = (umask << 8) | event_select
+ *    bits [3:0] = L1 miss, L2 hit  (cheap — served from L2 TLB)
+ *    bits [7:4] = L1 miss, L2 miss (expensive — page table walk)
+ *    0xFF = all L1 DTLB misses
+ *    0x0F = L1 miss, L2 hit only
+ *    0xF0 = L1 miss, L2 miss only  ← PAGE WALKS, the expensive case
  *
- *  Discover more events:
- *    perf list | grep -i tlb
- *    perf list | grep -i cache
- *    cat /sys/bus/event_source/devices/cpu/events/*
+ *  Verify on Beverin:
+ *    perf stat -e r00ff45,r00f045,dTLB-load-misses -- sleep 0.01
  */
 
 static const PmcDef PMC_EVENTS[] = {
-    /* Generic Linux */
+    /* Generic Linux (work on any x86) */
     {"cycles",          PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES},
     {"instructions",    PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS},
     {"cache-refs",      PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES},
@@ -130,12 +129,14 @@ static const PmcDef PMC_EVENTS[] = {
         ((uint64_t)PERF_COUNT_HW_CACHE_OP_READ  << 8) |
         ((uint64_t)PERF_COUNT_HW_CACHE_RESULT_MISS << 16)},
 
-    /* AMD Zen4 raw: PMCx045 ls_l1_d_tlb_miss */
-    {"amd:L1dTLB-miss-all",       PERF_TYPE_RAW, 0xFF45},  /* umask=0xFF */
-    {"amd:L1dTLB-miss-4K",        PERF_TYPE_RAW, 0x0145},  /* umask=0x01 */
-    {"amd:L1dTLB-miss-coalesced", PERF_TYPE_RAW, 0x0245},  /* umask=0x02 */
-    {"amd:L1dTLB-miss-2M",        PERF_TYPE_RAW, 0x0445},  /* umask=0x04 */
-    {"amd:L1dTLB-miss-1G",        PERF_TYPE_RAW, 0x0845},  /* umask=0x08 */
+    /* AMD Zen4 raw: PMCx045 — L1 DTLB miss breakdown */
+    {"L1dTLB-miss-all",       PERF_TYPE_RAW, 0xFF45},  /* all L1 DTLB misses       */
+    {"L1dTLB-miss-L2hit",     PERF_TYPE_RAW, 0x0F45},  /* L1 miss, L2 TLB hit      */
+    {"L1dTLB-miss-L2miss",    PERF_TYPE_RAW, 0xF045},  /* L1+L2 miss = PAGE WALK   */
+    {"L2dTLB-walk-4K",        PERF_TYPE_RAW, 0x1045},  /* page walk, 4K pages      */
+    {"L2dTLB-walk-coalesced", PERF_TYPE_RAW, 0x2045},  /* page walk, coalesced     */
+    {"L2dTLB-walk-2M",        PERF_TYPE_RAW, 0x4045},  /* page walk, 2M pages      */
+    {"L2dTLB-walk-1G",        PERF_TYPE_RAW, 0x8045},  /* page walk, 1G pages      */
 };
 static constexpr int N_PMC = sizeof(PMC_EVENTS) / sizeof(PMC_EVENTS[0]);
 
@@ -268,7 +269,7 @@ static void bind_and_touch(void *base, size_t total_bytes) {
  *  Cache flush
  * ══════════════════════════════════════════════════════════════════════ */
 
-constexpr int64_t FLUSH_N = 1 << 26;
+constexpr int64_t FLUSH_N = 1 << 27;   /* 1 GB — 4× per-CCX L3 on MI300A */
 static double *flush_buf;
 
 static void flush_init() {
@@ -281,6 +282,8 @@ static void flush_init() {
 static void flush_caches() {
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
+    #pragma omp parallel
+    { asm volatile("mfence" ::: "memory"); }
 }
 static void flush_free() { numa_free(flush_buf, FLUSH_N * sizeof(double)); }
 
