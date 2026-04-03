@@ -189,7 +189,7 @@ static void ft_init_blk_cm(double *buf, size_t total, int M_, int N_) {
 /* ════════════════════════════════════════════════════════════════════
  *  Cache flush
  * ════════════════════════════════════════════════════════════════════ */
-static constexpr int64_t FLUSH_N = 1 << 24;
+static constexpr int64_t FLUSH_N = 1 << 27;
 static double *g_flush_buf = nullptr;
 
 static void cache_flush() {
@@ -213,7 +213,7 @@ static void kernel_row_major(const double *__restrict__ A,
                              double *__restrict__ C) {
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < M; i++)
-        #pragma omp simd nontemporal(C)
+        #pragma omp simd 
         for (int j = 0; j < N; j++)
             C[idx_rm(i, j)] += A[idx_rm(i, j)] + B[idx_cm(i, j)];
 }
@@ -223,7 +223,7 @@ static void kernel_col_major(const double *__restrict__ A,
                              double *__restrict__ C) {
     #pragma omp parallel for schedule(static)
     for (int j = 0; j < N; j++)
-        #pragma omp simd nontemporal(C)
+        #pragma omp simd 
         for (int i = 0; i < M; i++)
             C[idx_rm(i, j)] += A[idx_rm(i, j)] + B[idx_cm(i, j)];
 }
@@ -248,7 +248,7 @@ static void kernel_tiled(const double *__restrict__ A,
                     b_local[(i - ii) * T + (j - jj)] = B[idx_cm(i, j)];
 
             for (int i = ii; i < iend; i++)
-                #pragma omp simd nontemporal(C)
+                #pragma omp simd 
                 for (int j = jj; j < jend; j++)
                     C[idx_rm(i, j)] += A[idx_rm(i, j)]
                                     + b_local[(i - ii) * T + (j - jj)];
@@ -261,7 +261,7 @@ static void kernel_all_rowmajor(const double *__restrict__ A,
                                 double *__restrict__ C) {
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < M; i++)
-        #pragma omp simd nontemporal(C)
+        #pragma omp simd 
         for (int j = 0; j < N; j++)
             C[idx_rm(i, j)] += A[idx_rm(i, j)] + B_rm[idx_rm(i, j)];
 }
