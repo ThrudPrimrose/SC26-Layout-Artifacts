@@ -90,7 +90,7 @@ static void flush_caches() {
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
     #pragma omp parallel
-    { asm volatile("mfence" ::: "memory"); }
+    for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
 }
 static void flush_free() { numa_free(flush_buf, FLUSH_N * sizeof(double)); }
 
