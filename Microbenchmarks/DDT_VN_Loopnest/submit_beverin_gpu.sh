@@ -59,6 +59,7 @@ export PATH=$LLVM_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$LLVM_HOME/lib:$LLVM_HOME/lib64:$LD_LIBRARY_PATH
 export CPATH=$LLVM_HOME/include:$CPATH
 export LIBRARY_PATH=$LLVM_HOME/lib:$LLVM_HOME/lib64:$LIBRARY_PATH
+export ICON_DATA_PATH=/capstor/scratch/cscs/ybudanaz/beverin/icon-artifacts/velocity/data_r02b05
 
 # -------------------------------
 # Build
@@ -75,8 +76,7 @@ hipcc -O3 -std=c++17 \
     -mtune=native \
     -ffast-math \
     -munsafe-fp-atomics \
-    -mllvm -amdgpu-early-inline-all=true \
-    -mllvm -amdgpu-function-calls=false \
+    -fvect-cost-model=cheap \
     -fgpu-flush-denormals-to-zero \
     -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
     -o bench_ddt_vn_gpu_sweep ddt_vn_gpu.cpp

@@ -34,12 +34,13 @@ export CPATH=$ROCM_HOME/include:$LLVM_HOME/include:$CPATH
 export LIBRARY_PATH=$ROCM_HOME/lib:$ROCM_HOME/lib64:$LLVM_HOME/lib:$LLVM_HOME/lib64:$SCRATCH/lib:$SCRATCH/lib64:$LIBRARY_PATH
 export C_INCLUDE_PATH=$SCRATCH/include:$C_INCLUDE_PATH
 export CPLUS_INCLUDE_PATH=$SCRATCH/include:$CPLUS_INCLUDE_PATH
+export ICON_DATA_PATH=/capstor/scratch/cscs/ybudanaz/beverin/icon-artifacts/velocity/data_r02b05
 
 spack load python@3.13.8
 source ${SCRATCH}/yakup-dev-env/bin/activate
 
 # -------------------------------
-# Build
+# Build with optimization reports
 # -------------------------------
 echo "Building bench_ddt_vn_cpu_sweep"
 
@@ -50,13 +51,30 @@ g++ -O3 -std=c++17 \
     -mtune=native \
     -fopenmp \
     -ffast-math \
-    -fno-vect-cost-model \
+    -fvect-cost-model=cheap \
     -ftree-vectorize \
-    -o bench_ddt_vn_cpu_sweep ddt_vn_cpu.cpp
+    -fopt-info-vec-optimized=vec_optimized.txt \
+    -fopt-info-vec-missed=vec_missed.txt \
+    -fopt-info-loop-optimized=loop_optimized.txt \
+    -fopt-info-inline=inline_report.txt \
+    -o bench_ddt_vn_cpu_sweep ddt_vn_cpu.cpp \
+    2>&1 | tee build_warnings.txt
 
 echo "Build succeeded"
+echo ""
+echo "=== Vectorization summary ==="
+echo "Vectorized loops:      $(wc -l < vec_optimized.txt 2>/dev/null || echo 0)"
+echo "Missed vectorizations: $(wc -l < vec_missed.txt 2>/dev/null || echo 0)"
+echo "Optimized loops:       $(wc -l < loop_optimized.txt 2>/dev/null || echo 0)"
+echo ""
+echo "=== Stencil kernel vectorization hits ==="
+grep -n "ddt_vn_cpu" vec_optimized.txt 2>/dev/null | head -40 || echo "(none)"
+echo ""
+echo "=== Stencil kernel vectorization misses ==="
+grep -n "ddt_vn_cpu" vec_missed.txt 2>/dev/null | head -40 || echo "(none)"
+echo ""
 
 # -------------------------------
-# Run (default nlev sweep: 65, 90)
+# Run
 # -------------------------------
 ./bench_ddt_vn_cpu_sweep
