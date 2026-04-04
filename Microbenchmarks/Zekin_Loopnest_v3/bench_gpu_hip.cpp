@@ -1,5 +1,4 @@
 #include "hip/hip_runtime.h"
-#include "hip/hip_runtime.h"
 /*
  * bench_gpu.cu -- GPU-only z_v_grad_w stencil benchmark
  *
@@ -26,6 +25,10 @@
 #include "bench_common.h"
 #include "icon_data_loader.h"
 #include <ctime>
+
+#if __HIP_PLATFORM_AMD__
+#include "hip/hip_runtime.h"
+#endif
 
 /* ================================================================ */
 /*  CUDA helpers                                                     */

@@ -1,52 +1,44 @@
 // bench_goto_vec.cpp
 // ═══════════════════════════════════════════════════════════════════════════
-// GOTO GEMM with AVX-512 vector microkernel + SUMMA / Cannon over NUMA
+// GOTO GEMM with auto-vectorized microkernel + SUMMA / Cannon over NUMA
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Emulates the GOTO 5-loop nest with a pure AVX-512 FMA microkernel.
-// No AMX, no vendor tile extensions.  Runs on any AVX-512 + F16C target:
-//   • AMD Zen4 (MI300A CPU side, EPYC 9004 "Genoa")
-//   • Intel Sapphire Rapids / Granite Rapids (if AMX is not desired)
+// Implements the GOTO 5-loop nest with a pure C microkernel that the
+// compiler auto-vectorizes via #pragma omp simd and -O3 -march=native.
+// No inline intrinsics, no AMX, no vendor tile extensions.
+// Portable: works on AVX-512, AVX2, SVE — whatever -march=native implies.
+//
+// Target: AMD Zen4 (MI300A CPU side, EPYC 9004 "Genoa")
 //
 // ┌─────────────────────────────────────────────────────────────────────────┐
 // │  THREE PRIMITIVES (matching the AMX tile.hpp interface)                 │
 // │                                                                        │
 // │  Peak (init)   = NO-OP.  No tile config register, no special state.    │
-// │                  AMX needs _tile_loadconfig before any tile instruction;│
-// │                  vector units are always ready.                         │
 // │                                                                        │
-// │  MMAD (mma)    = AVX-512 FMA loop over a 32×32×32 tile.               │
+// │  MMAD (mma)    = Plain C loop with #pragma omp simd.                   │
 // │                  Computes D[32×32] += A[32×32] · B[32×32] using       │
-// │                  _mm512_fmadd_ps with broadcast-A × loaded-B pattern.  │
-// │                  AMX does this in one _tdpfp16ps instruction;           │
-// │                  we emulate it with 2048 FMA instructions.             │
+// │                  ikj loop order: broadcast A[i,k], stream B[k,0..31]. │
+// │                  The compiler auto-vectorizes the inner j-loop with    │
+// │                  -O3 -march=native → vfmadd231ps on AVX-512 targets.  │
+// │                  No inline intrinsics anywhere in this file.            │
 // │                                                                        │
 // │  Unpack (store)= NO-OP.  D is a plain fp32[32][32] array on the       │
-// │                  stack.  No tile-register-to-memory format conversion   │
-// │                  like AMX's _tile_stored + scatter.  We just memcpy    │
-// │                  (or vectorized store) D rows into strided C.          │
+// │                  stack.  Stored to strided C via #pragma omp simd loop.│
 // │                                                                        │
 // │  B packing:     Plain row-major tiles (BK×BN), NOT vnni-interleaved.  │
-// │                  AMX tdpfp16ps requires VNNI format (K-pair interleave);│
-// │                  vector FMA loads B as 16 consecutive fp16 values      │
-// │                  via _mm256_loadu_si256 + _mm512_cvtph_ps.             │
-// │                                                                        │
-// │  Register blocking (AVX-512, 32 ZMM registers):                       │
-// │    4 output rows × 2 column groups (j=0..15, j=16..31) = 8 accum.    │
-// │    + 1 B vector + 1 A broadcast = 10 out of 32 ZMM.                   │
+// │                  The SIMD j-loop reads B as BN consecutive fp16 values │
+// │                  which the compiler converts to fp32 before the FMA.   │
 // └─────────────────────────────────────────────────────────────────────────┘
 //
 // Build (AMD Zen4 / MI300A with oneMKL):
-//   g++ -O3 -fopenmp -march=znver4 -mavx512f -mavx512bw -mf16c -std=c++17 \
+//   g++ -O3 -fopenmp -march=native -mtune=native -ffast-math -std=c++17 \
+//       -fno-vect-cost-model                                               \
 //       -I${MKLROOT}/include -o bench_goto_vec bench_goto_vec.cpp           \
 //       -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_gnu_thread        \
 //       -lmkl_core -lgomp -lpthread -lm
 //
-// Build (generic, -march=native auto-detects Zen4 AVX-512):
-//   g++ -O3 -fopenmp -march=native -std=c++17 \
-//       -I${MKLROOT}/include -o bench_goto_vec bench_goto_vec.cpp           \
-//       -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_gnu_thread        \
-//       -lmkl_core -lgomp -lpthread -lm
+// -fno-vect-cost-model ensures the compiler vectorizes all #pragma omp simd
+// loops unconditionally, rather than second-guessing profitability.
 //
 // Run (MI300A: 4 NUMA nodes × 24 cores = 96 threads):
 //   ./bench_goto_vec 8192 8192 8192 -t 96 -p 2x2
@@ -57,7 +49,6 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#include <immintrin.h>   // AVX-512 + F16C intrinsics
 
 #include <algorithm>
 #include <atomic>
@@ -215,10 +206,9 @@ static void ref_gemm_omp(const IN_T* __restrict__ A,
 // contiguously in row-major order.
 //
 // B packing is DIFFERENT from AMX: we use plain row-major tiles (BK×BN),
-// NOT vnni-interleaved.  The vector microkernel loads B with:
-//   _mm256_loadu_si256 → _mm512_cvtph_ps
-// which expects 16 consecutive fp16 values in the N dimension, i.e.
-// B_packed[k * BN + n] for n = 0..BN-1.  Plain row-major within the tile.
+// NOT vnni-interleaved.  The auto-vectorized microkernel reads B as
+// BN consecutive fp16 values in the N dimension, which the compiler
+// converts to fp32 before the FMA.  Plain row-major within the tile.
 //
 
 static void pack_A_block(const IN_T* __restrict__ A, IN_T* __restrict__ dst,
@@ -241,9 +231,9 @@ static void pack_A_block(const IN_T* __restrict__ A, IN_T* __restrict__ dst,
 //     = B[(row0 + tk*BK + k) * ldb + (col0 + tn*BN + n)]
 //
 // This is a simple contiguous copy of each BK×BN sub-matrix of B.
-// The vector microkernel reads B as:
-//   __m256i b_f16 = load(bp + k * BN + j)   // 16 consecutive fp16 in N
-//   __m512  b_f32 = cvtph_ps(b_f16)         // convert to 16 × fp32
+// The auto-vectorized microkernel reads B row-by-row:
+//   for j in 0..BN-1:  D[i][j] += A_val * (float)B[k*BN + j]
+// The compiler vectorizes this inner j-loop with #pragma omp simd.
 //
 static void pack_B_panel(const IN_T* __restrict__ B, IN_T* __restrict__ dst,
                          int row0, int col0, int kc, int nc, int ldb) {
@@ -294,44 +284,23 @@ static void pack_B_panel_par(const IN_T* B, IN_T* dst,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §5  AVX-512 VECTOR MICROKERNEL
+// §5  AUTO-VECTORIZED MICROKERNEL
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // ┌─────────────────────────────────────────────────────────────────────────┐
-// │  Replaces the AMX microkernel.  Three primitives:                      │
+// │  No inline intrinsics.  Pure C with #pragma omp simd.                  │
 // │                                                                        │
-// │  Peak (init)   = NO-OP.  No tile config, no special registers.         │
-// │  MMAD (mma)    = AVX-512 FMA loop over the 32×32×32 tile.             │
-// │  Unpack (store)= NO-OP.  D is already a plain fp32 array in memory.   │
-// │                  We just write D directly to C with a strided store.   │
+// │  The compiler (-O3 -march=native -ffast-math) will:                    │
+// │    1. Convert the fp16 → fp32 cast to vcvtph2ps (F16C)               │
+// │    2. Broadcast the A scalar to vbroadcastss                          │
+// │    3. Fuse multiply-add into vfmadd231ps (FMA3)                       │
+// │    4. Vectorize the j-loop with BN=32 / SIMD_width iterations         │
 // │                                                                        │
-// │  Inner loop strategy (per k-step):                                     │
+// │  On Zen4 (AVX-512, 16 floats/vector): j-loop = 2 iterations           │
+// │  On Zen2/3 (AVX2, 8 floats/vector): j-loop = 4 iterations            │
 // │                                                                        │
-// │    We process 4 rows of D simultaneously (i, i+1, i+2, i+3).         │
-// │    For each column group j ∈ {0, 16} (two AVX-512 vectors per row):  │
-// │                                                                        │
-// │    1. Load B[k, j..j+15]: 16 fp16 values → _mm512_cvtph_ps → 1 zmm  │
-// │    2. For each of the 4 rows:                                          │
-// │       a. Load A[row, k]: scalar fp16 → (float) → _mm512_set1_ps      │
-// │       b. FMA: acc[row][j/16] += broadcast(A) × B_vec                 │
-// │    3. After all 32 k-steps, store 4×2 = 8 accumulators to C          │
-// │                                                                        │
-// │  ZMM register budget:                                                  │
-// │    8 accumulators (4 rows × 2 column groups)                          │
-// │    1 B vector (reused across 4 rows)                                   │
-// │    1 A broadcast (reused for 2 column groups, then overwritten)       │
-// │    ─────────────────────────────────────                              │
-// │    10 ZMM out of 32.  Very comfortable.                               │
-// │                                                                        │
-// │  FMA throughput:                                                       │
-// │    Per k-step: 2 column groups × 4 rows = 8 FMA instructions          │
-// │    Per tile:   8 FMA × 32 k-steps = 256 FMA instructions             │
-// │    Each FMA = 16 fp32 multiply-adds = 32 FLOPs                        │
-// │    Total: 256 × 32 = 8192 FLOPs = 2 × 32 × 32 × 32 / 8 ... wait    │
-// │                                                                        │
-// │    Correction: we iterate over ALL 32 rows, in groups of 4:           │
-// │    8 row-groups × 2 col-groups × 32 k-steps × 4 rows = 2048 FMA     │
-// │    2048 × 32 = 65536 FLOPs = 2 × 32 × 32 × 32  ✓                   │
+// │  This is portable: the same source works on AVX2, AVX-512, SVE, etc.  │
+// │  The compiler picks the right instructions for -march=native.          │
 // └─────────────────────────────────────────────────────────────────────────┘
 
 // ── Peak: no-op ─────────────────────────────────────────────────────────
@@ -340,86 +309,37 @@ static void pack_B_panel_par(const IN_T* B, IN_T* dst,
 // Vector units have no such configuration — they're always ready.
 static inline void vec_init() { /* no-op */ }
 
-// ── MMAD: AVX-512 FMA microkernel ──────────────────────────────────────
+// ── MMAD: auto-vectorized FMA microkernel ───────────────────────────────
 //
-// Computes D[BM×BN] += A_tile[BM×BK] × B_tile[BK×BN], all fp16→fp32.
+// Computes D[BM×BN] += A_tile[BM×BK] × B_tile[BK×BN], fp16→fp32.
 //
-// ap points to a packed A tile: BM rows × BK cols, row-major, fp16.
-// bp points to a packed B tile: BK rows × BN cols, row-major, fp16.
+// No inline intrinsics.  The compiler auto-vectorizes the inner j-loop
+// with -O3 -march=native, producing AVX-512 vfmadd231ps instructions
+// (or whatever the target supports).  The #pragma omp simd ensures
+// vectorization even when the compiler's cost model is conservative.
 //
-// D accumulator is a local fp32 array on the stack (or passed in).
-// After KC/BK calls, the caller stores D to C.
+// The loop structure is ikj (broadcast A[i,k], stream B[k,0..BN-1]):
+//   - The j-loop is the SIMD dimension (BN=32 = 2 AVX-512 vectors).
+//   - The i-loop iterates over output rows.
+//   - The k-loop accumulates the rank-BK partial product.
 //
-// This function handles ONE BK=32 K-tile step (rank-32 update).
-// The caller loops over kc_tiles steps, advancing ap and bp.
+// This handles ONE BK=32 K-tile step.  The caller loops over kc_tiles.
 //
 static inline void vec_mma_rank32(const IN_T* __restrict__ ap,
                                   const IN_T* __restrict__ bp,
                                   OUT_T* __restrict__ D)
 {
-    // Process BM=32 rows in groups of 4 for B-load reuse.
-    for (int i = 0; i < BM; i += 4) {
-
-        // Pointers to the 4 A rows within this tile.
-        const IN_T* a0 = ap + (i + 0) * BK;
-        const IN_T* a1 = ap + (i + 1) * BK;
-        const IN_T* a2 = ap + (i + 2) * BK;
-        const IN_T* a3 = ap + (i + 3) * BK;
-
-        // Pointers to the 4 D rows (fp32 accumulator, BN=32 wide).
-        OUT_T* d0 = D + (i + 0) * BN;
-        OUT_T* d1 = D + (i + 1) * BN;
-        OUT_T* d2 = D + (i + 2) * BN;
-        OUT_T* d3 = D + (i + 3) * BN;
-
-        // Two column groups: j=0..15 and j=16..31 (each is one __m512).
-        // Load existing accumulators.
-        __m512 acc0_lo = _mm512_loadu_ps(d0);
-        __m512 acc0_hi = _mm512_loadu_ps(d0 + 16);
-        __m512 acc1_lo = _mm512_loadu_ps(d1);
-        __m512 acc1_hi = _mm512_loadu_ps(d1 + 16);
-        __m512 acc2_lo = _mm512_loadu_ps(d2);
-        __m512 acc2_hi = _mm512_loadu_ps(d2 + 16);
-        __m512 acc3_lo = _mm512_loadu_ps(d3);
-        __m512 acc3_hi = _mm512_loadu_ps(d3 + 16);
-
-        // Inner loop over k=0..BK-1 (the rank-32 accumulation).
+    for (int i = 0; i < BM; ++i) {
+        OUT_T* __restrict__ di = D + i * BN;
+        const IN_T* __restrict__ ai = ap + i * BK;
         for (int k = 0; k < BK; ++k) {
-            // Load B[k, 0..15] and B[k, 16..31]: fp16 → fp32.
-            const IN_T* brow = bp + k * BN;
-            __m512 b_lo = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i*)(brow)));
-            __m512 b_hi = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i*)(brow + 16)));
-
-            // Broadcast A[row, k] for each of the 4 rows, FMA with B.
-            __m512 va;
-
-            va = _mm512_set1_ps((float)a0[k]);
-            acc0_lo = _mm512_fmadd_ps(va, b_lo, acc0_lo);
-            acc0_hi = _mm512_fmadd_ps(va, b_hi, acc0_hi);
-
-            va = _mm512_set1_ps((float)a1[k]);
-            acc1_lo = _mm512_fmadd_ps(va, b_lo, acc1_lo);
-            acc1_hi = _mm512_fmadd_ps(va, b_hi, acc1_hi);
-
-            va = _mm512_set1_ps((float)a2[k]);
-            acc2_lo = _mm512_fmadd_ps(va, b_lo, acc2_lo);
-            acc2_hi = _mm512_fmadd_ps(va, b_hi, acc2_hi);
-
-            va = _mm512_set1_ps((float)a3[k]);
-            acc3_lo = _mm512_fmadd_ps(va, b_lo, acc3_lo);
-            acc3_hi = _mm512_fmadd_ps(va, b_hi, acc3_hi);
+            const float a_val = (float)ai[k];
+            const IN_T* __restrict__ bk = bp + k * BN;
+            #pragma omp simd
+            for (int j = 0; j < BN; ++j) {
+                di[j] += a_val * (float)bk[j];
+            }
         }
-
-        // ── Unpack: no-op.  D is already row-major fp32. ────────────
-        // Just store the accumulators back to the D array.
-        _mm512_storeu_ps(d0,      acc0_lo);
-        _mm512_storeu_ps(d0 + 16, acc0_hi);
-        _mm512_storeu_ps(d1,      acc1_lo);
-        _mm512_storeu_ps(d1 + 16, acc1_hi);
-        _mm512_storeu_ps(d2,      acc2_lo);
-        _mm512_storeu_ps(d2 + 16, acc2_hi);
-        _mm512_storeu_ps(d3,      acc3_lo);
-        _mm512_storeu_ps(d3 + 16, acc3_hi);
     }
 }
 
@@ -433,7 +353,6 @@ static inline void vec_microkernel(const IN_T* __restrict__ ap,
                                    int a_stride, int b_stride)
 {
     // D accumulator: BM×BN = 32×32 = 1024 fp32 = 4 KB on the stack.
-    // Contiguous row-major, stride BN=32.
     alignas(64) OUT_T D[BM * BN] = {};   // zero-init
 
     for (int tk = 0; tk < kc_tiles; ++tk) {
@@ -442,11 +361,15 @@ static inline void vec_microkernel(const IN_T* __restrict__ ap,
         bp += b_stride;
     }
 
-    // Store D to C (strided by ldc, which may differ from BN).
-    for (int i = 0; i < BM; ++i)
-        _mm512_storeu_ps(C_ptr + i * ldc,      _mm512_loadu_ps(D + i * BN));
-    for (int i = 0; i < BM; ++i)
-        _mm512_storeu_ps(C_ptr + i * ldc + 16,  _mm512_loadu_ps(D + i * BN + 16));
+    // ── Unpack: no-op.  D is already row-major fp32. ────────────────
+    // Store D to C (D has stride BN=32, C has stride ldc).
+    for (int i = 0; i < BM; ++i) {
+        const OUT_T* __restrict__ di = D + i * BN;
+        OUT_T* __restrict__ ci = C_ptr + i * ldc;
+        #pragma omp simd
+        for (int j = 0; j < BN; ++j)
+            ci[j] = di[j];
+    }
 }
 
 // Accumulate variant: adds MMA result to existing C.
@@ -466,12 +389,11 @@ static inline void vec_microkernel_accum(const IN_T* __restrict__ ap,
 
     // Add D to existing C.
     for (int i = 0; i < BM; ++i) {
-        __m512 c_lo = _mm512_loadu_ps(C_ptr + i * ldc);
-        __m512 c_hi = _mm512_loadu_ps(C_ptr + i * ldc + 16);
-        c_lo = _mm512_add_ps(c_lo, _mm512_loadu_ps(D + i * BN));
-        c_hi = _mm512_add_ps(c_hi, _mm512_loadu_ps(D + i * BN + 16));
-        _mm512_storeu_ps(C_ptr + i * ldc,      c_lo);
-        _mm512_storeu_ps(C_ptr + i * ldc + 16, c_hi);
+        const OUT_T* __restrict__ di = D + i * BN;
+        OUT_T* __restrict__ ci = C_ptr + i * ldc;
+        #pragma omp simd
+        for (int j = 0; j < BN; ++j)
+            ci[j] += di[j];
     }
 }
 
@@ -601,7 +523,12 @@ struct DomainBarrier {
         } else {
             // Spin until the last thread advances the generation.
             while (generation.load(std::memory_order_acquire) == gen) {
-                _mm_pause();  // yield to SMT sibling / save power
+                // Yield hint — compiler will emit PAUSE on x86, YIELD on ARM
+                #if defined(__x86_64__) || defined(__i386__)
+                    __builtin_ia32_pause();
+                #elif defined(__aarch64__)
+                    asm volatile("yield");
+                #endif
             }
         }
     }
@@ -1077,9 +1004,9 @@ int main(int argc, char** argv) {
     int nd = g_PX * g_PY;
 
     printf("════════════════════════════════════════════════════════\n");
-    printf("  GOTO + NUMA GEMM Benchmark  (AVX-512 Vector Version)\n");
+    printf("  GOTO + NUMA GEMM Benchmark  (Auto-Vectorized Version)\n");
     printf("════════════════════════════════════════════════════════\n");
-    printf("  Microkernel   : AVX-512 FMA (no AMX)\n");
+    printf("  Microkernel   : auto-vectorized C (#pragma omp simd)\n");
     printf("  Threads       : %d\n", g_threads);
     printf("  NUMA nodes    : %d (detected)\n", get_num_numa_nodes());
     printf("  Domain grid   : %d x %d = %d\n", g_PX, g_PY, nd);

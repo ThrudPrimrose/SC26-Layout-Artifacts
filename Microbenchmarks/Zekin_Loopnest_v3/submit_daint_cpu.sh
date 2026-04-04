@@ -2,11 +2,13 @@
 #SBATCH --job-name=zekin_d_c
 #SBATCH --nodes=1
 #SBATCH --partition=normal
-#SBATCH --time=01:30:00
-#SBATCH --output=zekin_d_%j.out
-#SBATCH --error=zekin_d_%j.err
+#SBATCH --time=02:30:00
+#SBATCH --output=zekin_d_cpu_%j.out
+#SBATCH --error=zekin_d_cpu_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=288
+#SBATCH --account=g177-1
+#SBATCH --exclusive
 
 # -------------------------------
 # OpenMP configuration
