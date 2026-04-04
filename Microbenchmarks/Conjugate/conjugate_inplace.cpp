@@ -13,16 +13,15 @@
  *      buf[i].im_p = -buf[i].im_p      (negate im only)
  *
  *  Total doubles = 2·P·N_base = const across P.
+ *  We report useful BW = 2·P·N_base·8 uniformly.
  *
- *  Effective BW (useful bytes):
- *    SoA:   2·P·N_base·8   (only P im arrays read+written)
- *    AoS:   read full struct (2P fields) + write back ⇒ hw moves
- *           2·(2P)·N_base·8 but only P fields are useful.
- *  We report useful BW = 2·P·N_base·8 uniformly so all layouts
- *  are compared on the same "work done" basis.                       */
+ *  KEY: single persistent omp parallel region for the entire
+ *  benchmark loop.  This eliminates thread wake-up jitter across
+ *  4 NUMA nodes — the #1 cause of variance on Grace.                */
 
 constexpr int64_t TOTAL_DOUBLES = 1LL << 30;
-constexpr int64_t RUNS  = 100;
+constexpr int     NRUNS = 100;
+constexpr int     NWARM = 5;
 constexpr int64_t MAX_VL = 512;
 
 template<int P>
@@ -78,7 +77,7 @@ static void bind_and_touch(void *base, size_t total_bytes) {
 
 /* ═══ Cache flush ═══ */
 
-constexpr int64_t FLUSH_N = 1 << 28;   /* 1 GB — 4× per-CCX L3 on MI300A */
+constexpr int64_t FLUSH_N = 1 << 28;   /* 2 GB */
 static double *flush_buf;
 
 static void flush_init() {
@@ -88,15 +87,14 @@ static void flush_init() {
     #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] = 0.0;
 }
-static void flush_caches() {
-    #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
-    /* Full fence: ensure all stores (including write-backs) complete
-       before we start timing the next kernel invocation.             */
-    #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
-}
 static void flush_free() { numa_free(flush_buf, FLUSH_N * sizeof(double)); }
+
+/* Flush inside an existing parallel region — uses omp for, not omp parallel for */
+static void flush_inner() {
+    #pragma omp for schedule(static)
+    for (int64_t i = 0; i < FLUSH_N; i++) flush_buf[i] += 1.0;
+    /* implicit barrier at end of omp for */
+}
 
 /* ═══ Init helpers ═══ */
 
@@ -132,29 +130,32 @@ static void init_aosoa(AoSoA<P,VL> *buf, int64_t n_base) {
             }
 }
 
-/* ═══ Kernels (in-place): negate im only ═══ */
+/* ═══ Kernels — "inner" versions for use inside an existing parallel region ═══
+ *
+ * These use  #pragma omp for  (worksharing, no new parallel region)
+ * instead of #pragma omp parallel for.                               */
 
 template<int P>
-static void kern_aos(AoS<P> *__restrict__ buf, int64_t n) {
-    #pragma omp parallel for schedule(static)
+static void kern_aos_inner(AoS<P> *__restrict__ buf, int64_t n) {
+    #pragma omp for schedule(static)
     for (int64_t i = 0; i < n; i++)
         for (int p = 0; p < P; p++)
             buf[i].c[p].im = -buf[i].c[p].im;
+    /* implicit barrier */
 }
 
-/* SoA: only the P im arrays are touched */
 template<int P>
-static void kern_soa(double *const *__restrict__ im, int64_t n) {
-    #pragma omp parallel for schedule(static)
+static void kern_soa_inner(double *const *__restrict__ im, int64_t n) {
+    #pragma omp for schedule(static)
     for (int64_t i = 0; i < n; i++)
         for (int p = 0; p < P; p++)
             im[p][i] = -im[p][i];
 }
 
 template<int P, int VL>
-static void kern_aosoa(AoSoA<P,VL> *__restrict__ buf, int64_t n_base) {
+static void kern_aosoa_inner(AoSoA<P,VL> *__restrict__ buf, int64_t n_base) {
     int64_t nblks = n_base / VL;
-    #pragma omp parallel for schedule(static)
+    #pragma omp for schedule(static)
     for (int64_t b = 0; b < nblks; b++)
         for (int p = 0; p < P; p++)
             #pragma omp simd
@@ -162,39 +163,70 @@ static void kern_aosoa(AoSoA<P,VL> *__restrict__ buf, int64_t n_base) {
                 buf[b].c[p].im[l] = -buf[b].c[p].im[l];
 }
 
-/* ═══ Bench driver ═══ */
+/* ═══ Bench driver ═══
+ *
+ * Single persistent parallel region: flush + barrier + time + kernel
+ * all happen with threads already alive.  No thread wake-up jitter.  */
 
 static FILE *csv;
 
-/* Useful BW: P im fields read + P im fields written = 2·P·N_base·8 */
 static double bw_ip(int P, int64_t n_base, double ms) {
     return 2.0 * P * n_base * sizeof(double) / (ms * 1e6);
 }
 
-#define CPU_BENCH(P_val, n_base, label, call) do { \
-    for (int w = 0; w < 5; w++) { flush_caches(); call; } \
-    double times[RUNS]; \
-    for (int r = 0; r < RUNS; r++) { \
-        flush_caches(); \
-        double t0 = omp_get_wtime(); \
-        call; \
-        times[r] = (omp_get_wtime() - t0) * 1e3; \
-    } \
-    double sum = 0; \
-    for (int r = 0; r < RUNS; r++) { \
-        fprintf(csv, "%d,%s,%d,%.6f,%.2f\n", \
-                P_val, label, r, times[r], bw_ip(P_val, n_base, times[r])); \
-        sum += times[r]; \
-    } \
-    double avg = sum / RUNS; \
-    printf("  %-14s %8.4f ms  %7.1f GB/s\n", label, avg, bw_ip(P_val, n_base, avg)); \
-} while (0)
+/* Run flush+kernel inside one persistent parallel region.
+ * Fn must be a callable that uses #pragma omp for (not parallel for). */
+template<typename Fn>
+static void bench_persistent(int P, int64_t n_base, const char *label, Fn &&kernel) {
+    double times[NRUNS];
+
+    #pragma omp parallel
+    {
+        /* warmup — all inside this parallel region */
+        for (int w = 0; w < NWARM; w++) {
+            flush_inner();
+            kernel();       /* uses omp for inside */
+        }
+
+        /* timed runs */
+        for (int r = 0; r < NRUNS; r++) {
+            flush_inner();          /* omp for + implicit barrier */
+
+            /* master records start time; barrier ensures all see it */
+            double t0;
+            #pragma omp barrier
+            #pragma omp master
+            { t0 = omp_get_wtime(); }
+            #pragma omp barrier     /* all threads start kernel together */
+
+            kernel();               /* omp for + implicit barrier */
+
+            #pragma omp master
+            { times[r] = (omp_get_wtime() - t0) * 1e3; }
+            #pragma omp barrier     /* wait for master to record */
+        }
+    }
+    /* parallel region ends — now single-threaded */
+
+    double sum = 0;
+    for (int r = 0; r < NRUNS; r++) {
+        double gbs = bw_ip(P, n_base, times[r]);
+        fprintf(csv, "%d,%s,%d,%.6f,%.2f\n", P, label, r, times[r], gbs);
+        sum += times[r];
+    }
+    double avg = sum / NRUNS;
+    printf("  %-14s %8.4f ms  %7.1f GB/s\n",
+           label, avg, bw_ip(P, n_base, avg));
+}
+
+/* ═══ Per-layout wrappers ═══ */
 
 template<int P>
 static void bench_aos(int64_t n) {
     size_t bytes = n * sizeof(AoS<P>);
     auto *buf = (AoS<P> *)numa_alloc(bytes); init_aos<P>(buf, n);
-    CPU_BENCH(P, n, "AoS", (kern_aos<P>(buf, n)));
+    bench_persistent(P, n, "AoS",
+        [=]() { kern_aos_inner<P>(buf, n); });
     numa_free(buf, bytes);
 }
 
@@ -206,7 +238,9 @@ static void bench_soa(int64_t n) {
         re[p] = (double *)numa_alloc(bytes); init_and_bind(re[p], n);
         im[p] = (double *)numa_alloc(bytes); init_and_bind(im[p], n);
     }
-    CPU_BENCH(P, n, "SoA", (kern_soa<P>(im, n)));
+    double *const *ip = im;
+    bench_persistent(P, n, "SoA",
+        [=]() { kern_soa_inner<P>(ip, n); });
     for (int p = 0; p < P; p++) {
         numa_free(re[p], bytes); numa_free(im[p], bytes);
     }
@@ -217,7 +251,8 @@ static void bench_aosoa(int64_t n, const char *label) {
     int64_t nblks = n / VL;
     size_t bytes = nblks * sizeof(AoSoA<P,VL>);
     auto *buf = (AoSoA<P,VL> *)numa_alloc(bytes); init_aosoa<P,VL>(buf, n);
-    CPU_BENCH(P, n, label, (kern_aosoa<P,VL>(buf, n)));
+    bench_persistent(P, n, label,
+        [=]() { kern_aosoa_inner<P,VL>(buf, n); });
     numa_free(buf, bytes);
 }
 
@@ -249,8 +284,9 @@ int main() {
     fprintf(csv, "P,layout,run,ms,gbps\n");
 
     printf("conjugate IN-PLACE (CPU): TOTAL_DOUBLES=%lldM  runs=%d  threads=%d\n",
-           (long long)(TOTAL_DOUBLES >> 20), (int)RUNS, omp_get_max_threads());
+           (long long)(TOTAL_DOUBLES >> 20), NRUNS, omp_get_max_threads());
     printf("BW = 2·P·N_base·8  (read P im + write P im)\n");
+    printf("Mode: persistent parallel region (no thread wake-up jitter)\n");
 
     {
         int nodes[8] = {};
@@ -261,7 +297,9 @@ int main() {
         }}
         printf("  thread spread:");
         for (int i = 0; i < 8; i++) if (nodes[i]) printf(" N%d=%d", i, nodes[i]);
-        printf("\n");
+        int n_active = 0;
+        for (int i = 0; i < 8; i++) if (nodes[i]) n_active++;
+        printf("  (%d NUMA nodes)\n", n_active);
     }
 
     run_all< 3>();
