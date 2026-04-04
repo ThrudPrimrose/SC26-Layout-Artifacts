@@ -485,7 +485,6 @@ struct GpuFlush {
         double val;
         CUDA_CHECK(hipMemcpy(&val, d_A + ri, sizeof(double),
                               hipMemcpyDeviceToHost));
-        printf("  [flush GPU] A[%d] = %.12e\n", ri, val);
     }
 
     void destroy() {
