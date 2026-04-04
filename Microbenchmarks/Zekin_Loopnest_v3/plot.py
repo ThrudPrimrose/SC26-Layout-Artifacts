@@ -29,7 +29,7 @@ SUBPLOT_W = 5.5   # wider to fit 3 distributions
 SUBPLOT_H = 3.5   # inches per row
 
 NPROMA   = 81920
-NLEV     = 96
+NLEV     = 90
 DISTS    = ["uniform", "normal_var1", "exact"]
 OUT_STEM = f"violins_nlev{NLEV}"
 
