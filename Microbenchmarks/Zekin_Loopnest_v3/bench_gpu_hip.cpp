@@ -316,14 +316,19 @@ static void launch_gpu(int cfg,
         CUDA_LAUNCH_CHECK();                                               \
     } while(0)
 
-    #define LG_JK(TX_,TY_,BX_,BY_) do {                                   \
-        dim3 blk(BX_, BY_);                                                \
-        dim3 grd(((unsigned)nlev + (BX_)*(TX_) - 1) / ((BX_)*(TX_)),      \
-                ((unsigned)N    + (BY_)*(TY_) - 1) / ((BY_)*(TY_)));     \
-        gpu_kernel_jk_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(              \
-            out, vn_ie, inv_dual, w, cell_idx,                             \
-            z_vt_ie, inv_primal, tangent, z_w_v, vert_idx, N, nlev);       \
-        CUDA_LAUNCH_CHECK();                                               \
+    #define LG_JK(TX_,TY_,BX_,BY_) do {                                       \
+        constexpr bool REMAP = (BX_ * TX_) > 96;                                     \
+        constexpr int BXe = REMAP ? 96 : (BX_);                               \
+        constexpr int BYe = REMAP ? ((BX_)*(BY_)/96) : (BY_);                 \
+        constexpr int TXe = REMAP ? 1  : (TX_);                               \
+        constexpr int TYe = REMAP ? ((TX_)*(TY_)) : (TY_);                    \
+        dim3 blk(BXe, BYe);                                                    \
+        dim3 grd(((unsigned)nlev + BXe*TXe - 1) / (BXe*TXe),                  \
+                ((unsigned)N    + BYe*TYe - 1) / (BYe*TYe));                 \
+        gpu_kernel_jk_first<TXe,TYe,BXe,BYe,V><<<grd,blk>>>(                 \
+            out, vn_ie, inv_dual, w, cell_idx,                                 \
+            z_vt_ie, inv_primal, tangent, z_w_v, vert_idx, N, nlev);          \
+        CUDA_LAUNCH_CHECK();                                                   \
     } while(0)
 
     #define LG(TX_,TY_,BX_,BY_) do {                                       \
