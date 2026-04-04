@@ -820,6 +820,194 @@ def print_jaccard_and_bundles(nests, a2n, threshold=0.5):
 
 
 # ===========================================================================
+#  Utilization-aware bundling (zero-waste AoS)
+# ===========================================================================
+
+def bundle_utilization(bundle, a2n):
+    """
+    Minimum fraction of bundle members accessed in any nest that
+    touches the bundle.
+
+    util = 1.0  →  every nest that loads this bundle uses ALL fields.
+    util = 0.5  →  some nest uses only half the fields (50% cache waste).
+    """
+    if not bundle:
+        return 1.0
+    # All nests that touch any member
+    touching_nests = set()
+    for a in bundle:
+        touching_nests |= a2n[a]
+    if not touching_nests:
+        return 1.0
+    b_set = set(bundle)
+    worst = 1.0
+    for nid in touching_nests:
+        # How many bundle members does this nest access?
+        # (We need nest→arrays mapping; reconstruct from a2n)
+        used = sum(1 for a in bundle if nid in a2n[a])
+        frac = used / len(bundle)
+        if frac < worst:
+            worst = frac
+    return worst
+
+
+def worst_nest_for_bundle(bundle, a2n, nests):
+    """Return (nest_id, utilization, accessed_members, missing_members)
+    for the nest with worst utilization."""
+    touching = set()
+    for a in bundle:
+        touching |= a2n[a]
+    worst_nid, worst_util = None, 1.0
+    for nid in touching:
+        used = sum(1 for a in bundle if nid in a2n[a])
+        frac = used / len(bundle)
+        if frac < worst_util:
+            worst_util = frac
+            worst_nid = nid
+    if worst_nid is None:
+        return None, 1.0, [], []
+    accessed = [a for a in bundle if worst_nid in a2n[a]]
+    missing = [a for a in bundle if worst_nid not in a2n[a]]
+    return worst_nid, worst_util, accessed, missing
+
+
+def strict_coaccess_bundles(a2n, min_util=1.0):
+    """
+    Build bundles where every nest that touches the bundle accesses
+    ALL members (utilization >= min_util).
+
+    Algorithm:
+      1. Start with equivalence classes (arrays with identical nest sets).
+         These have util = 1.0 by construction.
+      2. Attempt to merge pairs of classes if the merged group maintains
+         util >= min_util, preferring merges by Jaccard similarity.
+      3. Apply size constraints.
+    """
+    # Phase 1: equivalence classes
+    key_to_arrays = defaultdict(list)
+    for arr, nids in a2n.items():
+        key_to_arrays[frozenset(nids)].append(arr)
+
+    bundles = [sorted(arrs) for arrs in key_to_arrays.values()]
+    bundles.sort(key=lambda b: (-len(b), b[0]))
+
+    # Phase 2: merge classes that maintain utilization
+    changed = True
+    while changed:
+        changed = False
+        best_i, best_j, best_jac = None, None, -1.0
+        for i in range(len(bundles)):
+            for j in range(i + 1, len(bundles)):
+                merged = bundles[i] + bundles[j]
+                util = bundle_utilization(merged, a2n)
+                if util >= min_util:
+                    # Compute average Jaccard as tiebreaker
+                    jac_sum = sum(
+                        jaccard(a2n[a], a2n[b])
+                        for a in bundles[i] for b in bundles[j]
+                    )
+                    jac_avg = jac_sum / (len(bundles[i]) * len(bundles[j]))
+                    if jac_avg > best_jac:
+                        best_jac = jac_avg
+                        best_i, best_j = i, j
+        if best_i is not None:
+            bundles[best_i] = bundles[best_i] + bundles[best_j]
+            del bundles[best_j]
+            changed = True
+
+    return bundles
+
+
+def print_utilization_analysis(nests, a2n, threshold=0.5):
+    """Section 11: utilization-aware bundles."""
+
+    print("## 11. Utilization-aware bundles (zero cache waste)\n")
+    print("A bundle packed as AoS or AoSoA wastes cache-line bandwidth "
+          "whenever a nest accesses some but not all members.  The "
+          "**bundle utilization** measures the worst case:\n")
+    print("$$\\text{util}(B) = \\min_{N:\\, N \\cap B \\neq \\emptyset}"
+          " \\frac{|N \\cap B|}{|B|}$$\n")
+    print("util${}=1.0$: every nest uses every field (zero waste). "
+          "util${}=0.5$: some nest loads the record but ignores half.\n")
+
+    # Show utilization of the Jaccard-based bundles from §9
+    raw_bundles = greedy_jaccard_bundles(a2n, threshold)
+    constrained = constrain_bundles(raw_bundles, a2n)
+
+    print("### Utilization of Jaccard bundles (§9)\n")
+    print("| Bundle | Size | Util | Worst nest | Accessed | Wasted |")
+    print("|-------:|-----:|-----:|-----------:|---------:|-------:|")
+    for bi, bundle in enumerate(constrained):
+        util = bundle_utilization(bundle, a2n)
+        wnid, wutil, acc, miss = worst_nest_for_bundle(bundle, a2n, nests)
+        wnest_str = f"N{wnid}" if wnid else "—"
+        acc_str = f"{len(acc)}/{len(bundle)}"
+        miss_str = ", ".join(f"`{m}`" for m in miss) if miss else "—"
+        flag = " ⚠" if util < 1.0 else ""
+        print(f"| {bi+1} | {len(bundle)} | {util:.0%}{flag} "
+              f"| {wnest_str} | {acc_str} | {miss_str} |")
+    print()
+
+    # Build strict co-access bundles (util = 1.0)
+    strict = strict_coaccess_bundles(a2n, min_util=1.0)
+
+    print("### Strict co-access bundles (util = 1.0)\n")
+    print("Arrays with identical nest-membership sets are grouped, then "
+          "groups are merged only if the merged bundle maintains util = 1.0 "
+          "(every nest that touches the bundle uses every field).\n")
+
+    sizes_strict = [len(b) for b in strict]
+    print(f"{len(strict)} bundles: sizes {sizes_strict}, "
+          f"total {sum(sizes_strict)} arrays.\n")
+
+    for bi, bundle in enumerate(strict):
+        common = set.intersection(*(a2n[a] for a in bundle))
+        any_nests = set.union(*(a2n[a] for a in bundle))
+        util = bundle_utilization(bundle, a2n)
+
+        print(f"### Strict bundle {bi+1} ({len(bundle)} arrays) "
+              f"— util={util:.0%}\n")
+        print(f"- Nests ∩: "
+              f"{sorted(common) if common else '(none)'}")
+        print(f"- Nests ∪: {sorted(any_nests)}\n")
+        print("| Array | #Nests | Nests |")
+        print("|-------|:------:|-------|")
+        for a in bundle:
+            print(f"| `{a}` | {len(a2n[a])} | {sorted(a2n[a])} |")
+        print()
+
+    # Size-constrained strict bundles
+    strict_constrained = constrain_bundles(strict, a2n)
+    print("### Strict bundles with size constraint\n")
+    sizes_sc = [len(b) for b in strict_constrained]
+    print(f"{len(strict_constrained)} bundles: sizes {sizes_sc}\n")
+
+    print("| Bundle | Size | Util | Arrays |")
+    print("|-------:|-----:|-----:|--------|")
+    for bi, bundle in enumerate(strict_constrained):
+        util = bundle_utilization(bundle, a2n)
+        arrs = ", ".join(f"`{a}`" for a in bundle)
+        flag = " ⚠" if util < 1.0 else ""
+        print(f"| {bi+1} | {len(bundle)} | {util:.0%}{flag} | {arrs} |")
+    print()
+
+    # Comparison
+    print("### Utilization comparison\n")
+    print("| Method | Bundles | Min util | Avg util | Bundles with util<1 |")
+    print("|--------|--------:|---------:|---------:|--------------------:|")
+    for label, blist in [("Jaccard §9", constrained),
+                         ("Strict", strict),
+                         ("Strict+sized", strict_constrained)]:
+        utils = [bundle_utilization(b, a2n) for b in blist]
+        min_u = min(utils) if utils else 1.0
+        avg_u = sum(utils) / len(utils) if utils else 1.0
+        n_bad = sum(1 for u in utils if u < 1.0)
+        print(f"| {label} | {len(blist)} | {min_u:.0%} | {avg_u:.0%} "
+              f"| {n_bad} |")
+    print()
+
+
+# ===========================================================================
 #  Entry point
 # ===========================================================================
 
@@ -872,6 +1060,7 @@ def main():
     print_report(routine.name, nests)
     a2n = build_array_to_nests(nests)
     print_jaccard_and_bundles(nests, a2n, threshold=0.5)
+    print_utilization_analysis(nests, a2n, threshold=0.5)
     builtins.print = old_print
 
     report = buf.getvalue()

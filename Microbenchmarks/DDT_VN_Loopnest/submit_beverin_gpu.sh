@@ -76,7 +76,6 @@ hipcc -O3 -std=c++17 \
     -mtune=native \
     -ffast-math \
     -munsafe-fp-atomics \
-    -fvect-cost-model=cheap \
     -fgpu-flush-denormals-to-zero \
     -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
     -o bench_ddt_vn_gpu_sweep ddt_vn_gpu.cpp
