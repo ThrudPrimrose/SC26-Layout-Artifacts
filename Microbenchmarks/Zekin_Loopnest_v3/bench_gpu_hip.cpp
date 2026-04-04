@@ -415,8 +415,7 @@ static void run_dist_block(
     const char* dist_label,
     int V_start, int V_end,    /* inclusive range of V values */
     int* cell_logical, int* vert_logical,
-    double* icon_inv_dual, double* icon_inv_primal, double* icon_tangent, /* NULL for synthetic */
-    std::mt19937& rng, VertData& vd, CellDist dist)
+    double* icon_inv_dual, double* icon_inv_primal, double* icon_tangent)
 {
     BenchData bd;
     bd.alloc(N, nlev);
@@ -526,63 +525,29 @@ int main(int argc, char* argv[]) {
         int nlev_base = NLEVS[nlev_i];
         int nlev_padded = icon_pad_nlev(nlev_base);
 
-        /* ============================================================ */
-        /*  V1-V4 synthetic: nlev = nlev_end = nlev_base (no padding)   */
-        /* ============================================================ */
-        for (int di = 0; di < 4; di++) {
-            gen_cell_idx_logical(cell_logical, N, (CellDist)di, rng);
-            run_dist_block(fcsv, N, nlev_base, nlev_base,
-                dist_name[di], 1, 4,
-                cell_logical, vd.logical,
-                nullptr, nullptr, nullptr,
-                rng, vd, (CellDist)di);
-        }
+        // synthetic V1-V4
+        run_dist_block(fcsv, N, nlev_base, nlev_base,
+            dist_name[di], 1, 4,
+            cell_logical, vd.logical,
+            nullptr, nullptr, nullptr);
 
-        /* ============================================================ */
-        /*  V5 synthetic: nlev = padded, nlev_end = nlev_base           */
-        /* ============================================================ */
-        if (nlev_padded != nlev_base) {
-            for (int di = 0; di < 4; di++) {
-                gen_cell_idx_logical(cell_logical, N, (CellDist)di, rng);
-                run_dist_block(fcsv, N, nlev_padded, nlev_base,
-                    dist_name[di], 5, 5,
-                    cell_logical, vd.logical,
-                    nullptr, nullptr, nullptr,
-                    rng, vd, (CellDist)di);
-            }
-        }
+        // synthetic V5
+        run_dist_block(fcsv, N, nlev_padded, nlev_base,
+            dist_name[di], 5, 5,
+            cell_logical, vd.logical,
+            nullptr, nullptr, nullptr);
 
-        /* ============================================================ */
-        /*  V1-V4 exact: nlev = nlev_end = nlev_base                    */
-        /* ============================================================ */
-        if (have_exact) {
-            const int Ne = icon_ed.n_edges;
-            if (icon_ed.n_cells > Ne || icon_ed.n_verts > Ne) {
-                fprintf(stderr, "WARNING: n_cells/n_verts > Ne; skipping exact nlev=%d\n", nlev_base);
-            } else {
-                int* ecl = new int[Ne*2];
-                int* evl = new int[Ne*2];
-                for (int i = 0; i < Ne*2; i++) { ecl[i]=icon_ed.cell_idx[i]; evl[i]=icon_ed.vert_idx[i]; }
+        // exact V1-V4
+        run_dist_block(fcsv, Ne, nlev_base, nlev_base,
+            "exact", 1, 4,
+            ecl, evl,
+            icon_ed.inv_dual.data(), icon_ed.inv_primal.data(), icon_ed.tangent_o.data());
 
-                run_dist_block(fcsv, Ne, nlev_base, nlev_base,
-                    "exact", 1, 4,
-                    ecl, evl,
-                    icon_ed.inv_dual.data(), icon_ed.inv_primal.data(), icon_ed.tangent_o.data(),
-                    rng, vd, DIST_UNIFORM);
-
-                /* V5 exact */
-                if (nlev_padded != nlev_base) {
-                    run_dist_block(fcsv, Ne, nlev_padded, nlev_base,
-                        "exact", 5, 5,
-                        ecl, evl,
-                        icon_ed.inv_dual.data(), icon_ed.inv_primal.data(), icon_ed.tangent_o.data(),
-                        rng, vd, DIST_UNIFORM);
-                }
-
-                delete[] ecl;
-                delete[] evl;
-            }
-        }
+        // exact V5
+        run_dist_block(fcsv, Ne, nlev_padded, nlev_base,
+            "exact", 5, 5,
+            ecl, evl,
+            icon_ed.inv_dual.data(), icon_ed.inv_primal.data(), icon_ed.tangent_o.data());
     }
 
     g_flush.destroy();
