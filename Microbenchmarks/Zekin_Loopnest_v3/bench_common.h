@@ -25,8 +25,8 @@
 /*  constants                                                        */
 /* ================================================================ */
 static constexpr int NPROMA = 81920;
-static constexpr int NLEVS[] = {90};
-static constexpr int N_NLEVS = 1;
+static constexpr int NLEVS[] = {96, 90};
+static constexpr int N_NLEVS = 2;
 static constexpr int WARMUP = 5;
 static constexpr int NRUNS = 100;
 

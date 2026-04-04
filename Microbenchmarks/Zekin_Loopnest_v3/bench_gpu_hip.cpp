@@ -8,6 +8,10 @@
  * Now supports a 5th cell distribution "exact" loaded from ICON serialised
  * p_patch files.
  *
+ * nlev  = array stride (padded, e.g. 96)
+ * nlev_end = actual compute bound (e.g. 90)
+ * For synthetic distributions nlev_end == nlev.
+ *
  * Environment:
  *   ICON_DATA_PATH  - directory containing p_patch.*.data files
  *                     default: /home/primrose/Work/icon-artifacts/velocity/data_r02b05
@@ -53,6 +57,7 @@
 
 /* ================================================================ */
 /*  CPU reference (serial, for verification)                         */
+/*  nlev = stride, nlev_end = loop bound                             */
 /* ================================================================ */
 template<int V>
 static void cpu_reference(
@@ -61,9 +66,9 @@ static void cpu_reference(
     const double* __restrict__ w,       const int*    __restrict__ cell_idx,
     const double* __restrict__ z_vt_ie, const double* __restrict__ inv_primal,
     const double* __restrict__ tangent, const double* __restrict__ z_w_v,
-    const int*    __restrict__ vert_idx, int N, int nlev)
+    const int*    __restrict__ vert_idx, int N, int nlev, int nlev_end)
 {
-    for (int jk = 0; jk < nlev; jk++)
+    for (int jk = 0; jk < nlev_end; jk++)
         for (int je = 0; je < N; je++) { STENCIL_BODY(V) }
 }
 
@@ -72,13 +77,13 @@ static void cpu_reference_v(int V,
     const double* w, const int* cell_idx,
     const double* z_vt_ie, const double* inv_primal,
     const double* tangent, const double* z_w_v,
-    const int* vert_idx, int N, int nlev)
+    const int* vert_idx, int N, int nlev, int nlev_end)
 {
     switch (V) {
-        case 1: cpu_reference<1>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
-        case 2: cpu_reference<2>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
-        case 3: cpu_reference<3>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
-        case 4: cpu_reference<4>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+        case 1: cpu_reference<1>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+        case 2: cpu_reference<2>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+        case 3: cpu_reference<3>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+        case 4: cpu_reference<4>(out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
     }
 }
 
@@ -108,6 +113,7 @@ static bool verify(const double* got, const double* ref, size_t n,
 
 /* ================================================================ */
 /*  GPU kernel -- V1/V2: threadIdx.x = je, threadIdx.y = jk          */
+/*  nlev = stride, nlev_end = loop bound                             */
 /* ================================================================ */
 
 template<int TX, int TY, int BX, int BY, int V>
@@ -117,7 +123,7 @@ __global__ void gpu_kernel_je_first(
     const double* __restrict__ w,       const int*    __restrict__ cell_idx,
     const double* __restrict__ z_vt_ie, const double* __restrict__ inv_primal,
     const double* __restrict__ tangent, const double* __restrict__ z_w_v,
-    const int*    __restrict__ vert_idx, int N, int nlev)
+    const int*    __restrict__ vert_idx, int N, int nlev, int nlev_end)
 {
     const int je_base = ((int)blockIdx.x * BX + (int)threadIdx.x) * TX;
     const int jk_base = ((int)blockIdx.y * BY + (int)threadIdx.y) * TY;
@@ -142,7 +148,7 @@ __global__ void gpu_kernel_je_first(
     #pragma unroll
     for (int ty = 0; ty < TY; ty++) {
         int jk = jk_base + ty;
-        if (jk >= nlev) continue;
+        if (jk >= nlev_end) continue;
         #pragma unroll
         for (int tx = 0; tx < TX; tx++) {
             int je = je_base + tx;
@@ -161,6 +167,7 @@ __global__ void gpu_kernel_je_first(
 
 /* ================================================================ */
 /*  GPU kernel -- V3/V4: threadIdx.x = jk, threadIdx.y = je          */
+/*  nlev = stride, nlev_end = loop bound                             */
 /* ================================================================ */
 
 template<int TX, int TY, int BX, int BY, int V>
@@ -170,7 +177,7 @@ __global__ void gpu_kernel_jk_first(
     const double* __restrict__ w,       const int*    __restrict__ cell_idx,
     const double* __restrict__ z_vt_ie, const double* __restrict__ inv_primal,
     const double* __restrict__ tangent, const double* __restrict__ z_w_v,
-    const int*    __restrict__ vert_idx, int N, int nlev)
+    const int*    __restrict__ vert_idx, int N, int nlev, int nlev_end)
 {
     const int jk_base = ((int)blockIdx.x * BX + (int)threadIdx.x) * TX;
     const int je_base = ((int)blockIdx.y * BY + (int)threadIdx.y) * TY;
@@ -199,7 +206,7 @@ __global__ void gpu_kernel_jk_first(
         #pragma unroll
         for (int tx = 0; tx < TX; tx++) {
             int jk = jk_base + tx;
-            if (jk >= nlev) continue;
+            if (jk >= nlev_end) continue;
             int c2d = IC<V>(je, jk, N, nlev);
             out[c2d] =
                 vn_ie[c2d] * id_a[ty] *
@@ -296,6 +303,7 @@ static constexpr int N_GCFG = sizeof(GCFG) / sizeof(GCFG[0]);
 
 /* ================================================================ */
 /*  GPU launch dispatch                                              */
+/*  nlev = stride, nlev_end = compute bound                          */
 /* ================================================================ */
 
 template<int V>
@@ -304,33 +312,29 @@ static void launch_gpu(int cfg,
     const double* w, const int* cell_idx,
     const double* z_vt_ie, const double* inv_primal,
     const double* tangent, const double* z_w_v,
-    const int* vert_idx, int N, int nlev)
+    const int* vert_idx, int N, int nlev, int nlev_end)
 {
     #define LG_JE(TX_,TY_,BX_,BY_) do {                                   \
         dim3 blk(BX_, BY_);                                                \
-        dim3 grd(((unsigned)N    + (BX_)*(TX_) - 1) / ((BX_)*(TX_)),      \
-                 ((unsigned)nlev + (BY_)*(TY_) - 1) / ((BY_)*(TY_)));     \
+        dim3 grd(((unsigned)N        + (BX_)*(TX_) - 1) / ((BX_)*(TX_)),  \
+                 ((unsigned)nlev_end + (BY_)*(TY_) - 1) / ((BY_)*(TY_))); \
         gpu_kernel_je_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(              \
             out, vn_ie, inv_dual, w, cell_idx,                             \
-            z_vt_ie, inv_primal, tangent, z_w_v, vert_idx, N, nlev);       \
+            z_vt_ie, inv_primal, tangent, z_w_v, vert_idx,                 \
+            N, nlev, nlev_end);                                            \
         CUDA_LAUNCH_CHECK();                                               \
     } while(0)
 
     #define LG_JK(TX_,TY_,BX_,BY_) do {                                       \
-        constexpr int TOTAL = (BX_)*(BY_);                                     \
-        constexpr bool REMAP = ((BX_)*(TX_) > 96);                            \
-        constexpr int BXe = REMAP ? 96 : (BX_);                               \
-        constexpr int BYe_raw = REMAP ? (TOTAL / 96) : (BY_);                 \
-        constexpr int BYe = BYe_raw > 0 ? BYe_raw : 1;                        \
-        constexpr int TXe = REMAP ? 1  : (TX_);                               \
-        constexpr int TYe_raw = REMAP ? ((TX_)*(TY_)) : (TY_);               \
-        constexpr int TYe = TYe_raw > 0 ? TYe_raw : 1;                        \
-        dim3 blk(BXe, BYe);                                                    \
-        dim3 grd(((unsigned)nlev + BXe*TXe - 1) / (BXe*TXe),                  \
-                ((unsigned)N    + BYe*TYe - 1) / (BYe*TYe));                 \
-        gpu_kernel_jk_first<TXe,TYe,BXe,BYe,V><<<grd,blk>>>(                 \
+        if ((BX_)*(TX_) > nlev_end) break;                                     \
+        dim3 blk(BX_, BY_);                                                    \
+        dim3 grd(((unsigned)nlev_end + (BX_)*(TX_) - 1) / ((BX_)*(TX_)),      \
+                 ((unsigned)N        + (BY_)*(TY_) - 1) / ((BY_)*(TY_)));     \
+        if (grd.x > 65535u || grd.y > 65535u) break;                          \
+        gpu_kernel_jk_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(                  \
             out, vn_ie, inv_dual, w, cell_idx,                                 \
-            z_vt_ie, inv_primal, tangent, z_w_v, vert_idx, N, nlev);          \
+            z_vt_ie, inv_primal, tangent, z_w_v, vert_idx,                    \
+            N, nlev, nlev_end);                                                \
         CUDA_LAUNCH_CHECK();                                                   \
     } while(0)
 
@@ -425,13 +429,13 @@ static void launch_gpu_v(int V, int cfg,
     const double* w, const int* cell_idx,
     const double* z_vt_ie, const double* inv_primal,
     const double* tangent, const double* z_w_v,
-    const int* vert_idx, int N, int nlev)
+    const int* vert_idx, int N, int nlev, int nlev_end)
 {
     switch (V) {
-        case 1: launch_gpu<1>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
-        case 2: launch_gpu<2>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
-        case 3: launch_gpu<3>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
-        case 4: launch_gpu<4>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev); break;
+        case 1: launch_gpu<1>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+        case 2: launch_gpu<2>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+        case 3: launch_gpu<3>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+        case 4: launch_gpu<4>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
     }
 }
 
@@ -507,10 +511,11 @@ static GpuFlush g_flush;
 
 /* ================================================================ */
 /*  Helper: run all GPU configs for one (N, nlev, dist, V) combo     */
+/*  nlev = stride (padded), nlev_end = compute bound                 */
 /* ================================================================ */
 static void run_variant_configs(
     FILE* fcsv,
-    int V, int N, int nlev, const char* dist_label,
+    int V, int N, int nlev, int nlev_end, const char* dist_label,
     double* h_ref,
     double* h_vn_ie, double* inv_dual,
     double* h_w,     int*    h_cidx,
@@ -526,11 +531,12 @@ static void run_variant_configs(
     hipEvent_t ev0, hipEvent_t ev1,
     double* h_gpu_out)
 {
-    /* CPU reference */
+    /* CPU reference -- zero-init so padding matches */
+    memset(h_ref, 0, sz2d * sizeof(double));
     cpu_reference_v(V,
         h_ref, h_vn_ie, inv_dual,
         h_w, h_cidx, h_z_vt_ie, inv_primal,
-        tangent_o, h_z_w_v, h_vidx, N, nlev);
+        tangent_o, h_z_w_v, h_vidx, N, nlev, nlev_end);
 
     /* upload variant data */
     CUDA_CHECK(hipMemcpy(d_vn_ie,      h_vn_ie,    sz2d*sizeof(double), hipMemcpyHostToDevice));
@@ -544,12 +550,15 @@ static void run_variant_configs(
     CUDA_CHECK(hipMemcpy(d_tangent,    tangent_o,  N*sizeof(double),    hipMemcpyHostToDevice));
 
     for (int ci = 0; ci < N_GCFG; ci++) {
+        /* zero d_out so padding matches h_ref */
+        CUDA_CHECK(hipMemset(d_out, 0, sz2d * sizeof(double)));
+
         /* warmup */
         for (int r = 0; r < WARMUP; r++) {
             g_flush.flush();
             launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
                 d_w, d_cidx, d_z_vt_ie, d_inv_primal,
-                d_tangent, d_z_w_v, d_vidx, N, nlev);
+                d_tangent, d_z_w_v, d_vidx, N, nlev, nlev_end);
             CUDA_CHECK(hipDeviceSynchronize());
         }
 
@@ -565,17 +574,17 @@ static void run_variant_configs(
             int ff_je, ff_jk;
             if (V <= 2) { ff_je = first_fail % N; ff_jk = first_fail / N; }
             else         { ff_jk = first_fail % nlev; ff_je = first_fail / nlev; }
-            printf("VERIFY FAIL: nlev=%d dist=%-12s V=%d cfg=%-14s  "
+            printf("VERIFY FAIL: nlev=%d(%d) dist=%-12s V=%d cfg=%-14s  "
                    "fails=%d/%zu max_rel=%.3e\n"
                    "  first_fail: idx=%zu (je=%d,jk=%d) got=%.6e ref=%.6e\n",
-                   nlev, dist_label, V, GCFG[ci].label,
+                   nlev, nlev_end, dist_label, V, GCFG[ci].label,
                    n_fail, sz2d, max_rel,
                    first_fail, ff_je, ff_jk,
                    h_gpu_out[first_fail], h_ref[first_fail]);
             continue;
         } else if (ci == 0) {
-            printf("VERIFY OK:   nlev=%d dist=%-12s V=%d max_rel=%.3e\n",
-                   nlev, dist_label, V, max_rel);
+            printf("VERIFY OK:   nlev=%d(%d) dist=%-12s V=%d max_rel=%.3e\n",
+                   nlev, nlev_end, dist_label, V, max_rel);
         }
 
         /* timed runs */
@@ -584,14 +593,14 @@ static void run_variant_configs(
             CUDA_CHECK(hipEventRecord(ev0));
             launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
                 d_w, d_cidx, d_z_vt_ie, d_inv_primal,
-                d_tangent, d_z_w_v, d_vidx, N, nlev);
+                d_tangent, d_z_w_v, d_vidx, N, nlev, nlev_end);
             CUDA_CHECK(hipEventRecord(ev1));
             CUDA_CHECK(hipEventSynchronize(ev1));
             float ms = 0.0f;
             CUDA_CHECK(hipEventElapsedTime(&ms, ev0, ev1));
             fprintf(fcsv,
                 "gpu,%d,%d,%d,%s,%s,%d,%d,%d,%d,%d,%.6f\n",
-                V, nlev, N, dist_label,
+                V, nlev_end, N, dist_label,
                 GCFG[ci].label,
                 GCFG[ci].tx, GCFG[ci].ty,
                 GCFG[ci].bx, GCFG[ci].by,
@@ -600,7 +609,7 @@ static void run_variant_configs(
         }
     }
 
-    printf("Done: nlev=%d  dist=%-12s  V=%d\n", nlev, dist_label, V);
+    printf("Done: nlev=%d(%d)  dist=%-12s  V=%d\n", nlev, nlev_end, dist_label, V);
 }
 
 /* ================================================================ */
@@ -621,14 +630,7 @@ int main(int argc, char* argv[]) {
 
     int* cell_logical = new int[N * 2];
 
-    /* ---- load ICON exact data ----
-     *
-     * ICON_DATA_PATH env var -> directory (default: the primrose path)
-     * argv[1] -> timestep (default: 9)
-     *
-     * We first read nproma from the global data file (authoritative source),
-     * then load the p_patch with correct nproma for linearisation.
-     */
+    /* ---- load ICON exact data ---- */
     int icon_step = 9;
     if (argc >= 2) icon_step = atoi(argv[1]);
 
@@ -674,7 +676,7 @@ int main(int argc, char* argv[]) {
         int nlev = NLEVS[nlev_i];
 
         /* ============================================================ */
-        /*  Synthetic distributions (uniform, normal1, normal4, ...)    */
+        /*  Synthetic distributions -- nlev_end == nlev (no padding)    */
         /* ============================================================ */
         {
             BenchData bd;
@@ -710,7 +712,7 @@ int main(int argc, char* argv[]) {
                 for (int V = 1; V <= 4; V++) {
                     bd.set_variant(V, cell_logical, vd.logical);
 
-                    run_variant_configs(fcsv, V, N, nlev, dist_name[di],
+                    run_variant_configs(fcsv, V, N, nlev, nlev, dist_name[di],
                         h_ref,
                         bd.h_vn_ie, bd.inv_dual,
                         bd.h_w, bd.h_cidx,
@@ -741,29 +743,27 @@ int main(int argc, char* argv[]) {
 
         /* ============================================================ */
         /*  EXACT distribution from ICON grid data                      */
+        /*  nlev_end = original nlev, nlev = padded to 32               */
         /* ============================================================ */
         if (have_exact) {
-            const int Ne = icon_ed.n_edges; /* nproma * nblks_e */
+            const int Ne = icon_ed.n_edges;
+            const int nlev_end = nlev;
+            const int nlev_padded = icon_pad_nlev(nlev);
 
-            printf("\n=== EXACT distribution: nlev=%d  Ne=%d (nproma=%d * nblks_e=%d) ===\n",
-                   nlev, Ne, icon_ed.nproma, icon_ed.nblks_e);
+            printf("\n=== EXACT distribution: nlev_end=%d nlev_padded=%d  "
+                   "Ne=%d (nproma=%d * nblks_e=%d) ===\n",
+                   nlev_end, nlev_padded, Ne, icon_ed.nproma, icon_ed.nblks_e);
 
-            /*
-             * The benchmark allocates all 2-D arrays as Ne * nlev and uses Ne
-             * as the horizontal stride in IC<V>.  Indirect accesses into w go
-             * to cell IDs (< n_cells) and into z_w_v to vert IDs (< n_verts).
-             * Both must fit within the Ne-strided allocation.
-             */
             if (icon_ed.n_cells > Ne || icon_ed.n_verts > Ne) {
                 fprintf(stderr, "WARNING: n_cells=%d or n_verts=%d > Ne=%d; "
                         "skipping exact for nlev=%d\n",
-                        icon_ed.n_cells, icon_ed.n_verts, Ne, nlev);
+                        icon_ed.n_cells, icon_ed.n_verts, Ne, nlev_end);
                 continue;
             }
 
             BenchData bd;
-            bd.alloc(Ne, nlev);
-            bd.fill(nlev);
+            bd.alloc(Ne, nlev_padded);
+            bd.fill(nlev_padded);
 
             size_t sz2d = bd.sz2d;
             double* h_ref     = new double[sz2d];
@@ -806,7 +806,7 @@ int main(int argc, char* argv[]) {
             for (int V = 1; V <= 4; V++) {
                 bd.set_variant(V, exact_cell_logical, exact_vert_logical);
 
-                run_variant_configs(fcsv, V, Ne, nlev, "exact",
+                run_variant_configs(fcsv, V, Ne, nlev_padded, nlev_end, "exact",
                     h_ref,
                     bd.h_vn_ie, bd.inv_dual,
                     bd.h_w, bd.h_cidx,
