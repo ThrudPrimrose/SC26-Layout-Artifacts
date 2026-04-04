@@ -2,12 +2,13 @@
 #SBATCH --job-name=zekin_d
 #SBATCH --nodes=1
 #SBATCH --partition=normal
-#SBATCH --time=01:30:00
-#SBATCH --output=zekin_d_%j.out
-#SBATCH --error=zekin_d_%j.err
+#SBATCH --time=02:30:00
+#SBATCH --output=zekin_d_gpu_%j.out
+#SBATCH --error=zekin_d_gpu_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=288
-
+#SBATCH --account=g177-1
+#SBATCH --exclusive
 # -------------------------------
 # OpenMP configuration
 # -------------------------------
@@ -45,7 +46,7 @@ export ICON_DATA_PATH=/capstor/scratch/cscs/ybudanaz/icon-artifacts/velocity/dat
 
 nvcc -O3 -std=c++17 \
     -arch=sm_90 \
-    -Xcompiler=-fopenmp -ffast-math \
+    -Xcompiler=-fopenmp  \
     -Xcompiler="-march=native -ffast-math -mtune=native" \
     --use_fast_math \
     -o bench_gpu_d bench_gpu.cu

@@ -1,5 +1,4 @@
 #include "hip/hip_runtime.h"
-#include "hip/hip_runtime.h"
 /*
  * bench_gpu.cu -- GPU-only z_v_grad_w stencil benchmark
  *
