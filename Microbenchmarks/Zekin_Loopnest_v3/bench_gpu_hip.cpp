@@ -172,8 +172,8 @@ __global__ void gpu_kernel_jk_first(
     const double* __restrict__ tangent, const double* __restrict__ z_w_v,
     const int*    __restrict__ vert_idx, int N, int nlev)
 {
-    const int jk_base = ((int)blockIdx.y * BX + (int)threadIdx.x) * TX;
-    const int je_base = ((int)blockIdx.x * BY + (int)threadIdx.y) * TY;
+    const int jk_base = ((int)blockIdx.x * BX + (int)threadIdx.x) * TX;
+    const int je_base = ((int)blockIdx.y * BY + (int)threadIdx.y) * TY;
 
     int    ci0_a[TY], ci1_a[TY], vi0_a[TY], vi1_a[TY];
     double id_a[TY],  ip_a[TY],  tg_a[TY];
