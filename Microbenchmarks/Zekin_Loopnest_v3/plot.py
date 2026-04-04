@@ -17,8 +17,8 @@ import pandas as pd, numpy as np, argparse
 # ---- CONFIG ----
 GPU_AMD_CSV = "z_v_grad_w_gpu.csv"
 GPU_NV_CSV  = "z_v_grad_w_gpu.csv"
-CPU_AMD_CSV = "z_v_grad_w_cpu_b.csv"
-CPU_NV_CSV  = "z_v_grad_w_cpu_b.csv"
+CPU_AMD_CSV = "z_v_grad_w_cpu.csv"
+CPU_NV_CSV  = "z_v_grad_w_cpu.csv"
 
 STREAM_PEAK = {
     "MI300A Zen CPU": 1228*1e-3,  "Grace CPU": 1700.62*1e-3,

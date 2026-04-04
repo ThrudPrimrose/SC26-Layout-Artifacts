@@ -544,7 +544,7 @@ inline std::string icon_patch_path(int timestep = 9) {
 }
 
 inline std::string icon_global_path(int timestep = 9) {
-  return icon_data_dir() + "/global_data." + std::to_string(timestep) + ".data";
+  return icon_data_dir() + "/global_data.t0." + std::to_string(timestep) + ".data";
 }
 
 #endif /* ICON_DATA_LOADER_H */
