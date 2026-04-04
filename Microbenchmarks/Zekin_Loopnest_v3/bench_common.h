@@ -25,8 +25,8 @@
 /*  constants                                                        */
 /* ================================================================ */
 static constexpr int NPROMA = 81920;
-static constexpr int NLEVS[] = {90, 96};
-static constexpr int N_NLEVS = 2;
+static constexpr int NLEVS[] = {90};
+static constexpr int N_NLEVS = 1;
 static constexpr int WARMUP = 5;
 static constexpr int NRUNS = 100;
 
@@ -261,7 +261,7 @@ template <typename T> static T *numa_alloc_unfaulted(size_t count) {
     perror("mmap");
     std::abort();
   }
-  madvise(p, bytes, MADV_NOHUGEPAGE);
+  madvise(p, bytes, MADV_HUGEPAGE);
   return (T *)p;
 }
 template <typename T> static void numa_dealloc(T *p, size_t count) {
