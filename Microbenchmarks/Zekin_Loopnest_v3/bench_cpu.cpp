@@ -187,7 +187,7 @@ static bool verify(const double *got, const double *ref, size_t n, int *nf,
 }
 
 /* ---- Flush ---- */
-static constexpr int FN = 8192 * 4, FS = 3;
+static constexpr int FN = 8192 * 2, FS = 3;
 static double *fb0 = nullptr, *fb1 = nullptr;
 static void flush() {
   static bool init = false;
@@ -212,7 +212,6 @@ static void flush() {
                                 A[i * FN + (j - 1)] + A[i * FN + (j + 1)]);
     std::swap(A, B);
   }
-  printf("  [flush] A[0]=%.6e\n", A[0]);
 }
 
 /* ---- Run unblocked ---- */
