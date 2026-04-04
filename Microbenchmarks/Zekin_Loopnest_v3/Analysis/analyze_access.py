@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 from dataclasses import dataclass, field
 from collections import defaultdict
+from itertools import combinations
 
 from loki import Sourcefile, FindNodes, FindVariables, fgen
 from loki.ir import Loop, Assignment, Conditional, Section
@@ -110,6 +111,14 @@ class LoopNestInfo:
         self.loop_shape = ".".join(_role(v) or "?" for v in self.vars)
         self.ranges = [_classify_range(b, v) for b, v in zip(self.bounds, self.vars)]
 
+    @property
+    def unique_array_names(self):
+        return sorted(set(acc.name for acc in self.accesses))
+
+    @property
+    def has_unstructured(self):
+        return any("U" in acc.structuredness for acc in self.accesses)
+
     # --- Per-array (fine-grained) ---
 
     @property
@@ -127,30 +136,16 @@ class LoopNestInfo:
 
     @property
     def collapsed_su(self):
-        """
-        Single collapsed signature for the whole nest: one entry per dimension role.
-        For each role (h, v, b) present across ALL arrays, take the worst case:
-          U > S > C
-        If mixed S/U for a role → U wins.
-
-        Example: arrays with patterns {h:S v:S b:S, h:U v:S h:U}
-          → h: U (some array is U)  v: S (all structured)  b: S
-          → collapsed: "h:U v:S b:S"
-        """
-        # Collect worst-case structuredness per role
-        role_worst = {}  # role -> worst S/U seen
+        role_worst = {}
         priority = {"U": 3, "S": 2, "C": 1}
-
         for acc in self.accesses:
             for v, su in zip(acc.dim_vars, acc.structuredness):
                 role = _role(v) if v and v not in ("const", "?") else None
                 if role is None:
-                    continue  # skip constant dims
+                    continue
                 cur = role_worst.get(role, "C")
                 if priority.get(su, 0) > priority.get(cur, 0):
                     role_worst[role] = su
-
-        # Build sorted signature: h, v, b order
         order = {"h": 0, "v": 1, "b": 2}
         parts = []
         for role in sorted(role_worst.keys(), key=lambda r: order.get(r, 99)):
@@ -159,36 +154,22 @@ class LoopNestInfo:
 
     @property
     def pattern_key(self):
-        """Collapsed identity: shape + ranges + behavior + collapsed S/U."""
         return (self.loop_shape, tuple(self.ranges), self.behavior, self.collapsed_su)
 
     @property
     def shape_key(self):
-        """Shape + ranges + behavior (ignoring S/U details)."""
         return (self.loop_shape, tuple(self.ranges), self.behavior)
 
     @property
     def source_code(self):
-        """
-        Fortran source for this nest via Loki's fgen backend.
-
-        For b.h nests (jb outer, jc/je inner): prints only the inner loop,
-        since the jb loop body contains many unrelated nests.
-        For v.h nests (jk outer, jc/je inner): prints the full outer loop
-        (jk wraps only this one inner loop, so it's compact).
-        For single loops: prints the loop.
-        """
         if not self.ir_nodes:
             return "! (no IR nodes stored)"
         if len(self.ir_nodes) == 1:
             return fgen(self.ir_nodes[0])
-        # 2-level nest
         outer_role = _role(self.vars[0])
         if outer_role == "b":
-            # jb body is large — show only the inner loop
             return f"! inside DO {self.vars[0]} = {self.bounds[0]}\n" + fgen(self.ir_nodes[1])
         else:
-            # v.h or other — show the full outer loop (compact)
             return fgen(self.ir_nodes[0])
 
 
@@ -250,7 +231,6 @@ def extract_array_accesses(node, loop_vars):
             continue
         if var.name.lower() in INDIRECT_ARRAYS:
             continue
-
         name = get_full_name(var)
         dim_vars, is_indirect = [], []
         for dim in var.dimensions:
@@ -267,50 +247,28 @@ def extract_array_accesses(node, loop_vars):
 
 
 # ---------------------------------------------------------------------------
-# Behavior detection: compute / accumulate / reduction
+# Behavior detection
 # ---------------------------------------------------------------------------
 
 def detect_behavior(loop_body):
-    """
-    Detect loop behavior from assignments in the body.
-
-    Returns:
-      "reduction"   — scalar LHS accumulated with MAX/MIN (classical reduction)
-      "accumulate"  — array LHS appears on RHS too (update-in-place, e.g. A = A + ...)
-      "compute"     — pure computation (LHS not on RHS)
-    """
     has_accumulate = False
-
     for assign in FindNodes(Assignment).visit(loop_body):
         lhs_name = get_full_name(assign.lhs).lower()
         rhs_str = str(assign.rhs).lower()
-
-        # Check for MAX/MIN reduction on scalar (classical reduction pattern)
         if "max(" in rhs_str or "min(" in rhs_str:
             if lhs_name in rhs_str:
                 return "reduction"
-
-        # Check for accumulation: LHS name appears on RHS
         if lhs_name in rhs_str:
             has_accumulate = True
-
     return "accumulate" if has_accumulate else "compute"
 
 
 # ---------------------------------------------------------------------------
-# Loop nest discovery — captures 1-level AND 2-level nests
+# Loop nest discovery
 # ---------------------------------------------------------------------------
 
 def _direct_child_loops(node):
-    """
-    Find Loop nodes that are DIRECT children of 'node' — not nested through
-    another Loop.  Recurses through Sections, Conditionals, etc. but STOPS
-    at Loop boundaries.
-
-    This prevents jb -> je being captured when je actually lives inside jk.
-    """
     result = []
-    # node.body / node.else_body are the children to walk
     for attr in ("body", "else_body"):
         children = getattr(node, attr, None)
         if children is None:
@@ -320,56 +278,35 @@ def _direct_child_loops(node):
         for child in children:
             if isinstance(child, Loop):
                 result.append(child)
-                # Do NOT recurse into this loop — its children are not direct
             elif hasattr(child, "body") or hasattr(child, "else_body"):
-                # Recurse into Sections, Conditionals, PragmaRegions, etc.
                 result.extend(_direct_child_loops(child))
     return result
 
 
 def analyze_loop_nests(routine):
-    """
-    Walk routine body and find all leaf loop nests using direct-child discovery.
-
-    For each loop, finds its DIRECT child loops (not grandchildren through
-    intermediate loops).  Captures:
-      - 2-level pairs: parent -> child (where child has no further children)
-      - 1-level: leaf loops with no child loops at all
-    """
     nests = []
     all_loops = FindNodes(Loop).visit(routine.body)
-
-    # Track loops captured as inner of a pair
     captured_as_inner = set()
 
     for outer_loop in all_loops:
         outer_var = str(outer_loop.variable)
-
-        # Find DIRECT child loops only (not grandchildren)
         direct_children = _direct_child_loops(outer_loop)
         if not direct_children:
-            continue  # leaf — handled in second pass
+            continue
 
         for inner_loop in direct_children:
             inner_var = str(inner_loop.variable)
-
-            # Only leaf pairs: inner loop must have no children
             if _direct_child_loops(inner_loop):
                 continue
-
             captured_as_inner.add(id(inner_loop))
-
             loop_vars = list(dict.fromkeys(
                 [outer_var.lower(), inner_var.lower()] +
                 (["jb"] if "jb" not in [outer_var.lower(), inner_var.lower()] else [])
             ))
-
             accesses = extract_array_accesses(inner_loop.body, loop_vars)
             behavior = detect_behavior(inner_loop.body)
-
             if not accesses and behavior == "compute":
                 continue
-
             nest = LoopNestInfo(
                 vars=[outer_var, inner_var],
                 bounds=[str(outer_loop.bounds), str(inner_loop.bounds)],
@@ -379,27 +316,22 @@ def analyze_loop_nests(routine):
             nest.classify()
             nests.append(nest)
 
-    # Second pass: capture leaf loops NOT already used as inner of a pair
     for loop in all_loops:
         if id(loop) in captured_as_inner:
             continue
         if _direct_child_loops(loop):
-            continue  # not a leaf
-
+            continue
         var = str(loop.variable)
         role = _role(var)
         if role not in ("h", "v"):
             continue
-
         loop_vars = [var.lower()]
         if "jb" not in loop_vars:
             loop_vars.append("jb")
-
         accesses = extract_array_accesses(loop.body, loop_vars)
         behavior = detect_behavior(loop.body)
         if not accesses and behavior == "compute":
             continue
-
         nest = LoopNestInfo(
             vars=[var], bounds=[str(loop.bounds)],
             accesses=accesses, behavior=behavior,
@@ -412,29 +344,437 @@ def analyze_loop_nests(routine):
 
 
 # ---------------------------------------------------------------------------
-# Grouping
+# Grouping (original)
 # ---------------------------------------------------------------------------
 
 def group_arrays(nests):
-    """Group arrays by observed role:S/U signatures."""
     array_role_sigs = defaultdict(set)
     for nest in nests:
         for acc in nest.accesses:
             array_role_sigs[acc.name].add(acc.role_su_signature)
-
     role_groups = defaultdict(set)
     for name, sigs in array_role_sigs.items():
         role_groups[frozenset(sigs)].add(name)
-
     return array_role_sigs, role_groups
 
 
+# ===========================================================================
+#  SET ANALYSIS — new section
+# ===========================================================================
+
+def _jaccard(set_a, set_b):
+    """Jaccard similarity between two sets."""
+    if not set_a and not set_b:
+        return 0.0
+    inter = len(set_a & set_b)
+    union = len(set_a | set_b)
+    return inter / union if union > 0 else 0.0
+
+
+def compute_set_analysis(nests):
+    """
+    Build all the derived data structures for the set analysis report.
+
+    Returns a dict with:
+      all_arrays        – sorted list of every unique array name
+      array_to_nests    – {name: set of nest indices (1-based)}
+      nest_to_arrays    – {nest_idx: set of array names}
+      cooccurrence      – {(a,b): int count}  (symmetric, a<=b)
+      jaccard_arrays    – {(a,b): float}       (symmetric, a<=b)
+      array_class       – {name: "S-only"|"U-only"|"bridge-U"|"bridge-S"}
+      nest_jaccard      – [(i,j,jac,shared)] sorted desc by jac
+      bundles           – list of lists (greedy Jaccard>=0.5 grouping)
+      producer_consumer – [(producer_nest, consumer_nest, shared_arrays)]
+    """
+    n = len(nests)
+    all_arrays = sorted(set(a for nest in nests for a in nest.unique_array_names))
+
+    # --- Array <-> Nest membership ---
+    array_to_nests = {a: set() for a in all_arrays}
+    nest_to_arrays = {}
+    for idx, nest in enumerate(nests):
+        nid = idx + 1  # 1-based
+        nest_to_arrays[nid] = set(nest.unique_array_names)
+        for a in nest.unique_array_names:
+            array_to_nests[a].add(nid)
+
+    # --- Per-array: which nests have U-access on this specific array? ---
+    array_u_nests = {a: set() for a in all_arrays}
+    for idx, nest in enumerate(nests):
+        nid = idx + 1
+        for acc in nest.accesses:
+            if "U" in acc.structuredness:
+                array_u_nests[acc.name].add(nid)
+
+    # --- S-nest / U-nest classification ---
+    s_nests = set()
+    u_nests = set()
+    for idx, nest in enumerate(nests):
+        nid = idx + 1
+        if nest.has_unstructured:
+            u_nests.add(nid)
+        else:
+            s_nests.add(nid)
+
+    # --- Array classification ---
+    array_class = {}
+    for a in all_arrays:
+        nids = array_to_nests[a]
+        in_s = bool(nids & s_nests)
+        in_u = bool(nids & u_nests)
+        has_direct_u = len(array_u_nests[a]) > 0
+        if has_direct_u:
+            array_class[a] = "bridge-U"   # this array itself is U-accessed somewhere
+        elif in_s and in_u:
+            array_class[a] = "bridge-S"   # appears in U-nest but only with S access
+        elif in_u:
+            array_class[a] = "U-only"
+        else:
+            array_class[a] = "S-only"
+
+    # --- Co-occurrence (pair count) ---
+    cooccurrence = defaultdict(int)
+    for nest in nests:
+        names = nest.unique_array_names
+        for i in range(len(names)):
+            for j in range(i, len(names)):
+                pair = tuple(sorted([names[i], names[j]]))
+                cooccurrence[pair] += 1
+
+    # --- Jaccard similarity between arrays (on nest membership) ---
+    jaccard_arrays = {}
+    for a, b in combinations(all_arrays, 2):
+        pair = tuple(sorted([a, b]))
+        jaccard_arrays[pair] = _jaccard(array_to_nests[a], array_to_nests[b])
+
+    # --- Nest-pair overlap (Jaccard on array sets) ---
+    nest_jaccard = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            ni, nj = i + 1, j + 1
+            sA = nest_to_arrays[ni]
+            sB = nest_to_arrays[nj]
+            shared = sorted(sA & sB)
+            jac = _jaccard(sA, sB)
+            if shared:
+                nest_jaccard.append((ni, nj, jac, shared))
+    nest_jaccard.sort(key=lambda x: -x[2])
+
+    # --- Storage bundles (greedy Jaccard >= 0.5) ---
+    bundles = []
+    assigned = set()
+    # Seed order: most-referenced arrays first
+    seeds = sorted(all_arrays, key=lambda a: -len(array_to_nests[a]))
+    for seed in seeds:
+        if seed in assigned:
+            continue
+        bundle = [seed]
+        assigned.add(seed)
+        for cand in seeds:
+            if cand in assigned:
+                continue
+            fits = all(
+                _jaccard(array_to_nests[m], array_to_nests[cand]) >= 0.5
+                for m in bundle
+            )
+            if fits:
+                bundle.append(cand)
+                assigned.add(cand)
+        bundles.append(bundle)
+
+    # --- Producer-consumer chains ---
+    # A nest "produces" the arrays on LHS; a later nest that reads them is a consumer.
+    nest_lhs = {}
+    nest_rhs = {}
+    for idx, nest in enumerate(nests):
+        nid = idx + 1
+        lhs_names = set()
+        rhs_names = set()
+        for assign in FindNodes(Assignment).visit(
+            nest.ir_nodes[-1].body if nest.ir_nodes else []
+        ):
+            lhs_names.add(get_full_name(assign.lhs))
+            for var in FindVariables().visit(assign.rhs):
+                if isinstance(var, Array) and var.name.lower() not in INDIRECT_ARRAYS:
+                    rhs_names.add(get_full_name(var))
+        nest_lhs[nid] = lhs_names
+        nest_rhs[nid] = rhs_names
+
+    producer_consumer = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            ni, nj = i + 1, j + 1
+            # ni produces -> nj consumes
+            flow_ij = sorted(nest_lhs[ni] & nest_rhs[nj])
+            if flow_ij:
+                producer_consumer.append((ni, nj, flow_ij))
+            # nj produces -> ni consumes
+            flow_ji = sorted(nest_lhs[nj] & nest_rhs[ni])
+            if flow_ji:
+                producer_consumer.append((nj, ni, flow_ji))
+
+    return {
+        "all_arrays": all_arrays,
+        "array_to_nests": array_to_nests,
+        "array_u_nests": array_u_nests,
+        "nest_to_arrays": nest_to_arrays,
+        "s_nests": s_nests,
+        "u_nests": u_nests,
+        "array_class": array_class,
+        "cooccurrence": cooccurrence,
+        "jaccard_arrays": jaccard_arrays,
+        "nest_jaccard": nest_jaccard,
+        "bundles": bundles,
+        "producer_consumer": producer_consumer,
+        "nest_lhs": nest_lhs,
+        "nest_rhs": nest_rhs,
+    }
+
+
+# ===========================================================================
+#  SET ANALYSIS — Markdown output
+# ===========================================================================
+
+def print_set_analysis(routine_name, nests, sa):
+    """
+    Emit the full set-analysis report as Markdown.
+
+    sa: dict returned by compute_set_analysis()
+    """
+    p = print
+
+    p(f"\n---\n")
+    p(f"# Set Analysis: `{routine_name}`\n")
+    p(f"{len(sa['all_arrays'])} unique arrays across {len(nests)} loop nests.\n")
+
+    # ── 1. Array classification ──────────────────────────────────────
+    p("## 1. Array Classification\n")
+    p("Each array is classified by its participation across structured (S) and unstructured (U) nests.\n")
+    p("| Class | Meaning |")
+    p("|-------|---------|")
+    p("| `S-only` | Appears exclusively in nests with no indirect access |")
+    p("| `U-only` | Appears exclusively in nests that have indirect access (rare) |")
+    p("| `bridge-U` | The array itself is accessed via indirection in ≥1 nest **and** appears in S-nests — layout conflict |")
+    p("| `bridge-S` | Accessed only with structured subscripts, but co-occurs in a U-nest alongside indirect arrays |")
+    p()
+
+    class_order = ["S-only", "bridge-S", "bridge-U", "U-only"]
+    groups = defaultdict(list)
+    for a in sa["all_arrays"]:
+        groups[sa["array_class"][a]].append(a)
+
+    for cls in class_order:
+        if cls not in groups:
+            continue
+        arr_list = groups[cls]
+        p(f"### {cls} ({len(arr_list)} arrays)\n")
+        p("| Array | Nests (count) | U-access nests |")
+        p("|-------|---------------|----------------|")
+        for a in arr_list:
+            nids = sorted(sa["array_to_nests"][a])
+            u_nids = sorted(sa["array_u_nests"][a])
+            nids_str = ", ".join(str(x) for x in nids)
+            u_str = ", ".join(str(x) for x in u_nids) if u_nids else "—"
+            p(f"| `{a}` | {nids_str} ({len(nids)}) | {u_str} |")
+        p()
+
+    p(f"**Summary**: "
+      f"{len(groups.get('S-only',[]))} S-only, "
+      f"{len(groups.get('bridge-S',[]))} bridge-S, "
+      f"{len(groups.get('bridge-U',[]))} bridge-U, "
+      f"{len(groups.get('U-only',[]))} U-only.\n")
+
+    # ── 2. Per-nest working sets ─────────────────────────────────────
+    p("## 2. Per-Nest Working Sets\n")
+    p("| Nest | Shape | Collapsed | Behavior | #Arrays | Arrays |")
+    p("|-----:|-------|-----------|----------|--------:|--------|")
+    for idx, nest in enumerate(nests):
+        nid = idx + 1
+        beh = nest.behavior if nest.behavior != "compute" else ""
+        tag = "**U**" if nest.has_unstructured else "S"
+        arrays_short = ", ".join(f"`{a}`" for a in nest.unique_array_names)
+        p(f"| {nid} | `{nest.loop_shape}` {tag} | `{nest.collapsed_su}` | {beh} "
+          f"| {len(nest.unique_array_names)} | {arrays_short} |")
+    p()
+
+    # ── 3. Co-occurrence matrix (top pairs) ──────────────────────────
+    p("## 3. Array Co-occurrence (top pairs)\n")
+    p("Pairs of arrays that appear together in the most nests. High co-occurrence suggests "
+      "they benefit from co-located storage.\n")
+
+    sorted_pairs = sorted(
+        ((pair, cnt) for pair, cnt in sa["cooccurrence"].items() if pair[0] != pair[1]),
+        key=lambda x: -x[1]
+    )
+
+    p("| Array A | Array B | Co-occurrence | Jaccard |")
+    p("|---------|---------|:------------:|:-------:|")
+    seen = set()
+    shown = 0
+    for (a, b), cnt in sorted_pairs:
+        canon = tuple(sorted([a, b]))
+        if canon in seen:
+            continue
+        seen.add(canon)
+        jac = sa["jaccard_arrays"].get(canon, 0.0)
+        cls_a = sa["array_class"][a]
+        cls_b = sa["array_class"][b]
+        marker = ""
+        if "bridge" in cls_a or "bridge" in cls_b:
+            marker = " ⚠"
+        p(f"| `{a}` | `{b}` | {cnt} | {jac:.2f}{marker} |")
+        shown += 1
+        if shown >= 40:
+            break
+    p()
+    p("> ⚠ = at least one array is a bridge (S+U conflict)\n")
+
+    # ── 4. Jaccard clusters (arrays with Jaccard == 1.0) ────────────
+    p("## 4. Identical-Membership Clusters (Jaccard = 1.0)\n")
+    p("Arrays that appear in exactly the same set of nests — they are inseparable from "
+      "a co-access perspective.\n")
+
+    # Build equivalence classes
+    membership_key = {}
+    for a in sa["all_arrays"]:
+        key = frozenset(sa["array_to_nests"][a])
+        membership_key[a] = key
+
+    equiv_classes = defaultdict(list)
+    for a in sa["all_arrays"]:
+        equiv_classes[membership_key[a]].append(a)
+
+    # Only show groups with >1 member
+    multi_groups = [(nids, arrs) for nids, arrs in equiv_classes.items() if len(arrs) > 1]
+    multi_groups.sort(key=lambda x: -len(x[1]))
+
+    if multi_groups:
+        for nids, arrs in multi_groups:
+            nids_sorted = sorted(nids)
+            has_u = any(sa["array_class"][a] in ("bridge-U", "U-only") for a in arrs)
+            tag = "⚠ HAS BRIDGE-U" if has_u else "fully structured"
+            p(f"### Cluster: nests {{{', '.join(str(x) for x in nids_sorted)}}} — {tag}\n")
+            for a in sorted(arrs):
+                p(f"- `{a}` ({sa['array_class'][a]})")
+            p()
+    else:
+        p("No arrays share identical nest membership.\n")
+
+    # ── 5. Nest overlap ──────────────────────────────────────────────
+    p("## 5. Nest Overlap (Jaccard on array working sets)\n")
+    p("Nest pairs ranked by array-set similarity. High Jaccard ≈ candidates for loop fusion "
+      "or shared tiling.\n")
+
+    p("| Nest A | Nest B | Jaccard | |A| | |B| | |A∩B| | Shared arrays |")
+    p("|-------:|-------:|:-------:|----:|----:|------:|---------------|")
+    for (ni, nj, jac, shared) in sa["nest_jaccard"][:30]:
+        nest_i = nests[ni - 1]
+        nest_j = nests[nj - 1]
+        tag_i = "U" if nest_i.has_unstructured else "S"
+        tag_j = "U" if nest_j.has_unstructured else "S"
+        sz_i = len(nest_i.unique_array_names)
+        sz_j = len(nest_j.unique_array_names)
+        shared_str = ", ".join(f"`{a}`" for a in shared)
+        p(f"| {ni} ({nest_i.loop_shape} {tag_i}) | {nj} ({nest_j.loop_shape} {tag_j}) "
+          f"| {jac:.2f} | {sz_i} | {sz_j} | {len(shared)} | {shared_str} |")
+    p()
+
+    # ── 6. Storage bundles ───────────────────────────────────────────
+    p("## 6. Storage Bundles (greedy Jaccard ≥ 0.5)\n")
+    p("Arrays grouped by nest-membership similarity. Within a bundle, every pair has "
+      "Jaccard ≥ 0.5 — they are accessed together often enough to benefit from co-location "
+      "in a single AoS or AoSoA record.\n")
+
+    for bi, bundle in enumerate(sa["bundles"]):
+        has_u = any(sa["array_class"][a] in ("bridge-U", "U-only") for a in bundle)
+        tag = " ⚠ HAS BRIDGE-U" if has_u else ""
+
+        # Which nests use ALL members?
+        all_nids = set(range(1, len(nests) + 1))
+        common_nests = all_nids
+        for a in bundle:
+            common_nests = common_nests & sa["array_to_nests"][a]
+        common_nests = sorted(common_nests)
+
+        # Which nests use ANY member?
+        any_nests = sorted(set().union(*(sa["array_to_nests"][a] for a in bundle)))
+
+        p(f"### Bundle {bi+1}: {len(bundle)} arrays{tag}\n")
+        p(f"- **Nests using all members (∩):** "
+          f"{', '.join(str(x) for x in common_nests) if common_nests else '(none)'}")
+        p(f"- **Nests using any member (∪):** "
+          f"{', '.join(str(x) for x in any_nests)}\n")
+
+        p("| Array | Class | Nest count |")
+        p("|-------|-------|:----------:|")
+        for a in bundle:
+            p(f"| `{a}` | {sa['array_class'][a]} | {len(sa['array_to_nests'][a])} |")
+        p()
+
+    # ── 7. Producer → Consumer chains ────────────────────────────────
+    p("## 7. Producer → Consumer Dataflow\n")
+    p("Array-level data dependencies between nests: nest A writes an array that nest B reads. "
+      "Ordered by nest index (execution order).\n")
+
+    p("| Producer | Consumer | Dataflow arrays |")
+    p("|:--------:|:--------:|-----------------|")
+    # Deduplicate and sort
+    seen_flows = set()
+    for (prod, cons, arrs) in sorted(sa["producer_consumer"], key=lambda x: (x[0], x[1])):
+        key = (prod, cons, tuple(arrs))
+        if key in seen_flows:
+            continue
+        seen_flows.add(key)
+        nest_p = nests[prod - 1]
+        nest_c = nests[cons - 1]
+        tag_p = "U" if nest_p.has_unstructured else "S"
+        tag_c = "U" if nest_c.has_unstructured else "S"
+        arrs_str = ", ".join(f"`{a}`" for a in arrs)
+        p(f"| N{prod} ({nest_p.loop_shape} {tag_p}) | N{cons} ({nest_c.loop_shape} {tag_c}) | {arrs_str} |")
+    p()
+
+    # ── 8. Bridge-U focus ────────────────────────────────────────────
+    p("## 8. Bridge-U Deep Dive\n")
+    p("These arrays are the core layout-conflict set: they are accessed with direct "
+      "structured subscripts in some nests and via indirection in others.\n")
+
+    bridge_u = [a for a in sa["all_arrays"] if sa["array_class"][a] == "bridge-U"]
+    for a in bridge_u:
+        s_nest_ids = sorted(sa["array_to_nests"][a] - sa["array_u_nests"][a])
+        u_nest_ids = sorted(sa["array_u_nests"][a])
+        p(f"### `{a}`\n")
+        p(f"- **Structured nests:** {', '.join(str(x) for x in s_nest_ids)} "
+          f"({len(s_nest_ids)} nests)")
+        p(f"- **Unstructured nests:** {', '.join(str(x) for x in u_nest_ids)} "
+          f"({len(u_nest_ids)} nests)")
+
+        # Co-accessed arrays in U-nests
+        co_in_u = set()
+        for nid in u_nest_ids:
+            co_in_u |= sa["nest_to_arrays"][nid]
+        co_in_u.discard(a)
+        p(f"- **Co-accessed in U-nests:** {', '.join(f'`{x}`' for x in sorted(co_in_u))}")
+
+        # Co-accessed arrays in S-nests
+        co_in_s = set()
+        for nid in s_nest_ids:
+            co_in_s |= sa["nest_to_arrays"][nid]
+        co_in_s.discard(a)
+        p(f"- **Co-accessed in S-nests:** {', '.join(f'`{x}`' for x in sorted(co_in_s))}")
+
+        # Overlap
+        overlap = sorted(co_in_s & co_in_u)
+        if overlap:
+            p(f"- **Shared co-access (S∩U):** {', '.join(f'`{x}`' for x in overlap)}")
+        p()
+
+
 # ---------------------------------------------------------------------------
-# Pretty printing
+# Pretty printing (original report)
 # ---------------------------------------------------------------------------
 
 def print_analysis(routine_name, nests, array_role_sigs, role_groups):
-    p = print  # shorthand
+    p = print
 
     p(f"# Loop and Array Access Analysis: `{routine_name}`\n")
     p("| Symbol | Meaning |")
@@ -531,38 +871,31 @@ def print_analysis(routine_name, nests, array_role_sigs, role_groups):
 
 
 # ---------------------------------------------------------------------------
-# Single-block view (b=1): strip block dimension entirely
+# Single-block view
 # ---------------------------------------------------------------------------
 
 def _strip_block(role_su_sig):
-    """Remove b:* entries from a role:S/U signature string."""
     parts = [p.strip() for p in role_su_sig.split("  ") if p.strip()]
     filtered = [p for p in parts if not p.startswith("b:")]
     return "  ".join(filtered) if filtered else "-"
 
-
 def _strip_block_collapsed(collapsed):
-    """Remove b:* from collapsed signature."""
     parts = [p.strip() for p in collapsed.split("  ") if p.strip()]
     filtered = [p for p in parts if not p.startswith("b:")]
     return "  ".join(filtered) if filtered else "-"
 
-
 def _strip_block_shape(shape):
-    """Remove 'b' from loop shape: 'b.h' -> 'h', 'b.v' -> 'v', 'v.h' stays."""
     parts = [p for p in shape.split(".") if p != "b"]
     return ".".join(parts) if parts else "-"
 
 
 def print_single_block_view(routine_name, nests):
-    """Reprint assuming nblks=1: strip block dimension entirely."""
     p = print
 
     p(f"\n---\n")
     p(f"# Single-Block View (`nblks=1`)\n")
     p(f"Block dimension stripped: `b.h` becomes `h`, `b:S`/`b:U` removed from all signatures.\n")
 
-    # --- Build single-block pattern groups ---
     pattern_groups_nb = defaultdict(list)
     for nest in nests:
         shape_nb = _strip_block_shape(nest.loop_shape)
@@ -571,7 +904,6 @@ def print_single_block_view(routine_name, nests):
         key = (shape_nb, ranges_nb, nest.behavior, collapsed_nb)
         pattern_groups_nb[key].append(nest)
 
-    # --- Loop patterns table ---
     p("## Loop Patterns (single-block, collapsed)\n")
     p("| Count | Shape | Ranges | Behavior | Collapsed S/U |")
     p("|------:|-------|--------|----------|---------------|")
@@ -582,7 +914,6 @@ def print_single_block_view(routine_name, nests):
         p(f"| {len(group)} | `{shape_nb}` | {ranges_str} | {beh} | `{collapsed_nb}` |")
     p()
 
-    # --- Example nest per pattern ---
     p("## Example Nest per Pattern Type\n")
     p("One representative nest from each pattern (the one touching the most arrays).\n")
 
@@ -596,7 +927,6 @@ def print_single_block_view(routine_name, nests):
 
         p(f"### `{shape_nb}` {ranges_str}{beh} — collapsed `{collapsed_nb}` ({len(group)}x)\n")
         p(f"{n_unique} unique arrays.\n")
-
         p(f"```fortran\n{example.source_code}\n```\n")
 
         p("<details><summary>Array access table</summary>\n")
@@ -611,9 +941,8 @@ def print_single_block_view(routine_name, nests):
                 p(f"| `{acc.name}` | `{sig_nb}` |")
         p("\n</details>\n")
 
-    # --- Widest nest ---
+    # Widest nest
     p("## Widest Nest (most unique array references)\n")
-
     widest = max(nests, key=lambda n: len(set(a.name for a in n.accesses)))
     n_unique = len(set(a.name for a in widest.accesses))
     beh = f" `{widest.behavior}`" if widest.behavior != "compute" else ""
@@ -623,7 +952,6 @@ def print_single_block_view(routine_name, nests):
     p(f"**{n_unique} unique arrays** accessed in a single nest.\n")
     p(f"- Shape: `{widest.loop_shape}` (single-block: `{shape_nb}`)")
     p(f"- Collapsed: `{collapsed_nb}`{beh}\n")
-
     p(f"```fortran\n{widest.source_code}\n```\n")
 
     p("| Array | Role:S/U (full) | Role:S/U (no block) |")
@@ -637,9 +965,8 @@ def print_single_block_view(routine_name, nests):
             p(f"| `{acc.name}` | `{acc.role_su_signature}` | `{sig_nb}` |")
     p()
 
-    # --- Array groups without block ---
+    # Array groups without block
     p("## Array Groups (single-block)\n")
-
     array_sigs_nb = defaultdict(set)
     for nest in nests:
         for acc in nest.accesses:
@@ -660,7 +987,7 @@ def print_single_block_view(routine_name, nests):
             p(f"- `{n}`")
         p()
 
-    # --- Per-array table ---
+    # Per-array table
     p("## Per-Array Summary (single-block)\n")
     p("| Array | Role:S/U Patterns | Conflict |")
     p("|-------|-------------------|----------|")
@@ -707,30 +1034,30 @@ def main():
     nests = analyze_loop_nests(routine)
     array_role_sigs, role_groups = group_arrays(nests)
 
-    # Write to markdown file
-    outpath = filepath.with_suffix(".analysis.md")
-    import io
+    # ── Compute set analysis ──
+    sa = compute_set_analysis(nests)
+
+    # ── Write reports ──
+    import io, builtins
+
     buf = io.StringIO()
-    _orig_print = __builtins__["print"] if isinstance(__builtins__, dict) else __builtins__.print
+    old_print = builtins.print
 
     def md_print(*args, **kwargs):
         kwargs["file"] = buf
-        _orig_print(*args, **kwargs)
+        old_print(*args, **kwargs)
 
-    # Monkey-patch print for the report functions
-    import builtins
-    old_print = builtins.print
     builtins.print = md_print
 
     print_analysis(routine.name, nests, array_role_sigs, role_groups)
     print_single_block_view(routine.name, nests)
+    print_set_analysis(routine.name, nests, sa)
 
     builtins.print = old_print
 
+    outpath = filepath.with_suffix(".analysis.md")
     outpath.write_text(buf.getvalue())
     old_print(f"Report written to {outpath}")
-
-    # Also print to stdout
     old_print(buf.getvalue())
 
 

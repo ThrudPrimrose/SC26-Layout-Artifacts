@@ -26,6 +26,10 @@
 #include "icon_data_loader.h"
 #include <ctime>
 
+#if __HIP_PLATFORM_AMD__
+#include "hip/hip_runtime.h"
+#endif
+
 /* ================================================================ */
 /*  CUDA helpers                                                     */
 /* ================================================================ */
