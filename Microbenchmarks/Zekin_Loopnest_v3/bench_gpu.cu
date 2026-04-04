@@ -316,11 +316,14 @@ static void launch_gpu(int cfg,
     } while(0)
 
     #define LG_JK(TX_,TY_,BX_,BY_) do {                                       \
-        constexpr bool REMAP = (BX_ * TX_) > 96;                                     \
+        constexpr int TOTAL = (BX_)*(BY_);                                     \
+        constexpr bool REMAP = ((BX_)*(TX_) > 96);                            \
         constexpr int BXe = REMAP ? 96 : (BX_);                               \
-        constexpr int BYe = REMAP ? ((BX_)*(BY_)/96) : (BY_);                 \
+        constexpr int BYe_raw = REMAP ? (TOTAL / 96) : (BY_);                 \
+        constexpr int BYe = BYe_raw > 0 ? BYe_raw : 1;                        \
         constexpr int TXe = REMAP ? 1  : (TX_);                               \
-        constexpr int TYe = REMAP ? ((TX_)*(TY_)) : (TY_);                    \
+        constexpr int TYe_raw = REMAP ? ((TX_)*(TY_)) : (TY_);               \
+        constexpr int TYe = TYe_raw > 0 ? TYe_raw : 1;                        \
         dim3 blk(BXe, BYe);                                                    \
         dim3 grd(((unsigned)nlev + BXe*TXe - 1) / (BXe*TXe),                  \
                 ((unsigned)N    + BYe*TYe - 1) / (BYe*TYe));                 \
