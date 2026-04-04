@@ -30,15 +30,15 @@
 // │                  which the compiler converts to fp32 before the FMA.   │
 // └─────────────────────────────────────────────────────────────────────────┘
 //
-// Build (AMD Zen4 / MI300A with oneMKL):
-//   g++ -O3 -fopenmp -march=native -mtune=native -ffast-math -std=c++17 \
-//       -fno-vect-cost-model                                               \
-//       -I${MKLROOT}/include -o bench_goto_vec bench_goto_vec.cpp           \
-//       -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_gnu_thread        \
-//       -lmkl_core -lgomp -lpthread -lm
+// Build (Intel icpx + oneMKL, AMD Zen4 / MI300A):
+//   icpx -O3 -qopenmp -march=native -ffast-math -std=c++17               \
+//       -I${MKLROOT}/include -o bench_goto_vec bench_goto_vec.cpp          \
+//       -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_intel_thread      \
+//       -lmkl_core -liomp5 -lpthread -lm
 //
-// -fno-vect-cost-model ensures the compiler vectorizes all #pragma omp simd
-// loops unconditionally, rather than second-guessing profitability.
+// Using icpx ensures a single OpenMP runtime (libiomp5) is used by both
+// the compiler and MKL.  GCC's -fopenmp links libgomp, which conflicts
+// with MKL's libiomp5 when linked via -lmkl_intel_thread.
 //
 // Run (MI300A: 4 NUMA nodes × 24 cores = 96 threads):
 //   ./bench_goto_vec 8192 8192 8192 -t 96 -p 2x2
@@ -897,24 +897,22 @@ static void numa_summa_gemm(const IN_T* A, const IN_T* B, OUT_T* C,
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // oneMKL sgemm after upcasting fp16 → fp32.  On Zen4 MKL will use its
-// AVX-512 codepath (not AMX, since there is no AMX on AMD).  This gives
-// the vendor-optimised baseline for the same vector ISA we use.
+// AVX-512 codepath (not AMX, since there is no AMX on AMD).
 //
-// Allocates temporary fp32 buffers on demand (512 MB for 8192²).  These
-// are freed after each call so they don't bloat the persistent footprint.
+// The fp32 upcast buffers are allocated once per problem size in main()
+// and passed in via global pointers.  This avoids 512 MB of mmap/munmap
+// per call (55 calls × 512 MB = catastrophic overhead).
+
+static float *g_A32_buf = nullptr, *g_B32_buf = nullptr;
 
 static void mkl_sgemm_f32(const IN_T* A, const IN_T* B, OUT_T* C, int M, int N, int K) {
     mkl_set_dynamic(0); mkl_set_num_threads(g_threads);
-    float* A32 = typed_alloc<float>((size_t)M * K);
-    float* B32 = typed_alloc<float>((size_t)K * N);
     #pragma omp parallel for num_threads(g_threads) schedule(static)
-    for (size_t i = 0; i < (size_t)M*K; ++i) A32[i] = (float)A[i];
+    for (size_t i = 0; i < (size_t)M*K; ++i) g_A32_buf[i] = (float)A[i];
     #pragma omp parallel for num_threads(g_threads) schedule(static)
-    for (size_t i = 0; i < (size_t)K*N; ++i) B32[i] = (float)B[i];
+    for (size_t i = 0; i < (size_t)K*N; ++i) g_B32_buf[i] = (float)B[i];
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                M, N, K, 1.0f, A32, K, B32, N, 0.0f, C, N);
-    typed_free(A32, (size_t)M * K);
-    typed_free(B32, (size_t)K * N);
+                M, N, K, 1.0f, g_A32_buf, K, g_B32_buf, N, 0.0f, C, N);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -952,20 +950,36 @@ using KernFn = std::function<void(const IN_T*, const IN_T*, OUT_T*, int, int, in
 static void bench_one(FILE* f, const char* name, KernFn fn,
                       const IN_T* A, const IN_T* B, OUT_T* C,
                       int M, int N, int K, int nthreads) {
-    for (int w = 0; w < g_warmup; ++w) fn(A, B, C, M, N, K);
     double flops = 2.0 * (double)M * N * K;
+
+    // Warmup (with progress so the user knows it's alive)
+    for (int w = 0; w < g_warmup; ++w) {
+        double t0 = now_ns();
+        fn(A, B, C, M, N, K);
+        double t1 = now_ns();
+        printf("    %-24s warmup %d/%d  %.2f s  %.2f GF/s\n",
+               name, w + 1, g_warmup, (t1 - t0) * 1e-9, flops / (t1 - t0));
+        fflush(stdout);
+    }
+
+    // Timed iterations
     std::vector<double> times(g_iters); double total = 0;
     for (int i = 0; i < g_iters; ++i) {
         double t0 = now_ns(); fn(A, B, C, M, N, K); double t1 = now_ns();
         times[i] = t1 - t0; total += times[i];
+        // Write to CSV immediately so data appears even if we crash.
+        fprintf(f, "%s,%d,%d,%d,%d,%d,%.2f,%.6f\n",
+                name, M, N, K, nthreads, i, times[i], flops / times[i]);
+        fflush(f);
     }
+
     double avg = total / g_iters;
     std::sort(times.begin(), times.end());
-    double med = (g_iters % 2) ? times[g_iters/2] : (times[g_iters/2-1]+times[g_iters/2])/2;
-    for (int i = 0; i < g_iters; ++i)
-        fprintf(f, "%s,%d,%d,%d,%d,%d,%.2f,%.6f\n", name, M, N, K, nthreads, i, times[i], flops/times[i]);
-    printf("    %-28s t=%2d avg=%.0f ns  med=%.0f ns  %.4f GF/s (peak %.4f)\n",
-           name, nthreads, avg, med, flops/avg, flops/times[0]);
+    double med = (g_iters % 2) ? times[g_iters/2]
+                                : (times[g_iters/2-1] + times[g_iters/2]) / 2.0;
+    printf("    %-28s t=%2d avg=%.2f s  med=%.2f s  %.2f GF/s (peak %.2f)\n",
+           name, nthreads, avg * 1e-9, med * 1e-9, flops / avg, flops / times[0]);
+    fflush(stdout);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -998,52 +1012,60 @@ static std::vector<MNK> parse_args(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+    // stderr is unbuffered by default — always visible even if crash follows.
+    fprintf(stderr, "[DIAG] main() entered, argc=%d\n", argc);
+
+    // Force line-buffered stdout so output appears immediately in SLURM logs.
+    setvbuf(stdout, nullptr, _IOLBF, 0);
     if (argc < 4) { usage(argv[0]); return 1; }
     auto sizes = parse_args(argc, argv);
     GotoParams gp{g_MC, g_KC, g_NC};
     int nd = g_PX * g_PY;
 
+    fprintf(stderr, "[DIAG] parsed: %zu sizes, t=%d, grid=%dx%d, MC=%d KC=%d NC=%d\n",
+            sizes.size(), g_threads, g_PX, g_PY, gp.MC, gp.KC, gp.NC);
+
     printf("════════════════════════════════════════════════════════\n");
     printf("  GOTO + NUMA GEMM Benchmark  (Auto-Vectorized Version)\n");
     printf("════════════════════════════════════════════════════════\n");
-    printf("  Microkernel   : auto-vectorized C (#pragma omp simd)\n");
-    printf("  Threads       : %d\n", g_threads);
-    printf("  NUMA nodes    : %d (detected)\n", get_num_numa_nodes());
-    printf("  Domain grid   : %d x %d = %d\n", g_PX, g_PY, nd);
-    printf("  Cores/domain  : %d\n", g_threads / nd);
-    printf("  GOTO blocking : MC=%d KC=%d NC=%d\n", gp.MC, gp.KC, gp.NC);
-    printf("  Tile size     : %dx%dx%d (same as AMX version)\n", BM, BN, BK);
-    printf("  B packing     : plain row-major (NOT vnni)\n");
-    printf("  Peak (init)   : no-op\n");
-    printf("  Unpack (store): no-op (D is row-major fp32 array)\n");
+    printf("  Threads=%d  Grid=%dx%d  MC=%d KC=%d NC=%d\n",
+           g_threads, g_PX, g_PY, gp.MC, gp.KC, gp.NC);
     printf("════════════════════════════════════════════════════════\n\n");
 
     FILE* fout = fopen(g_outfile, "w");
     if (!fout) { perror("fopen"); return 1; }
     fprintf(fout, "kernel,M,N,K,threads,run,time_ns,gflops\n");
+    fflush(fout);
 
+    fprintf(stderr, "[DIAG] grid.init(%d, %d, %d)\n", g_PX, g_PY, g_threads);
     NumaGrid grid;
     grid.init(g_PX, g_PY, g_threads);
+    fprintf(stderr, "[DIAG] grid.init done, %d domains\n", nd);
 
     for (auto& sz : sizes) {
         int M = sz.M, N = sz.N, K = sz.K;
-        printf("═══ M=%d  N=%d  K=%d ═══════════════════════════════\n", M, N, K);
+        fprintf(stderr, "[DIAG] === M=%d N=%d K=%d ===\n", M, N, K);
+
         if (M % (g_PX * BM) || N % (g_PY * BN) || K % BK) {
-            printf("  [SKIP] divisibility\n"); continue;
+            fprintf(stderr, "[DIAG] SKIP divisibility\n");
+            continue;
         }
 
         size_t szA = (size_t)M*K, szB = (size_t)K*N, szC = (size_t)M*N;
-        double mem_mb = (szA * sizeof(IN_T) + szB * sizeof(IN_T)
-                        + szC * sizeof(OUT_T) * 2) / (1024.0 * 1024.0);
-        printf("  Global alloc: A=%.0f MB  B=%.0f MB  C×2=%.0f MB  total=%.0f MB\n",
-               szA * sizeof(IN_T) / 1e6, szB * sizeof(IN_T) / 1e6,
-               szC * sizeof(OUT_T) * 2 / 1e6, mem_mb);
-
+        fprintf(stderr, "[DIAG] alloc A: %zu elts = %zu MB\n", szA, szA*sizeof(IN_T)>>20);
         IN_T*  A    = typed_alloc<IN_T>(szA);
+        fprintf(stderr, "[DIAG] alloc B: %zu MB\n", szB*sizeof(IN_T)>>20);
         IN_T*  B    = typed_alloc<IN_T>(szB);
+        fprintf(stderr, "[DIAG] alloc Cref: %zu MB\n", szC*sizeof(OUT_T)>>20);
         OUT_T* Cref = typed_alloc<OUT_T>(szC);
+        fprintf(stderr, "[DIAG] alloc Cchk: %zu MB\n", szC*sizeof(OUT_T)>>20);
         OUT_T* Cchk = typed_alloc<OUT_T>(szC);
+        fprintf(stderr, "[DIAG] alloc g_A32: %zu MB\n", szA*sizeof(float)>>20);
+        g_A32_buf = typed_alloc<float>(szA);
+        fprintf(stderr, "[DIAG] alloc g_B32: %zu MB\n", szB*sizeof(float)>>20);
+        g_B32_buf = typed_alloc<float>(szB);
 
+        fprintf(stderr, "[DIAG] entering OMP parallel (random init, %d threads)...\n", g_threads);
         #pragma omp parallel num_threads(g_threads) proc_bind(close)
         {
             int t = omp_get_thread_num(), n_ = omp_get_num_threads();
@@ -1053,20 +1075,26 @@ int main(int argc, char** argv) {
             lo = t*szB/n_; hi = (t+1)*szB/n_;
             for (size_t i = lo; i < hi; ++i) B[i] = (IN_T)((float)rand_r(&seed)/RAND_MAX - 0.5f);
         }
+        fprintf(stderr, "[DIAG] random init done\n");
 
+        fprintf(stderr, "[DIAG] grid.alloc_buffers\n");
         grid.alloc_buffers(M, N, K);
+        fprintf(stderr, "[DIAG] grid.alloc_buffers done\n");
 
         // ── Reference: MKL sgemm (fast, vendor-optimised) ───────────
         // The scalar OpenMP ref is unusable at 8192³ (takes minutes).
         // We use MKL as the reference and verify all other kernels against it.
         printf("  Reference (MKL sgemm)...\n");
+        fflush(stdout);
         mkl_sgemm_f32(A, B, Cref, M, N, K);
 
         printf("  Kernels:\n");
+        fflush(stdout);
 
         // 0. MKL baseline (same as reference — benchmark timing only)
         bench_one(fout, "mkl_sgemm_f32", mkl_sgemm_f32, A, B, Cchk, M, N, K, g_threads);
         verify(Cchk, Cref, M, N, "mkl_sgemm_f32");
+        fflush(stdout);
 
         // 2. GOTO GEMM (vector microkernel)
         auto goto_fn = [&](const IN_T* a, const IN_T* b, OUT_T* c, int m, int n, int k) {
@@ -1074,6 +1102,7 @@ int main(int argc, char** argv) {
         };
         bench_one(fout, "goto_vec", goto_fn, A, B, Cchk, M, N, K, g_threads);
         verify(Cchk, Cref, M, N, "goto_vec");
+        fflush(stdout);
 
         // 3. NUMA-Static
         {
@@ -1083,6 +1112,7 @@ int main(int argc, char** argv) {
             };
             bench_one(fout, lbl, fn, A, B, Cchk, M, N, K, g_threads);
             verify(Cchk, Cref, M, N, lbl);
+        fflush(stdout);
         }
 
         // 4. NUMA-SUMMA
@@ -1093,12 +1123,15 @@ int main(int argc, char** argv) {
             };
             bench_one(fout, lbl, fn, A, B, Cchk, M, N, K, g_threads);
             verify(Cchk, Cref, M, N, lbl);
+        fflush(stdout);
         }
 
         grid.free_buffers();
         typed_free(A, szA); typed_free(B, szB);
         typed_free(Cref, szC); typed_free(Cchk, szC);
-        printf("\n");
+        typed_free(g_A32_buf, szA); typed_free(g_B32_buf, szB);
+        g_A32_buf = nullptr; g_B32_buf = nullptr;
+        printf("\n"); fflush(stdout);
     }
 
     fclose(fout);
