@@ -479,7 +479,7 @@ static void gen_conn(int *L, int N, int Nt, CellDist d, std::mt19937 &rng) {
 }
 
 /* ─── Cache flush ─────────────────────────────────────────────── */
-static constexpr int FN = 8192 * 4, FS = 3;
+static constexpr int FN = 8192 * 2, FS = 3;
 static double *fb0 = nullptr, *fb1 = nullptr;
 static void flush_init() {
   size_t n = (size_t)FN * FN;
@@ -501,7 +501,6 @@ static void flush() {
                                 A[i * FN + (j - 1)] + A[i * FN + (j + 1)]);
     std::swap(A, B);
   }
-  printf("  [flush] %.6e\n", A[0]);
 }
 static void flush_destroy() {
   size_t n = (size_t)FN * FN;
