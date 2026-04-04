@@ -43,6 +43,6 @@ export LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$CUTENSOR_HOME/lib/12:$CUDA_HOME
 export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$CUTENSOR_HOME/lib/12:$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 export PATH=$SCRATCH/bin:$CUTENSOR_HOME/bin:$PATH
 
-nvcc -O3 -arch=sm_90 -std=c++17 -o bench_gpu bench_gpu.cu
+nvcc -O3 -arch=sm_90 -std=c++17 -Xcompiler=-fopenmp -o bench_gpu bench_gpu.cu -lnuma
 
 ./bench_gpu "madd_daint_gpu.csv"

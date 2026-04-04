@@ -4,8 +4,8 @@
 #SBATCH --partition=normal
 #SBATCH --time=01:30:00
 #SBTACH --account g177-1
-#SBATCH --output=madd_cpu_daint_%j.out
-#SBATCH --error=madd_cpu_daint_%j.err
+#SBATCH --output=madd_profile_cpu_daint_%j.out
+#SBATCH --error=madd_profile_cpu_daint_%j.err
 #SBATCH --ntasks=1
 #SBATCH --account=g177-1
 #SBATCH --cpus-per-task=288
@@ -59,6 +59,6 @@ export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LD_LIBRARY_PATH
 export PATH=$SCRATCH/bin:$PATH
 export BEVERIN=0
 
-g++ -O3 -march=native -mtune=native -fopenmp -ffast-math -fno-vect-cost-model -std=c++17 -o bench_cpu bench_cpu.cpp -lnuma
+g++ -O3 -march=native -mtune=native -fopenmp -ffast-math -fno-vect-cost-model -std=c++17 -o profile_cpu profile_cpu.cpp -lnuma
 
-./bench_cpu "madd_daint_cpu.csv"
+./profile_cpu "madd_daint_profile_cpu.csv"

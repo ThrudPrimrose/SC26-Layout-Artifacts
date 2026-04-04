@@ -73,6 +73,6 @@ export BEVERIN=1
 
 echo $(lscpu)
 
-g++ -O3 -march=native -mtune=native -g -fopenmp -ffast-math -fvect-cost-model=cheap -std=c++17 -o profile_cpu profile_cpu.cpp -lnuma
+g++ -DNOHUGEPAGE=1 -O3 -march=native -mtune=native -fopenmp -ffast-math -fvect-cost-model=cheap -std=c++17 -o profile_cpu profile_cpu.cpp -lnuma
 
 ./profile_cpu "profile_madd_beverin_cpu.csv"
