@@ -13,7 +13,7 @@
 #include <ctime>
 #include <omp.h>
 #include <utility>
-
+#include <cassert>
 static SchedKind sched_for_par_for(int V) {
   int kV = kern_v(V);
   return (kV <= 2) ? SCHED_JK_OUTER : SCHED_JE_OUTER;
@@ -63,11 +63,9 @@ typedef void (*kern_t)(double *, const double *, const double *, const double *,
                        const double *, const double *, const int *,
                        int, int, int);
 
-/* index 0..4 for V1..V5; V5 reuses V4 */
-static kern_t par_tbl[] = {
-    cpu_par_for<1>, cpu_par_for<2>, cpu_par_for<3>, cpu_par_for<4>, cpu_par_for<4>};
-static kern_t col_tbl[] = {
-    cpu_collapse2<1>, cpu_collapse2<2>, cpu_collapse2<3>, cpu_collapse2<4>, cpu_collapse2<4>};
+/* index 0..3 for V1..V4; V5 uses index 3 (=V4) via kern_v() */
+static kern_t par_tbl[] = {cpu_par_for<1>, cpu_par_for<2>, cpu_par_for<3>, cpu_par_for<4>};
+static kern_t col_tbl[] = {cpu_collapse2<1>, cpu_collapse2<2>, cpu_collapse2<3>, cpu_collapse2<4>};
 
 /* ---- Blocked kernels ---- */
 template <int B>
@@ -200,6 +198,8 @@ static void flush() {
 /* ---- Run unblocked (V=label, nlev=stride, nlev_end=bound) ---- */
 static void run_unblocked(FILE *f, int V, int N, int nlev, int nlev_end,
                           const char *dl, BenchData &bd, double *hr) {
+  int Vi = kern_v(V) - 1; /* table index: 0..3 */
+
   memset(hr, 0, bd.sz2d*sizeof(double));
   memset(bd.h_out, 0, bd.sz2d*sizeof(double));
 
@@ -207,8 +207,6 @@ static void run_unblocked(FILE *f, int V, int N, int nlev, int nlev_end,
   cpu_ref_v(V, hr, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx, bd.h_z_vt_ie,
             bd.inv_primal, bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev, nlev_end);
   flush();
-
-  int Vi = kern_v(V) - 1; /* table index: 0..3 */
 
   /* omp_for */
   for (int r = 0; r < WARMUP; r++) {
@@ -321,8 +319,8 @@ static void run_blocked(FILE *f, int bi, int N, int nlev, int nlev_end,
   printf("Done: nlev=%d(%d) dist=%-12s B=%d\n", nlev, nlev_end, dl, B);
 }
 
-/* ---- Helper: run unblocked variants for one dist ---- */
-static void run_unblocked_variants(
+/* ---- Helper: run unblocked V_start..V_end for one dist ---- */
+static void run_unblocked_block(
     FILE* fcsv, int N, int nlev, int nlev_end,
     const char* dl, int V_start, int V_end,
     int* cell_logical, int* vert_logical,
@@ -380,6 +378,7 @@ int main(int argc, char *argv[]) {
   if (have_exact)
     printf("ICON: nproma=%d  n_edges=%d (valid=%d)  n_cells=%d  n_verts=%d\n",
            ied.nproma, ied.n_edges, ied.n_edges_valid, ied.n_cells, ied.n_verts);
+  assert(have_exact);
 
   printf("OMP threads: %d  L1: %d bytes\n", omp_get_max_threads(), L1_bytes);
   for (int bi = 0; bi < N_BLOCK_SIZES; bi++)
@@ -394,29 +393,26 @@ int main(int argc, char *argv[]) {
     int nlev_padded = icon_pad_nlev(nlev_base);
 
     /* ============================================================ */
-    /*  V1-V4 synthetic: nlev = nlev_end = nlev_base                */
+    /*  Synthetic distributions                                     */
     /* ============================================================ */
     for (int di = 0; di < 4; di++) {
       gen_cell_idx_logical(cell_logical, N, (CellDist)di, rng);
-      run_unblocked_variants(fcsv, N, nlev_base, nlev_base,
+
+      /* V1-V4: nlev = nlev_end = nlev_base (no padding) */
+      run_unblocked_block(fcsv, N, nlev_base, nlev_base,
           dist_name[di], 1, 4, cell_logical, vd.logical,
           nullptr, nullptr, nullptr);
-    }
 
-    /* ============================================================ */
-    /*  V5 synthetic: nlev = padded, nlev_end = nlev_base           */
-    /* ============================================================ */
-    if (nlev_padded != nlev_base) {
-      for (int di = 0; di < 4; di++) {
-        gen_cell_idx_logical(cell_logical, N, (CellDist)di, rng);
-        run_unblocked_variants(fcsv, N, nlev_padded, nlev_base,
+      /* V5: nlev = padded, nlev_end = nlev_base */
+      if (nlev_padded != nlev_base) {
+        run_unblocked_block(fcsv, N, nlev_padded, nlev_base,
             dist_name[di], 5, 5, cell_logical, vd.logical,
             nullptr, nullptr, nullptr);
       }
     }
 
     /* ============================================================ */
-    /*  V1-V4 exact                                                 */
+    /*  EXACT distribution (only if ICON data loaded)               */
     /* ============================================================ */
     if (have_exact) {
       const int Ne = ied.n_edges;
@@ -426,13 +422,14 @@ int main(int argc, char *argv[]) {
         int *ecl = new int[Ne*2], *evl = new int[Ne*2];
         for (int i = 0; i < Ne*2; i++) { ecl[i]=ied.cell_idx[i]; evl[i]=ied.vert_idx[i]; }
 
-        run_unblocked_variants(fcsv, Ne, nlev_base, nlev_base,
+        /* V1-V4: nlev = nlev_end = nlev_base */
+        run_unblocked_block(fcsv, Ne, nlev_base, nlev_base,
             "exact", 1, 4, ecl, evl,
             ied.inv_dual.data(), ied.inv_primal.data(), ied.tangent_o.data());
 
-        /* V5 exact */
+        /* V5: nlev = padded, nlev_end = nlev_base */
         if (nlev_padded != nlev_base) {
-          run_unblocked_variants(fcsv, Ne, nlev_padded, nlev_base,
+          run_unblocked_block(fcsv, Ne, nlev_padded, nlev_base,
               "exact", 5, 5, ecl, evl,
               ied.inv_dual.data(), ied.inv_primal.data(), ied.tangent_o.data());
         }
@@ -443,7 +440,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* ============================================================ */
-    /*  Blocked synthetic: nlev = nlev_end = nlev_base (no V5)      */
+    /*  Blocked synthetic (V1-V4 only, no V5 for blocked)           */
     /* ============================================================ */
     for (int di = 0; di < 4; di++) {
       rng.seed(42);
@@ -466,7 +463,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* ============================================================ */
-    /*  Blocked exact: nlev = nlev_end = nlev_base (no V5)          */
+    /*  Blocked exact (V1-V4 only, no V5 for blocked)               */
     /* ============================================================ */
     if (have_exact) {
       const int Ne = ied.n_edges;

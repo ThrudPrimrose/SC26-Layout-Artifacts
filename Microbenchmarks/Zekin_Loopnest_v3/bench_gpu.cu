@@ -19,6 +19,7 @@
 #include "bench_common.h"
 #include "icon_data_loader.h"
 #include <ctime>
+#include <cassert>
 
 #if __HIP_PLATFORM_AMD__
 #include "hip/hip_runtime.h"
@@ -271,7 +272,6 @@ static void launch_gpu(int cfg,
     #undef LG_JK
 }
 
-/* V5 -> launch_gpu<4> */
 static void launch_gpu_v(int V, int cfg,
     double* out, const double* vn_ie, const double* inv_dual,
     const double* w, const int* cell_idx,
@@ -318,7 +318,7 @@ static GpuFlush g_flush;
 
 /* ================================================================ */
 /*  run_variant_configs                                              */
-/*  V = label variant (1-5), nlev = stride, nlev_end = compute bound */
+/*  V = label (1-5), nlev = stride, nlev_end = compute bound         */
 /* ================================================================ */
 static void run_variant_configs(
     FILE* fcsv,
@@ -337,6 +337,8 @@ static void run_variant_configs(
     cudaEvent_t ev0, cudaEvent_t ev1,
     double* h_gpu_out)
 {
+    int kV = kern_v(V);
+
     /* CPU reference -- zero-init so padding matches */
     memset(h_ref, 0, sz2d * sizeof(double));
     cpu_reference_v(V,
@@ -345,15 +347,15 @@ static void run_variant_configs(
         tangent_o, h_z_w_v, h_vidx, N, nlev, nlev_end);
 
     /* upload */
-    CUDA_CHECK(cudaMemcpy(d_vn_ie,   h_vn_ie,   sz2d*8, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_w,       h_w,       sz2d*8, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_z_vt_ie, h_z_vt_ie, sz2d*8, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_z_w_v,   h_z_w_v,   sz2d*8, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_cidx,    h_cidx,    N*2*4,  cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_vidx,    h_vidx,    N*2*4,  cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_inv_dual,   inv_dual,   N*8, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_inv_primal, inv_primal, N*8, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_tangent,    tangent_o,  N*8, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_vn_ie,      h_vn_ie,    sz2d*8, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_w,          h_w,        sz2d*8, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_z_vt_ie,    h_z_vt_ie,  sz2d*8, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_z_w_v,      h_z_w_v,    sz2d*8, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_cidx,       h_cidx,     N*2*4,  cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_vidx,       h_vidx,     N*2*4,  cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_inv_dual,   inv_dual,   N*8,    cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_inv_primal, inv_primal, N*8,    cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_tangent,    tangent_o,  N*8,    cudaMemcpyHostToDevice));
 
     for (int ci = 0; ci < N_GCFG; ci++) {
         CUDA_CHECK(cudaMemset(d_out, 0, sz2d*8));
@@ -369,7 +371,6 @@ static void run_variant_configs(
         CUDA_CHECK(cudaMemcpy(h_gpu_out, d_out, sz2d*8, cudaMemcpyDeviceToHost));
         int n_fail=0; double max_rel=0; size_t first_fail=0;
         bool ok = verify(h_gpu_out, h_ref, sz2d, 1e-8, 1e-12, &n_fail, &max_rel, &first_fail);
-        int kV = kern_v(V);
         if (!ok) {
             int ff_je, ff_jk;
             if (kV<=2){ff_je=first_fail%N;ff_jk=first_fail/N;}
@@ -406,13 +407,12 @@ static void run_variant_configs(
 }
 
 /* ================================================================ */
-/*  Helper: run one distribution block for given variants            */
-/*  Allocates device buffers, runs all requested V values            */
+/*  run_dist_block -- allocate, run V_start..V_end, free             */
 /* ================================================================ */
 static void run_dist_block(
     FILE* fcsv, int N, int nlev, int nlev_end,
     const char* dist_label,
-    int V_start, int V_end,    /* inclusive range of V values */
+    int V_start, int V_end,
     int* cell_logical, int* vert_logical,
     double* icon_inv_dual, double* icon_inv_primal, double* icon_tangent)
 {
@@ -420,13 +420,12 @@ static void run_dist_block(
     bd.alloc(N, nlev);
     bd.fill(nlev);
 
-    if (icon_inv_dual) { /* exact: override geometry */
+    if (icon_inv_dual)
         for (int je = 0; je < N; je++) {
             bd.inv_dual[je]   = icon_inv_dual[je];
             bd.inv_primal[je] = icon_inv_primal[je];
             bd.tangent_o[je]  = icon_tangent[je];
         }
-    }
 
     size_t sz2d = bd.sz2d;
     double* h_ref     = new double[sz2d];
@@ -434,7 +433,7 @@ static void run_dist_block(
 
     double *d_vn_ie, *d_w, *d_z_vt_ie, *d_z_w_v, *d_out;
     double *d_inv_dual, *d_inv_primal, *d_tangent;
-    int    *d_cidx, *d_vidx;
+    int *d_cidx, *d_vidx;
     CUDA_CHECK(cudaMalloc(&d_vn_ie,      sz2d*8));
     CUDA_CHECK(cudaMalloc(&d_w,          sz2d*8));
     CUDA_CHECK(cudaMalloc(&d_z_vt_ie,    sz2d*8));
@@ -504,6 +503,7 @@ int main(int argc, char* argv[]) {
     IconEdgeData icon_ed;
     bool have_exact = (icon_nproma > 0) &&
                       icon_load_patch(patch_path.c_str(), icon_nproma, icon_ed);
+    assert(have_exact);
     if (have_exact)
         printf("ICON exact data loaded: nproma=%d  n_edges=%d (valid=%d)  n_cells=%d  n_verts=%d\n",
                icon_ed.nproma, icon_ed.n_edges, icon_ed.n_edges_valid, icon_ed.n_cells, icon_ed.n_verts);
@@ -521,32 +521,66 @@ int main(int argc, char* argv[]) {
            (double)FLUSH_N*FLUSH_N*8/1e6);
 
     for (int nlev_i = 0; nlev_i < N_NLEVS; nlev_i++) {
-        int nlev_base = NLEVS[nlev_i];
+        int nlev_base   = NLEVS[nlev_i];
         int nlev_padded = icon_pad_nlev(nlev_base);
 
-        // synthetic V1-V4
-        run_dist_block(fcsv, N, nlev_base, nlev_base,
-            dist_name[di], 1, 4,
-            cell_logical, vd.logical,
-            nullptr, nullptr, nullptr);
+        /* ============================================================ */
+        /*  Synthetic distributions                                     */
+        /* ============================================================ */
+        for (int di = 0; di < 4; di++) {
+            gen_cell_idx_logical(cell_logical, N, (CellDist)di, rng);
 
-        // synthetic V5
-        run_dist_block(fcsv, N, nlev_padded, nlev_base,
-            dist_name[di], 5, 5,
-            cell_logical, vd.logical,
-            nullptr, nullptr, nullptr);
+            /* V1-V4: nlev = nlev_end = nlev_base (no padding) */
+            run_dist_block(fcsv, N, nlev_base, nlev_base,
+                dist_name[di], 1, 4,
+                cell_logical, vd.logical,
+                nullptr, nullptr, nullptr);
 
-        // exact V1-V4
-        run_dist_block(fcsv, Ne, nlev_base, nlev_base,
-            "exact", 1, 4,
-            ecl, evl,
-            icon_ed.inv_dual.data(), icon_ed.inv_primal.data(), icon_ed.tangent_o.data());
+            /* V5: nlev = padded, nlev_end = nlev_base */
+            if (nlev_padded != nlev_base) {
+                run_dist_block(fcsv, N, nlev_padded, nlev_base,
+                    dist_name[di], 5, 5,
+                    cell_logical, vd.logical,
+                    nullptr, nullptr, nullptr);
+            }
+        }
 
-        // exact V5
-        run_dist_block(fcsv, Ne, nlev_padded, nlev_base,
-            "exact", 5, 5,
-            ecl, evl,
-            icon_ed.inv_dual.data(), icon_ed.inv_primal.data(), icon_ed.tangent_o.data());
+        /* ============================================================ */
+        /*  EXACT distribution                                          */
+        /* ============================================================ */
+        if (have_exact) {
+            const int Ne = icon_ed.n_edges;
+            if (icon_ed.n_cells > Ne || icon_ed.n_verts > Ne) {
+                fprintf(stderr, "WARNING: n_cells/n_verts > Ne; skipping exact nlev=%d\n", nlev_base);
+                continue;
+            }
+
+            int* ecl = new int[Ne*2];
+            int* evl = new int[Ne*2];
+            for (int i = 0; i < Ne*2; i++) {
+                ecl[i] = icon_ed.cell_idx[i];
+                evl[i] = icon_ed.vert_idx[i];
+            }
+
+            /* V1-V4: nlev = nlev_end = nlev_base */
+            run_dist_block(fcsv, Ne, nlev_base, nlev_base,
+                "exact", 1, 4,
+                ecl, evl,
+                icon_ed.inv_dual.data(), icon_ed.inv_primal.data(),
+                icon_ed.tangent_o.data());
+
+            /* V5: nlev = padded, nlev_end = nlev_base */
+            if (nlev_padded != nlev_base) {
+                run_dist_block(fcsv, Ne, nlev_padded, nlev_base,
+                    "exact", 5, 5,
+                    ecl, evl,
+                    icon_ed.inv_dual.data(), icon_ed.inv_primal.data(),
+                    icon_ed.tangent_o.data());
+            }
+
+            delete[] ecl;
+            delete[] evl;
+        }
     }
 
     g_flush.destroy();
