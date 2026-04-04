@@ -209,17 +209,37 @@ static void bench_aos(int64_t n) {
 template<int P>
 static void bench_soa(int64_t n) {
     size_t bytes = n * sizeof(double);
+    size_t pad   = (size_t)4 * P * 64;     /* offset budget: 4P arrays total */
     double *re_in[P], *im_in[P], *re_out[P], *im_out[P];
+    void   *raw[4 * P];                    /* raw mmap pointers for munmap */
+
     for (int p = 0; p < P; p++) {
-        re_in[p]  = (double *)numa_alloc(bytes); init_and_bind(re_in[p], n);
-        im_in[p]  = (double *)numa_alloc(bytes); init_and_bind(im_in[p], n);
-        re_out[p] = (double *)numa_alloc(bytes); init_and_bind(re_out[p], n);
-        im_out[p] = (double *)numa_alloc(bytes); init_and_bind(im_out[p], n);
+        int k = 4 * p;
+        raw[k+0] = numa_alloc(bytes + pad);
+        re_in[p] = (double *)((char *)raw[k+0] + (size_t)(k+0) * 64);
+        init_and_bind(re_in[p], n);
+
+        raw[k+1] = numa_alloc(bytes + pad);
+        im_in[p] = (double *)((char *)raw[k+1] + (size_t)(k+1) * 64);
+        init_and_bind(im_in[p], n);
+
+        raw[k+2] = numa_alloc(bytes + pad);
+        re_out[p] = (double *)((char *)raw[k+2] + (size_t)(k+2) * 64);
+        init_and_bind(re_out[p], n);
+
+        raw[k+3] = numa_alloc(bytes + pad);
+        im_out[p] = (double *)((char *)raw[k+3] + (size_t)(k+3) * 64);
+        init_and_bind(im_out[p], n);
     }
+
     CPU_BENCH(P, n, "SoA", (kern_soa<P>(re_in, im_in, re_out, im_out, n)));
+
     for (int p = 0; p < P; p++) {
-        numa_free(re_in[p], bytes);  numa_free(im_in[p], bytes);
-        numa_free(re_out[p], bytes); numa_free(im_out[p], bytes);
+        int k = 4 * p;
+        numa_free(raw[k+0], bytes + pad);
+        numa_free(raw[k+1], bytes + pad);
+        numa_free(raw[k+2], bytes + pad);
+        numa_free(raw[k+3], bytes + pad);
     }
 }
 

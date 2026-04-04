@@ -233,16 +233,25 @@ static void bench_aos(int64_t n) {
 template<int P>
 static void bench_soa(int64_t n) {
     size_t bytes = n * sizeof(double);
+    size_t pad   = (size_t)P * 64;          /* per-array cache-line offset budget */
     double *re[P], *im[P];
+    void   *im_raw[P];                      /* raw mmap pointers for munmap */
+
     for (int p = 0; p < P; p++) {
-        re[p] = (double *)numa_alloc(bytes); init_and_bind(re[p], n);
-        im[p] = (double *)numa_alloc(bytes); init_and_bind(im[p], n);
+        re[p]     = (double *)numa_alloc(bytes);
+        init_and_bind(re[p], n);
+        im_raw[p] = numa_alloc(bytes + pad);
+        im[p]     = (double *)((char *)im_raw[p] + (size_t)p * 64);
+        init_and_bind(im[p], n);
     }
+
     double *const *ip = im;
     bench_persistent(P, n, "SoA",
-        [=]() { kern_soa_inner<P>(ip, n); });
+            [=]() { kern_soa_inner<P>(ip, n); });
+
     for (int p = 0; p < P; p++) {
-        numa_free(re[p], bytes); numa_free(im[p], bytes);
+        numa_free(re[p], bytes);
+        numa_free(im_raw[p], bytes + pad);
     }
 }
 
