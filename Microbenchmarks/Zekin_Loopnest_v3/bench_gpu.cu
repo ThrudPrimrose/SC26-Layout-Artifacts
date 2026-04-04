@@ -317,8 +317,8 @@ static void launch_gpu(int cfg,
 
     #define LG_JK(TX_,TY_,BX_,BY_) do {                                   \
         dim3 blk(BX_, BY_);                                                \
-        dim3 grd(((unsigned)N    + (BY_)*(TY_) - 1) / ((BY_)*(TY_)),      \
-                 ((unsigned)nlev + (BX_)*(TX_) - 1) / ((BX_)*(TX_)));     \
+        dim3 grd(((unsigned)nlev + (BX_)*(TX_) - 1) / ((BX_)*(TX_)),      \
+                ((unsigned)N    + (BY_)*(TY_) - 1) / ((BY_)*(TY_)));     \
         gpu_kernel_jk_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(              \
             out, vn_ie, inv_dual, w, cell_idx,                             \
             z_vt_ie, inv_primal, tangent, z_w_v, vert_idx, N, nlev);       \
