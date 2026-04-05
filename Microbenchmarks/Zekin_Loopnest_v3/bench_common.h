@@ -103,9 +103,8 @@ static void fill_xor(double *arr, size_t n, unsigned seed) {
 /* ================================================================ */
 /*  distributions                                                    */
 /* ================================================================ */
-enum CellDist { UNIFORM = 0, NORMAL1 = 1, NORMAL4 = 2, SEQUENTIAL = 3 };
-static const char *dist_name[] = {"uniform", "normal_var1", "normal_var4",
-                                  "sequential", "exact"};
+enum CellDist { UNIFORM = 0, NORMAL1 = 1 };
+static const char *dist_name[] = {"uniform", "normal_var1", "exact"};
 
 static void gen_permutation(int *p, int N, std::mt19937 &rng) {
   std::iota(p, p + N, 0);
@@ -131,20 +130,6 @@ static void gen_cell_idx_logical(int *L, int N, CellDist dist,
     }
     break;
   }
-  case NORMAL4: {
-    std::normal_distribution<double> nd(0, 2);
-    for (int i = 0; i < N; i++) {
-      L[i * 2] = ((i + 1 + (int)std::round(nd(rng))) % N + N) % N;
-      L[i * 2 + 1] = ((i - 1 + (int)std::round(nd(rng))) % N + N) % N;
-    }
-    break;
-  }
-  case SEQUENTIAL:
-    for (int i = 0; i < N; i++) {
-      L[i * 2] = (i + 1) % N;
-      L[i * 2 + 1] = (i + 1) % N;
-    }
-    break;
   }
 }
 

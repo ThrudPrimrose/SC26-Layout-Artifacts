@@ -170,38 +170,170 @@ __global__ void gpu_kernel_jk_first(
 /*  GPU config table  (69 configs)                                   */
 /* ================================================================ */
 struct GpuCfg { int tx, ty, bx, by; const char* label; };
+/* ================================================================ */
+/*  GPU config table                                                 */
+/*  Convention: TX tiles the stride-1 dim, TY tiles the other dim.   */
+/*  je_first (V<=2): TX->je, TY->jk                                 */
+/*  jk_first (V>=3): TX->jk, TY->je                                 */
+/*                                                                   */
+/*  Groups:                                                          */
+/*    A) TX >= TY  (original bias)                                   */
+/*    B) TY >  TX  (new: favours NPROMA-heavy tiling for V3-V5)     */
+/* ================================================================ */
 static constexpr GpuCfg GCFG[] = {
-    {1,1,256,1,"1x1_256x1"},{1,1,128,1,"1x1_128x1"},{1,1,64,1,"1x1_64x1"},
-    {2,1,256,1,"2x1_256x1"},{2,1,128,1,"2x1_128x1"},
-    {4,1,256,1,"4x1_256x1"},{4,1,128,1,"4x1_128x1"},{4,1,64,1,"4x1_64x1"},
-    {8,1,128,1,"8x1_128x1"},{8,1,64,1,"8x1_64x1"},
-    {1,2,256,1,"1x2_256x1"},{1,2,128,1,"1x2_128x1"},
-    {1,4,256,1,"1x4_256x1"},{1,4,128,1,"1x4_128x1"},{1,8,128,1,"1x8_128x1"},
-    {2,2,256,1,"2x2_256x1"},{2,2,128,1,"2x2_128x1"},{2,4,128,1,"2x4_128x1"},
-    {4,2,128,1,"4x2_128x1"},{4,2,64,1,"4x2_64x1"},{4,4,64,1,"4x4_64x1"},
-    {1,1,32,32,"1x1_32x32"},{1,1,32,16,"1x1_32x16"},{1,1,32,8,"1x1_32x8"},
-    {1,1,32,4,"1x1_32x4"},
-    {2,1,32,16,"2x1_32x16"},{2,1,32,8,"2x1_32x8"},{2,1,32,4,"2x1_32x4"},
-    {4,1,32,16,"4x1_32x16"},{4,1,32,8,"4x1_32x8"},{4,1,32,4,"4x1_32x4"},
-    {1,2,32,16,"1x2_32x16"},{1,2,32,8,"1x2_32x8"},{1,2,32,4,"1x2_32x4"},
-    {1,4,32,16,"1x4_32x16"},{1,4,32,8,"1x4_32x8"},{1,4,32,4,"1x4_32x4"},
-    {2,2,32,16,"2x2_32x16"},{2,2,32,8,"2x2_32x8"},{2,2,32,4,"2x2_32x4"},
-    {2,4,32,8,"2x4_32x8"},{2,4,32,4,"2x4_32x4"},
-    {4,2,32,8,"4x2_32x8"},{4,2,32,4,"4x2_32x4"},
-    {1,1,64,8,"1x1_64x8"},{1,1,64,4,"1x1_64x4"},{1,1,64,2,"1x1_64x2"},
-    {2,1,64,8,"2x1_64x8"},{2,1,64,4,"2x1_64x4"},{2,1,64,2,"2x1_64x2"},
-    {4,1,64,4,"4x1_64x4"},{4,1,64,2,"4x1_64x2"},
-    {1,2,64,8,"1x2_64x8"},{1,2,64,4,"1x2_64x4"},{1,4,64,4,"1x4_64x4"},
-    {2,2,64,4,"2x2_64x4"},{2,2,64,2,"2x2_64x2"},
-    {1,1,128,4,"1x1_128x4"},{1,1,128,2,"1x1_128x2"},
-    {2,1,128,4,"2x1_128x4"},{2,1,128,2,"2x1_128x2"},
-    {1,2,128,4,"1x2_128x4"},{1,2,128,2,"1x2_128x2"},
-    {1,1,16,16,"1x1_16x16"},{2,1,16,16,"2x1_16x16"},{1,2,16,16,"1x2_16x16"},
-    {2,2,16,16,"2x2_16x16"},{4,1,16,16,"4x1_16x16"},{4,2,16,16,"4x2_16x16"},
-    {1,1,96,1,"1x1_96x1"},{1,2,96,1,"1x2_96x1"},{1,4,96,1,"1x2_96x1"},
-    {1,8,96,1,"1x8_96x1"},{1,1,96,2,"1x1_96x2"},{1,2,96,2,"1x2_96x2"},{1,4,96,2,"1x4_96x2"},
-    {1,8,96,2,"1x1_96x2"},{1,1,96,4,"1x1_96x4"},{1,2,96,4,"1x2_96x4"},{1,4,96,4,"1x4_96x4"},
-    {1,8,96,4,"1x1_96x4"},
+    /* ---- A: TX >= TY, 1D blocks (BY=1) ---- */
+    /* 0  */ {1,1,256,1,"1x1_256x1"},
+    /* 1  */ {1,1,128,1,"1x1_128x1"},
+    /* 2  */ {1,1,64,1,"1x1_64x1"},
+    /* 3  */ {2,1,256,1,"2x1_256x1"},
+    /* 4  */ {2,1,128,1,"2x1_128x1"},
+    /* 5  */ {4,1,256,1,"4x1_256x1"},
+    /* 6  */ {4,1,128,1,"4x1_128x1"},
+    /* 7  */ {4,1,64,1,"4x1_64x1"},
+    /* 8  */ {8,1,128,1,"8x1_128x1"},
+    /* 9  */ {8,1,64,1,"8x1_64x1"},
+    /* ---- A: TX >= TY, 1D blocks (BY=1) with small TY ---- */
+    /* 10 */ {1,2,256,1,"1x2_256x1"},
+    /* 11 */ {1,2,128,1,"1x2_128x1"},
+    /* 12 */ {1,4,256,1,"1x4_256x1"},
+    /* 13 */ {1,4,128,1,"1x4_128x1"},
+    /* 14 */ {1,8,128,1,"1x8_128x1"},
+    /* 15 */ {2,2,256,1,"2x2_256x1"},
+    /* 16 */ {2,2,128,1,"2x2_128x1"},
+    /* 17 */ {2,4,128,1,"2x4_128x1"},
+    /* 18 */ {4,2,128,1,"4x2_128x1"},
+    /* 19 */ {4,2,64,1,"4x2_64x1"},
+    /* 20 */ {4,4,64,1,"4x4_64x1"},
+    /* ---- A: 2D blocks, square-ish ---- */
+    /* 21 */ {1,1,32,32,"1x1_32x32"},
+    /* 22 */ {1,1,32,16,"1x1_32x16"},
+    /* 23 */ {1,1,32,8,"1x1_32x8"},
+    /* 24 */ {1,1,32,4,"1x1_32x4"},
+    /* 25 */ {2,1,32,16,"2x1_32x16"},
+    /* 26 */ {2,1,32,8,"2x1_32x8"},
+    /* 27 */ {2,1,32,4,"2x1_32x4"},
+    /* 28 */ {4,1,32,16,"4x1_32x16"},
+    /* 29 */ {4,1,32,8,"4x1_32x8"},
+    /* 30 */ {4,1,32,4,"4x1_32x4"},
+    /* 31 */ {1,2,32,16,"1x2_32x16"},
+    /* 32 */ {1,2,32,8,"1x2_32x8"},
+    /* 33 */ {1,2,32,4,"1x2_32x4"},
+    /* 34 */ {1,4,32,16,"1x4_32x16"},
+    /* 35 */ {1,4,32,8,"1x4_32x8"},
+    /* 36 */ {1,4,32,4,"1x4_32x4"},
+    /* 37 */ {2,2,32,16,"2x2_32x16"},
+    /* 38 */ {2,2,32,8,"2x2_32x8"},
+    /* 39 */ {2,2,32,4,"2x2_32x4"},
+    /* 40 */ {2,4,32,8,"2x4_32x8"},
+    /* 41 */ {2,4,32,4,"2x4_32x4"},
+    /* 42 */ {4,2,32,8,"4x2_32x8"},
+    /* 43 */ {4,2,32,4,"4x2_32x4"},
+    /* ---- A: 2D blocks, moderate ---- */
+    /* 44 */ {1,1,64,8,"1x1_64x8"},
+    /* 45 */ {1,1,64,4,"1x1_64x4"},
+    /* 46 */ {1,1,64,2,"1x1_64x2"},
+    /* 47 */ {2,1,64,8,"2x1_64x8"},
+    /* 48 */ {2,1,64,4,"2x1_64x4"},
+    /* 49 */ {2,1,64,2,"2x1_64x2"},
+    /* 50 */ {4,1,64,4,"4x1_64x4"},
+    /* 51 */ {4,1,64,2,"4x1_64x2"},
+    /* 52 */ {1,2,64,8,"1x2_64x8"},
+    /* 53 */ {1,2,64,4,"1x2_64x4"},
+    /* 54 */ {1,4,64,4,"1x4_64x4"},
+    /* 55 */ {2,2,64,4,"2x2_64x4"},
+    /* 56 */ {2,2,64,2,"2x2_64x2"},
+    /* 57 */ {1,1,128,4,"1x1_128x4"},
+    /* 58 */ {1,1,128,2,"1x1_128x2"},
+    /* 59 */ {2,1,128,4,"2x1_128x4"},
+    /* 60 */ {2,1,128,2,"2x1_128x2"},
+    /* 61 */ {1,2,128,4,"1x2_128x4"},
+    /* 62 */ {1,2,128,2,"1x2_128x2"},
+    /* ---- A: 2D blocks, 16x16 ---- */
+    /* 63 */ {1,1,16,16,"1x1_16x16"},
+    /* 64 */ {2,1,16,16,"2x1_16x16"},
+    /* 65 */ {1,2,16,16,"1x2_16x16"},
+    /* 66 */ {2,2,16,16,"2x2_16x16"},
+    /* 67 */ {4,1,16,16,"4x1_16x16"},
+    /* 68 */ {4,2,16,16,"4x2_16x16"},
+    /* ---- A: 1D blocks, 96-wide ---- */
+    /* 69 */ {1,1,96,1,"1x1_96x1"},
+    /* 70 */ {1,2,96,1,"1x2_96x1"},
+    /* 71 */ {1,4,96,1,"1x4_96x1"},
+    /* 72 */ {1,8,96,1,"1x8_96x1"},
+    /* 73 */ {1,1,96,2,"1x1_96x2"},
+    /* 74 */ {1,2,96,2,"1x2_96x2"},
+    /* 75 */ {1,4,96,2,"1x4_96x2"},
+    /* 76 */ {1,8,96,2,"1x8_96x2"},
+    /* 77 */ {1,1,96,4,"1x1_96x4"},
+    /* 78 */ {1,2,96,4,"1x2_96x4"},
+    /* 79 */ {1,4,96,4,"1x4_96x4"},
+    /* 80 */ {1,8,96,4,"1x8_96x4"},
+ 
+    /* ============================================================ */
+    /*  B: TY > TX  (NPROMA-heavy tiling for jk_first kernels)      */
+    /* ============================================================ */
+ 
+    /* ---- B: 1D blocks (BY=1), big TY ---- */
+    /* 81  */ {1,2,64,1,"1x2_64x1"},
+    /* 82  */ {1,4,64,1,"1x4_64x1"},
+    /* 83  */ {1,8,64,1,"1x8_64x1"},
+    /* 84  */ {1,2,32,1,"1x2_32x1"},
+    /* 85  */ {1,4,32,1,"1x4_32x1"},
+    /* 86  */ {1,8,32,1,"1x8_32x1"},
+    /* 87  */ {1,16,32,1,"1x16_32x1"},
+    /* 88  */ {1,2,16,1,"1x2_16x1"},
+    /* 89  */ {1,4,16,1,"1x4_16x1"},
+    /* 90  */ {1,8,16,1,"1x8_16x1"},
+    /* 91  */ {1,16,16,1,"1x16_16x1"},
+ 
+    /* ---- B: 2D blocks, TY > TX, BX=32 ---- */
+    /* 92  */ {1,2,32,32,"1x2_32x32"},
+    /* 93  */ {1,4,32,16,"1x4_32x16b"},
+    /* 94  */ {1,4,32,8,"1x4_32x8b"},
+    /* 95  */ {1,8,32,8,"1x8_32x8"},
+    /* 96  */ {1,8,32,4,"1x8_32x4"},
+    /* 97  */ {1,8,32,16,"1x8_32x16"},
+    /* 98  */ {1,16,32,4,"1x16_32x4"},
+    /* 99  */ {1,16,32,8,"1x16_32x8"},
+ 
+    /* ---- B: 2D blocks, TY > TX, BX=16 ---- */
+    /* 100 */ {1,2,16,16,"1x2_16x16b"},
+    /* 101 */ {1,4,16,16,"1x4_16x16"},
+    /* 102 */ {1,8,16,16,"1x8_16x16"},
+    /* 103 */ {1,4,16,8,"1x4_16x8"},
+    /* 104 */ {1,8,16,8,"1x8_16x8"},
+    /* 105 */ {1,16,16,4,"1x16_16x4"},
+    /* 106 */ {1,16,16,8,"1x16_16x8"},
+ 
+    /* ---- B: 2D blocks, TY > TX, BX=64 ---- */
+    /* 107 */ {1,2,64,4,"1x2_64x4b"},
+    /* 108 */ {1,4,64,2,"1x4_64x2"},
+    /* 109 */ {1,8,64,2,"1x8_64x2"},
+    /* 110 */ {1,8,64,4,"1x8_64x4"},
+    /* 111 */ {1,4,64,8,"1x4_64x8b"},
+ 
+    /* ---- B: mixed TX=2 with TY=4,8 ---- */
+    /* 112 */ {2,4,32,16,"2x4_32x16"},
+    /* 113 */ {2,8,32,8,"2x8_32x8"},
+    /* 114 */ {2,8,32,4,"2x8_32x4"},
+    /* 115 */ {2,4,64,4,"2x4_64x4"},
+    /* 116 */ {2,8,64,2,"2x8_64x2"},
+    /* 117 */ {2,4,16,16,"2x4_16x16"},
+    /* 118 */ {2,8,16,8,"2x8_16x8"},
+    /* 119 */ {2,8,16,16,"2x8_16x16"},
+ 
+    /* ---- B: 1D blocks, 128/256-wide, bigger TY ---- */
+    /* 120 */ {1,4,128,2,"1x4_128x2"},
+    /* 121 */ {1,8,128,2,"1x8_128x2"},
+    /* 122 */ {1,4,256,1,"1x4_256x1b"},
+    /* 123 */ {1,8,256,1,"1x8_256x1"},
+    /* 124 */ {1,16,128,1,"1x16_128x1"},
+    /* 125 */ {1,16,64,1,"1x16_64x1"},
+ 
+    /* ---- B: 96-wide, bigger TY ---- */
+    /* 126 */ {1,16,96,1,"1x16_96x1"},
+    /* 127 */ {1,16,96,2,"1x16_96x2"},
+    /* 128 */ {1,8,96,8,"1x8_96x8"},
 };
 static constexpr int N_GCFG = sizeof(GCFG)/sizeof(GCFG[0]);
 
@@ -226,16 +358,28 @@ static void launch_gpu(int cfg,
         CUDA_LAUNCH_CHECK();                                               \
     } while(0)
 
-    #define LG_JK(TX_,TY_,BX_,BY_) do {                                   \
-        if ((BX_)*(TX_) > nlev_end) break;                                 \
-        dim3 blk(BX_,BY_);                                                 \
-        dim3 grd(((unsigned)nlev_end+(BX_)*(TX_)-1)/((BX_)*(TX_)),        \
-                 ((unsigned)N       +(BY_)*(TY_)-1)/((BY_)*(TY_)));       \
-        if (grd.x>65535u||grd.y>65535u) break;                             \
-        gpu_kernel_jk_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(              \
-            out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,      \
-            z_w_v,vert_idx,N,nlev,nlev_end);                               \
-        CUDA_LAUNCH_CHECK();                                               \
+    #define LG_JK(TX_,TY_,BX_,BY_) do {                                       \
+        unsigned bx_ = (BX_), by_ = (BY_), tx_ = (TX_), ty_ = (TY_);          \
+        if (tx_ * bx_ > (unsigned)nlev_end) {                                  \
+            unsigned f_ = (bx_ + 95u) / 96u;                                   \
+            if (f_ < 1u) f_ = 1u;                                              \
+            bx_ = 90u;                                                         \
+            by_ *= f_;                                                         \
+            ty_ *= tx_;                                                        \
+            tx_ = 1u;                                                          \
+        }                                                                      \
+        dim3 blk(bx_, by_);                                                    \
+        dim3 grd(((unsigned)nlev_end + bx_*tx_ - 1u) / (bx_*tx_),             \
+                ((unsigned)N + by_*ty_ - 1u) / (by_*ty_));                    \
+        if (grd.x > 65535u) break;                                             \
+        while (grd.y > 65535u) {                                               \
+            ty_ *= 2u;                                                         \
+            grd.y = ((unsigned)N + by_*ty_ - 1u) / (by_*ty_);                 \
+        }                                                                      \
+        gpu_kernel_jk_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(                  \
+            out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,          \
+            z_w_v,vert_idx,N,nlev,nlev_end);                                   \
+        CUDA_LAUNCH_CHECK();                                                   \
     } while(0)
 
     #define LG(TX_,TY_,BX_,BY_) do {                                      \
@@ -244,45 +388,68 @@ static void launch_gpu(int cfg,
     } while(0)
 
     switch(cfg){
-    case 0:LG(1,1,256,1);break; case 1:LG(1,1,128,1);break; case 2:LG(1,1,64,1);break;
-    case 3:LG(2,1,256,1);break; case 4:LG(2,1,128,1);break;
-    case 5:LG(4,1,256,1);break; case 6:LG(4,1,128,1);break; case 7:LG(4,1,64,1);break;
-    case 8:LG(8,1,128,1);break; case 9:LG(8,1,64,1);break;
+    /* ---- A: original configs ---- */
+    case  0:LG(1,1,256,1);break; case  1:LG(1,1,128,1);break; case  2:LG(1,1,64,1);break;
+    case  3:LG(2,1,256,1);break; case  4:LG(2,1,128,1);break;
+    case  5:LG(4,1,256,1);break; case  6:LG(4,1,128,1);break; case  7:LG(4,1,64,1);break;
+    case  8:LG(8,1,128,1);break; case  9:LG(8,1,64,1);break;
     case 10:LG(1,2,256,1);break; case 11:LG(1,2,128,1);break;
     case 12:LG(1,4,256,1);break; case 13:LG(1,4,128,1);break; case 14:LG(1,8,128,1);break;
     case 15:LG(2,2,256,1);break; case 16:LG(2,2,128,1);break; case 17:LG(2,4,128,1);break;
-    case 18:LG(4,2,128,1);break; case 19:LG(4,2,64,1);break; case 20:LG(4,4,64,1);break;
+    case 18:LG(4,2,128,1);break; case 19:LG(4,2,64,1);break;  case 20:LG(4,4,64,1);break;
     case 21:LG(1,1,32,32);break; case 22:LG(1,1,32,16);break;
-    case 23:LG(1,1,32,8);break; case 24:LG(1,1,32,4);break;
-    case 25:LG(2,1,32,16);break; case 26:LG(2,1,32,8);break; case 27:LG(2,1,32,4);break;
-    case 28:LG(4,1,32,16);break; case 29:LG(4,1,32,8);break; case 30:LG(4,1,32,4);break;
-    case 31:LG(1,2,32,16);break; case 32:LG(1,2,32,8);break; case 33:LG(1,2,32,4);break;
-    case 34:LG(1,4,32,16);break; case 35:LG(1,4,32,8);break; case 36:LG(1,4,32,4);break;
-    case 37:LG(2,2,32,16);break; case 38:LG(2,2,32,8);break; case 39:LG(2,2,32,4);break;
-    case 40:LG(2,4,32,8);break; case 41:LG(2,4,32,4);break;
-    case 42:LG(4,2,32,8);break; case 43:LG(4,2,32,4);break;
-    case 44:LG(1,1,64,8);break; case 45:LG(1,1,64,4);break; case 46:LG(1,1,64,2);break;
-    case 47:LG(2,1,64,8);break; case 48:LG(2,1,64,4);break; case 49:LG(2,1,64,2);break;
-    case 50:LG(4,1,64,4);break; case 51:LG(4,1,64,2);break;
-    case 52:LG(1,2,64,8);break; case 53:LG(1,2,64,4);break; case 54:LG(1,4,64,4);break;
-    case 55:LG(2,2,64,4);break; case 56:LG(2,2,64,2);break;
+    case 23:LG(1,1,32,8);break;  case 24:LG(1,1,32,4);break;
+    case 25:LG(2,1,32,16);break; case 26:LG(2,1,32,8);break;  case 27:LG(2,1,32,4);break;
+    case 28:LG(4,1,32,16);break; case 29:LG(4,1,32,8);break;  case 30:LG(4,1,32,4);break;
+    case 31:LG(1,2,32,16);break; case 32:LG(1,2,32,8);break;  case 33:LG(1,2,32,4);break;
+    case 34:LG(1,4,32,16);break; case 35:LG(1,4,32,8);break;  case 36:LG(1,4,32,4);break;
+    case 37:LG(2,2,32,16);break; case 38:LG(2,2,32,8);break;  case 39:LG(2,2,32,4);break;
+    case 40:LG(2,4,32,8);break;  case 41:LG(2,4,32,4);break;
+    case 42:LG(4,2,32,8);break;  case 43:LG(4,2,32,4);break;
+    case 44:LG(1,1,64,8);break;  case 45:LG(1,1,64,4);break;  case 46:LG(1,1,64,2);break;
+    case 47:LG(2,1,64,8);break;  case 48:LG(2,1,64,4);break;  case 49:LG(2,1,64,2);break;
+    case 50:LG(4,1,64,4);break;  case 51:LG(4,1,64,2);break;
+    case 52:LG(1,2,64,8);break;  case 53:LG(1,2,64,4);break;  case 54:LG(1,4,64,4);break;
+    case 55:LG(2,2,64,4);break;  case 56:LG(2,2,64,2);break;
     case 57:LG(1,1,128,4);break; case 58:LG(1,1,128,2);break;
     case 59:LG(2,1,128,4);break; case 60:LG(2,1,128,2);break;
     case 61:LG(1,2,128,4);break; case 62:LG(1,2,128,2);break;
     case 63:LG(1,1,16,16);break; case 64:LG(2,1,16,16);break; case 65:LG(1,2,16,16);break;
     case 66:LG(2,2,16,16);break; case 67:LG(4,1,16,16);break; case 68:LG(4,2,16,16);break;
-    case 69:LG(1,1,96,1);break;
-    case 70:LG(1,2,96,1);break;
-    case 71:LG(1,4,96,1);break;
-    case 72:LG(1,8,96,1);break;
-    case 73:LG(1,1,96,2);break;
-    case 74:LG(1,2,96,2);break;
-    case 75:LG(1,4,96,2);break;
-    case 76:LG(1,8,96,2);break;
-    case 77:LG(1,1,96,4);break;
-    case 78:LG(1,2,96,4);break;
-    case 79:LG(1,4,96,4);break;
-    case 80:LG(1,8,96,4);break;
+    case 69:LG(1,1,96,1);break;  case 70:LG(1,2,96,1);break;
+    case 71:LG(1,4,96,1);break;  case 72:LG(1,8,96,1);break;
+    case 73:LG(1,1,96,2);break;  case 74:LG(1,2,96,2);break;
+    case 75:LG(1,4,96,2);break;  case 76:LG(1,8,96,2);break;
+    case 77:LG(1,1,96,4);break;  case 78:LG(1,2,96,4);break;
+    case 79:LG(1,4,96,4);break;  case 80:LG(1,8,96,4);break;
+ 
+    /* ---- B: TY > TX configs ---- */
+    case  81:LG(1,2,64,1);break;   case  82:LG(1,4,64,1);break;
+    case  83:LG(1,8,64,1);break;
+    case  84:LG(1,2,32,2);break;   case  85:LG(1,4,32,2);break;
+    case  86:LG(1,8,32,2);break;   case  87:LG(1,16,32,2);break;
+    case  88:LG(1,2,16,4);break;   case  89:LG(1,4,16,4);break;
+    case  90:LG(1,8,16,4);break;   case  91:LG(1,16,16,4);break;
+    case  92:LG(1,2,32,32);break;  case  93:LG(1,4,32,16);break;
+    case  94:LG(1,4,32,8);break;   case  95:LG(1,8,32,8);break;
+    case  96:LG(1,8,32,4);break;   case  97:LG(1,8,32,16);break;
+    case  98:LG(1,16,32,4);break;  case  99:LG(1,16,32,8);break;
+    case 100:LG(1,2,16,16);break;  case 101:LG(1,4,16,16);break;
+    case 102:LG(1,8,16,16);break;  case 103:LG(1,4,16,8);break;
+    case 104:LG(1,8,16,8);break;   case 105:LG(1,16,16,4);break;
+    case 106:LG(1,16,16,8);break;
+    case 107:LG(1,2,64,4);break;   case 108:LG(1,4,64,2);break;
+    case 109:LG(1,8,64,2);break;   case 110:LG(1,8,64,4);break;
+    case 111:LG(1,4,64,8);break;
+    case 112:LG(2,4,32,16);break;  case 113:LG(2,8,32,8);break;
+    case 114:LG(2,8,32,4);break;   case 115:LG(2,4,64,4);break;
+    case 116:LG(2,8,64,2);break;   case 117:LG(2,4,16,16);break;
+    case 118:LG(2,8,16,8);break;   case 119:LG(2,8,16,16);break;
+    case 120:LG(1,4,128,2);break;  case 121:LG(1,8,128,2);break;
+    case 122:LG(1,4,256,1);break;  case 123:LG(1,8,256,1);break;
+    case 124:LG(1,16,128,1);break; case 125:LG(1,16,64,1);break;
+    case 126:LG(1,16,96,1);break;  case 127:LG(1,16,96,2);break;
+    case 128:LG(1,8,96,8);break;
     }
     #undef LG
     #undef LG_JE
@@ -542,27 +709,6 @@ int main(int argc, char* argv[]) {
         int nlev_padded = icon_pad_nlev(nlev_base);
 
         /* ============================================================ */
-        /*  Synthetic distributions                                     */
-        /* ============================================================ */
-        for (int di = 0; di < 4; di++) {
-            gen_cell_idx_logical(cell_logical, N, (CellDist)di, rng);
-
-            /* V1-V4: nlev = nlev_end = nlev_base (no padding) */
-            run_dist_block(fcsv, N, nlev_base, nlev_base,
-                dist_name[di], 1, 4,
-                cell_logical, vd.logical,
-                nullptr, nullptr, nullptr);
-
-            /* V5: nlev = padded, nlev_end = nlev_base */
-            if (nlev_padded != nlev_base) {
-                run_dist_block(fcsv, N, nlev_padded, nlev_base,
-                    dist_name[di], 5, 5,
-                    cell_logical, vd.logical,
-                    nullptr, nullptr, nullptr);
-            }
-        }
-
-        /* ============================================================ */
         /*  EXACT distribution                                          */
         /* ============================================================ */
         if (have_exact) {
@@ -598,6 +744,30 @@ int main(int argc, char* argv[]) {
             delete[] ecl;
             delete[] evl;
         }
+
+        /* ============================================================ */
+        /*  Synthetic distributions                                     */
+        /* ============================================================ */
+        for (int di = 0; di < 2; di++) {
+            gen_cell_idx_logical(cell_logical, N, (CellDist)di, rng);
+
+            /* V1-V4: nlev = nlev_end = nlev_base (no padding) */
+            run_dist_block(fcsv, N, nlev_base, nlev_base,
+                dist_name[di], 1, 4,
+                cell_logical, vd.logical,
+                nullptr, nullptr, nullptr);
+
+            /* V5: nlev = padded, nlev_end = nlev_base */
+            if (nlev_padded != nlev_base) {
+                run_dist_block(fcsv, N, nlev_padded, nlev_base,
+                    dist_name[di], 5, 5,
+                    cell_logical, vd.logical,
+                    nullptr, nullptr, nullptr);
+            }
+
+        }
+
+
     }
 
     g_flush.destroy();

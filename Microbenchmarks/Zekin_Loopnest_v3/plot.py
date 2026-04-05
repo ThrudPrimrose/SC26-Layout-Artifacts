@@ -275,7 +275,7 @@ def main():
 
     # ── Summary table ─────────────────────────────────────────────────────
     print("\nBest schedule/config selection:")
-    print(f"{'Platform':<22} {'Violin':<10} {'Distribution':<20} {'Best (Var, Cfg)':<30} {'Median TB/s':<12} {'% Peak':<8}")
+    print(f"{'Platform':<22} {'Violin':<10} {'Distribution':<20} {'Best (Var, Cfg)':<30} {'Median TB/s':<12} {'Runtime ms/s':<12} {'% Peak':<8}")
     print("-" * 102)
     for row_data in GRID:
         for label, csv, fcol, fval, _ in row_data:
@@ -289,11 +289,13 @@ def main():
                     sub_v1 = sub_v1.copy()
                     sub_v1["bandwidth"] = compute_bandwidth(sub_v1)
                     meds = sub_v1.groupby(fcol)["bandwidth"].median()
+                    meds2 = sub_v1.groupby(fcol)["time_ms"].median()
                     if not meds.empty:
                         best_cfg = meds.idxmax()
                         med = meds.max()
                         pct = 100.0 * med / STREAM_PEAK.get(label, 1.0)
-                        print(f"{label:<22} {'orange':<10} {dist:<20} {'V1, ' + str(best_cfg):<30} {med:.4f}      {pct:.1f}%")
+                        ms = meds2.min()
+                        print(f"{label:<22} {'orange':<10} {dist:<20} {'V1, ' + str(best_cfg):<30} {med:.4f}  {ms:.4f}    {pct:.1f}%")
 
                 # --- blue (overall best) ---
                 sub_all = df_full[(df_full["variant"].isin([3, 4, 5])) &
@@ -303,11 +305,13 @@ def main():
                     sub_all = sub_all.copy()
                     sub_all["bandwidth"] = compute_bandwidth(sub_all)
                     meds = sub_all.groupby(["variant", fcol])["bandwidth"].median()
+                    meds2 = sub_all.groupby(["variant", fcol])["time_ms"].median()
                     if not meds.empty:
                         best_var, best_cfg = meds.idxmax()
                         med = meds.max()
+                        ms = meds2.min()
                         pct = 100.0 * med / STREAM_PEAK.get(label, 1.0)
-                        print(f"{label:<22} {'blue':<10} {dist:<20} {'V' + str(best_var) + ', ' + str(best_cfg):<30} {med:.4f}      {pct:.1f}%")
+                        print(f"{label:<22} {'blue':<10} {dist:<20} {'V' + str(best_var) + ', ' + str(best_cfg):<30} {med:.4f}   {ms:.4f}   {pct:.1f}%")
 
     print(f"\nSaved: {OUT_STEM}{sfx}.png, {OUT_STEM}{sfx}.pdf")
 
