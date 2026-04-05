@@ -57,6 +57,14 @@ inline void skip_entries(std::istream &s, int count) {
   std::string tok; for(int i=0;i<count;i++){scroll_space(s);s>>tok;}
 }
 
+/* Print array dimensions */
+inline void print_meta(const char *section, const char *name, const ArrayMeta &m, const char *dtype) {
+  fprintf(stderr, "[icon_sizes] %s/%-28s  %s  rank=%d  (", section, name, dtype, m.rank);
+  for (int i=0;i<m.rank;i++) fprintf(stderr, "%s%d", i?", ":"", m.size[i]);
+  long long bytes = (long long)m.volume() * (strcmp(dtype,"int")==0 ? 4 : 8);
+  fprintf(stderr, ")  elements=%d  %.1f MB\n", m.volume(), bytes/1e6);
+}
+
 template<typename T>
 ArrayMeta read_alloc_array(std::istream &s, std::vector<T> *out=nullptr) {
   expect_line(s,"# alloc"); bool alloc=read_bool(s);
@@ -116,10 +124,15 @@ struct IconEdgeData {
   int nproma=0, nblks_c=0, nblks_e=0, nblks_v=0;
   int n_edges=0, n_cells=0, n_verts=0, n_edges_valid=0;
   std::vector<int> cell_idx, vert_idx;
+  std::vector<int> start_idx, end_idx, start_blk, end_blk;
   std::vector<double> inv_dual, inv_primal, tangent_o;
   void free_all() {
     cell_idx.clear(); cell_idx.shrink_to_fit();
     vert_idx.clear(); vert_idx.shrink_to_fit();
+    start_idx.clear(); start_idx.shrink_to_fit();
+    end_idx.clear(); end_idx.shrink_to_fit();
+    start_blk.clear(); start_blk.shrink_to_fit();
+    end_blk.clear(); end_blk.shrink_to_fit();
     inv_dual.clear(); inv_dual.shrink_to_fit();
     inv_primal.clear(); inv_primal.shrink_to_fit();
     tangent_o.clear(); tangent_o.shrink_to_fit();
@@ -175,45 +188,192 @@ inline bool icon_load_patch(const char *path, int nproma, IconEdgeData &ed) {
   expect_line(f,"# nblks_e"); ed.nblks_e=read_int(f);
   expect_line(f,"# nblks_v"); ed.nblks_v=read_int(f);
   ed.n_edges=nproma*ed.nblks_e; ed.n_cells=nproma*ed.nblks_c; ed.n_verts=nproma*ed.nblks_v;
+
+  fprintf(stderr,"[icon_sizes] Grid topology:\n");
+  fprintf(stderr,"[icon_sizes]   nproma=%d  nblks_c=%d  nblks_e=%d  nblks_v=%d\n",
+          nproma, ed.nblks_c, ed.nblks_e, ed.nblks_v);
+  fprintf(stderr,"[icon_sizes]   n_edges = nproma*nblks_e = %d\n", ed.n_edges);
+  fprintf(stderr,"[icon_sizes]   n_cells = nproma*nblks_c = %d\n", ed.n_cells);
+  fprintf(stderr,"[icon_sizes]   n_verts = nproma*nblks_v = %d\n", ed.n_verts);
+
   expect_line(f,"# cells"); skip_grid_cells(f);
   expect_line(f,"# edges");
-  std::vector<int> rc_idx,rc_blk,rv_idx,rv_blk; std::vector<int> re_idx,re_blk;
+
+  std::vector<int> rc_idx,rc_blk,rv_idx,rv_blk;
   std::vector<double> r_invp,r_invd,r_tang;
-  ArrayMeta m_ci,m_cb,m_vi,m_tg,m_ip,m_id;
+  ArrayMeta m_ci,m_cb,m_vi,m_vb,m_tg,m_qi,m_qb,m_ip,m_id,m_ae,m_fe,m_fn,m_ft;
+  ArrayMeta m_si,m_ei,m_sb,m_eb;
+
+  fprintf(stderr,"\n[icon_sizes] Edge arrays (serde dimensions):\n");
+
   expect_line(f,"# cell_idx");               m_ci=read_alloc_array<int>(f,&rc_idx);
+  print_meta("edges","cell_idx",m_ci,"int");
   expect_line(f,"# cell_blk");               m_cb=read_alloc_array<int>(f,&rc_blk);
+  print_meta("edges","cell_blk",m_cb,"int");
   expect_line(f,"# vertex_idx");             m_vi=read_alloc_array<int>(f,&rv_idx);
-  expect_line(f,"# vertex_blk");             read_alloc_array<int>(f,&rv_blk);
+  print_meta("edges","vertex_idx",m_vi,"int");
+  expect_line(f,"# vertex_blk");             m_vb=read_alloc_array<int>(f,&rv_blk);
+  print_meta("edges","vertex_blk",m_vb,"int");
   expect_line(f,"# tangent_orientation");    m_tg=read_alloc_array<double>(f,&r_tang);
-  expect_line(f,"# quad_idx");               read_alloc_array<int>(f);
-  expect_line(f,"# quad_blk");               read_alloc_array<int>(f);
+  print_meta("edges","tangent_orientation",m_tg,"dbl");
+  expect_line(f,"# quad_idx");               m_qi=read_alloc_array<int>(f);
+  print_meta("edges","quad_idx",m_qi,"int");
+  expect_line(f,"# quad_blk");               m_qb=read_alloc_array<int>(f);
+  print_meta("edges","quad_blk",m_qb,"int");
   expect_line(f,"# inv_primal_edge_length"); m_ip=read_alloc_array<double>(f,&r_invp);
+  print_meta("edges","inv_primal_edge_length",m_ip,"dbl");
   expect_line(f,"# inv_dual_edge_length");   m_id=read_alloc_array<double>(f,&r_invd);
-  expect_line(f,"# area_edge");              read_alloc_array<double>(f);
-  expect_line(f,"# f_e");                    read_alloc_array<double>(f);
-  expect_line(f,"# fn_e");                   read_alloc_array<double>(f);
-  expect_line(f,"# ft_e");                   read_alloc_array<double>(f);
-  expect_line(f,"# start_index");            read_alloc_array<int>(f);
-  expect_line(f,"# end_index");              read_alloc_array<int>(f,&re_idx);
-  expect_line(f,"# start_block");            read_alloc_array<int>(f);
-  expect_line(f,"# end_block");              read_alloc_array<int>(f,&re_blk);
+  print_meta("edges","inv_dual_edge_length",m_id,"dbl");
+  expect_line(f,"# area_edge");              m_ae=read_alloc_array<double>(f);
+  print_meta("edges","area_edge",m_ae,"dbl");
+  expect_line(f,"# f_e");                    m_fe=read_alloc_array<double>(f);
+  print_meta("edges","f_e",m_fe,"dbl");
+  expect_line(f,"# fn_e");                   m_fn=read_alloc_array<double>(f);
+  print_meta("edges","fn_e",m_fn,"dbl");
+  expect_line(f,"# ft_e");                   m_ft=read_alloc_array<double>(f);
+  print_meta("edges","ft_e",m_ft,"dbl");
+  expect_line(f,"# start_index");            m_si=read_alloc_array<int>(f,&ed.start_idx);
+  print_meta("edges","start_index",m_si,"int");
+  expect_line(f,"# end_index");              m_ei=read_alloc_array<int>(f,&ed.end_idx);
+  print_meta("edges","end_index",m_ei,"int");
+  expect_line(f,"# start_block");            m_sb=read_alloc_array<int>(f,&ed.start_blk);
+  print_meta("edges","start_block",m_sb,"int");
+  expect_line(f,"# end_block");              m_eb=read_alloc_array<int>(f,&ed.end_blk);
+  print_meta("edges","end_block",m_eb,"int");
+
+  /* linearised / collapsed dimensions */
+  fprintf(stderr,"\n[icon_sizes] Linearised arrays used in stencil:\n");
+  fprintf(stderr,"[icon_sizes]   cell_idx     [n_edges*2]     = [%d]       (%d -> [0,%d))\n",
+          ed.n_edges*2, ed.n_edges, ed.n_cells);
+  fprintf(stderr,"[icon_sizes]   vert_idx     [n_edges*2]     = [%d]       (%d -> [0,%d))\n",
+          ed.n_edges*2, ed.n_edges, ed.n_verts);
+  fprintf(stderr,"[icon_sizes]   inv_dual     [n_edges]       = [%d]\n", ed.n_edges);
+  fprintf(stderr,"[icon_sizes]   inv_primal   [n_edges]       = [%d]\n", ed.n_edges);
+  fprintf(stderr,"[icon_sizes]   tangent_o    [n_edges]       = [%d]\n", ed.n_edges);
+  fprintf(stderr,"[icon_sizes]   vn_ie        [n_edges*nlev]  (runtime, per-level)\n");
+  fprintf(stderr,"[icon_sizes]   w            [n_cells*nlev]  (indirect target, n_cells=%d)\n", ed.n_cells);
+  fprintf(stderr,"[icon_sizes]   z_w_v        [n_verts*nlev]  (indirect target, n_verts=%d)\n", ed.n_verts);
+  fprintf(stderr,"[icon_sizes]   out          [n_edges*nlev]  (output)\n");
+
   {int s0=m_ci.size[0]; if(s0!=nproma) fprintf(stderr,"[icon_data_loader] WARNING: serde size[0]=%d != nproma=%d\n",s0,nproma);}
-  {int mx=0; for(int i=0;i<(int)re_blk.size();i++){
-    if(re_blk[i]<=0||re_idx[i]<=0) continue;
-    int fl=(re_blk[i]-1)*nproma+re_idx[i]; if(fl>mx) mx=fl;}
+  {int mx=0; for(int i=0;i<(int)ed.end_blk.size();i++){
+    if(ed.end_blk[i]<=0||ed.end_idx[i]<=0) continue;
+    int fl=(ed.end_blk[i]-1)*nproma+ed.end_idx[i]; if(fl>mx) mx=fl;}
     ed.n_edges_valid=mx; if(ed.n_edges_valid<=0) ed.n_edges_valid=ed.n_edges;
     if(ed.n_edges_valid>ed.n_edges) ed.n_edges_valid=ed.n_edges;}
-  fprintf(stderr,"[icon_data_loader] nproma=%d  nblks_e=%d  nblks_c=%d  nblks_v=%d\n"
-    "                   n_edges=%d (valid=%d)  n_cells=%d  n_verts=%d\n",
-    ed.nproma,ed.nblks_e,ed.nblks_c,ed.nblks_v,ed.n_edges,ed.n_edges_valid,ed.n_cells,ed.n_verts);
+
+  fprintf(stderr,"\n[icon_sizes] n_edges_valid=%d (%.1f%% of n_edges=%d)\n",
+          ed.n_edges_valid, 100.0*ed.n_edges_valid/ed.n_edges, ed.n_edges);
+
+  fprintf(stderr,"\n[icon_sizes] Edge range table (%d levels):\n", (int)ed.end_idx.size());
+  fprintf(stderr,"[icon_sizes]   %4s  %14s  %14s  %10s  %8s\n",
+          "lvl", "start(blk,idx)", "end(blk,idx)", "linear", "n_edges");
+  for (int i=0; i<(int)ed.end_idx.size(); i++) {
+    int s_lin = (ed.start_blk[i]>0 && ed.start_idx[i]>0)
+              ? (ed.start_blk[i]-1)*nproma + (ed.start_idx[i]-1) : -1;
+    int e_lin = (ed.end_blk[i]>0 && ed.end_idx[i]>0)
+              ? (ed.end_blk[i]-1)*nproma + (ed.end_idx[i]-1) : -1;
+    int count = (s_lin>=0 && e_lin>=0) ? e_lin-s_lin+1 : 0;
+    fprintf(stderr,"[icon_sizes]   %4d  (%4d,%6d)  (%4d,%6d)  [%6d,%6d]  %8d\n",
+            i, ed.start_blk[i], ed.start_idx[i], ed.end_blk[i], ed.end_idx[i],
+            s_lin, e_lin, count);
+  }
+
   linearise_connectivity(rc_idx,m_ci,rc_blk,nproma,ed.n_cells,ed.n_edges,ed.cell_idx);
   linearise_connectivity(rv_idx,m_vi,rv_blk,nproma,ed.n_verts,ed.n_edges,ed.vert_idx);
   linearise_2d_double(r_invd,m_id.size[0],nproma,ed.nblks_e,ed.inv_dual);
   linearise_2d_double(r_invp,m_ip.size[0],nproma,ed.nblks_e,ed.inv_primal);
   linearise_2d_double(r_tang,m_tg.size[0],nproma,ed.nblks_e,ed.tangent_o);
+
   fprintf(stderr,"[icon_data_loader] done.  Sample cell_idx[0]={%d,%d}  vert_idx[0]={%d,%d}\n",
     ed.cell_idx[0],ed.cell_idx[1],ed.vert_idx[0],ed.vert_idx[1]);
   return true;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Indirection locality metrics                                      */
+/*                                                                     */
+/*  Key metrics for cache performance:                                 */
+/*    consecutive: |idx[je+1] - idx[je]|  → cache reuse between edges  */
+/*    pair:        |ci0 - ci1|            → reuse within one edge      */
+/*    unique:      # distinct idx values  → indirect working set       */
+/* ------------------------------------------------------------------ */
+inline void print_idx_locality(const char *label, const char *idx_name,
+                               const int *logical, int N, int idx_max) {
+  static constexpr int BUCKETS[] = {1,2,4,8,16,32,64,128,256,1024,4096,16384,65536};
+  static constexpr int NB = sizeof(BUCKETS)/sizeof(BUCKETS[0]);
+
+  /* --- consecutive distance: |idx[(je+1)*2+n] - idx[je*2+n]| --- */
+  double consec_sum = 0;
+  long long consec_same_cl = 0, consec_within_page = 0;
+  int consec_max = 0;
+  long long consec_hist[NB+1] = {};
+  for (int je = 0; je < N-1; je++) {
+    for (int n = 0; n < 2; n++) {
+      int d = std::abs(logical[(je+1)*2+n] - logical[je*2+n]);
+      consec_sum += d;
+      if (d < 8) consec_same_cl++;
+      if (d < 512) consec_within_page++;
+      if (d > consec_max) consec_max = d;
+      int b = NB;
+      for (int i = 0; i < NB; i++) { if (d < BUCKETS[i]) { b = i; break; } }
+      consec_hist[b]++;
+    }
+  }
+  long long ctotal = (long long)(N-1) * 2;
+
+  /* --- pair distance: |ci0 - ci1| for same edge --- */
+  double pair_sum = 0;
+  long long pair_same_cl = 0;
+  int pair_max = 0;
+  for (int je = 0; je < N; je++) {
+    int d = std::abs(logical[je*2+0] - logical[je*2+1]);
+    pair_sum += d;
+    if (d < 8) pair_same_cl++;
+    if (d > pair_max) pair_max = d;
+  }
+
+  /* --- unique count (working set) via bitset --- */
+  int unique = 0;
+  {
+    std::vector<bool> seen(idx_max, false);
+    for (int je = 0; je < N; je++)
+      for (int n = 0; n < 2; n++) {
+        int idx = logical[je*2+n];
+        if (idx >= 0 && idx < idx_max && !seen[idx]) { seen[idx] = true; unique++; }
+      }
+  }
+
+  fprintf(stderr, "[locality] %s %s (N=%d, idx_max=%d, unique=%d = %.1f%%):\n",
+          label, idx_name, N, idx_max, unique, 100.0*unique/idx_max);
+  fprintf(stderr, "[locality]   consecutive |idx[je+1]-idx[je]|: avg=%5.1f  max=%d  same_cl(<8)=%5.1f%%  within_page(<512)=%5.1f%%\n",
+          consec_sum/ctotal, consec_max, 100.0*consec_same_cl/ctotal, 100.0*consec_within_page/ctotal);
+  fprintf(stderr, "[locality]   pair |ci0-ci1|:                   avg=%5.1f  max=%d  same_cl(<8)=%5.1f%%\n",
+          pair_sum/N, pair_max, 100.0*pair_same_cl/N);
+  fprintf(stderr, "[locality]   consecutive histogram:\n");
+  fprintf(stderr, "[locality]     ");
+  long long cum = 0;
+  for (int i = 0; i < NB; i++) {
+    cum += consec_hist[i];
+    fprintf(stderr, "<%d:%.0f%% ", BUCKETS[i], 100.0*cum/ctotal);
+  }
+  fprintf(stderr, "\n");
+}
+
+inline void icon_print_locality_metrics(const IconEdgeData &ed) {
+  fprintf(stderr, "\n");
+  print_idx_locality("exact", "cell_idx", ed.cell_idx.data(), ed.n_edges, ed.n_cells);
+  print_idx_locality("exact", "vert_idx", ed.vert_idx.data(), ed.n_edges, ed.n_verts);
+  fprintf(stderr, "\n");
+}
+
+inline void print_synthetic_locality(const char *dist_label,
+                                     const int *cell_logical,
+                                     const int *vert_logical,
+                                     int N, int cell_max, int vert_max) {
+  print_idx_locality(dist_label, "cell_idx", cell_logical, N, cell_max);
+  if (vert_logical)
+    print_idx_locality(dist_label, "vert_idx", vert_logical, N, vert_max);
 }
 
 /* ------------------------------------------------------------------ */
@@ -226,7 +386,6 @@ inline std::string icon_data_dir() {
 inline std::string icon_patch_path(int ts=9)  {return icon_data_dir()+"/p_patch."+std::to_string(ts)+".data";}
 inline std::string icon_global_path(int ts=9) {return icon_data_dir()+"/global_data.t0."+std::to_string(ts)+".data";}
 
-/* ---- Padding & variant helpers ---- */
 inline int icon_pad_nlev(int nlev, int align=32) { return ((nlev+align-1)/align)*align; }
 
 /*

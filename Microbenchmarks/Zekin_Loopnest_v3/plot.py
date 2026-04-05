@@ -28,21 +28,25 @@ STREAM_PEAK = {
 SUBPLOT_W = 5.5   # wider to fit 3 distributions
 SUBPLOT_H = 3.5   # inches per row
 
-NPROMA   = 81920*2
-NLEV     = 90
+N_e  = 122880   # valid edges (loop bound)
+N_c  = 81920    # cells (indirect target for w)
+N_v  = 81920    # vertices (indirect target for z_w_v)
+NLEV = 90
 DISTS    = ["uniform", "normal_var1", "exact"]
 OUT_STEM = f"violins_nlev{NLEV}"
 
-BYTES = (2 * NPROMA * 4 +
-         2 * NPROMA * 4 +
-         NLEV * NPROMA * 8 +
-         NLEV * NPROMA * 8 +
-         NPROMA * 8 +
-         NLEV * NPROMA * 8 +
-         NLEV * NPROMA * 8 +
-         NPROMA * 8 +
-         NPROMA * 8 +
-         NLEV * NPROMA * 8)
+BYTES = (
+    2 * N_e * 4 +           # cell_idx    [N_e × 2]        int read
+    2 * N_e * 4 +           # vert_idx    [N_e × 2]        int read
+    NLEV * N_e * 8 +        # vn_ie       [N_e × nlev]     dbl read
+    NLEV * N_c * 8 +        # w           [N_c × nlev]     dbl read (indirect)
+    N_e * 8 +               # inv_dual    [N_e]            dbl read
+    NLEV * N_e * 8 +        # z_vt_ie     [N_e × nlev]     dbl read
+    NLEV * N_v * 8 +        # z_w_v       [N_v × nlev]     dbl read (indirect)
+    N_e * 8 +               # inv_primal  [N_e]            dbl read
+    N_e * 8 +               # tangent     [N_e]            dbl read
+    NLEV * N_e * 8           # out         [N_e × nlev]     dbl write
+)
 
 GRID = [
     [("MI300A Zen Cores", CPU_AMD_CSV, "parallelization", None,        "cpu_scalar"),
@@ -109,7 +113,7 @@ def get_overall_best_data(df_full, fcol, dist, nlev):
     Blue violin: pick whichever (variant, config/schedule) pair gives the
     highest median bandwidth — completely unconstrained.
     """
-    sub = df_full[(df_full["variant"].isin([3, 4, 5])) &
+    sub = df_full[(df_full["variant"].isin([3, 4, 5,6])) &
                   (df_full["cell_dist"] == dist) &
                   (df_full["nlev"] == nlev)]
     if sub.empty:
@@ -298,7 +302,7 @@ def main():
                         print(f"{label:<22} {'orange':<10} {dist:<20} {'V1, ' + str(best_cfg):<30} {med:.4f}  {ms:.4f}    {pct:.1f}%")
 
                 # --- blue (overall best) ---
-                sub_all = df_full[(df_full["variant"].isin([3, 4, 5])) &
+                sub_all = df_full[(df_full["variant"].isin([3, 4, 5,6])) &
                                   (df_full["cell_dist"] == dist) &
                                   (df_full["nlev"] == NLEV)]
                 if not sub_all.empty:
