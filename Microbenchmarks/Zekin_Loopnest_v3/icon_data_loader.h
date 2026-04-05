@@ -386,7 +386,7 @@ inline std::string icon_data_dir() {
 inline std::string icon_patch_path(int ts=9)  {return icon_data_dir()+"/p_patch."+std::to_string(ts)+".data";}
 inline std::string icon_global_path(int ts=9) {return icon_data_dir()+"/global_data.t0."+std::to_string(ts)+".data";}
 
-inline int icon_pad_nlev(int nlev, int align=32) { return ((nlev+align-1)/align)*align; }
+inline int icon_pad_nlev(int nlev, int align=32) { return nlev; }
 
 /*
  * Variant mapping:
@@ -395,7 +395,9 @@ inline int icon_pad_nlev(int nlev, int align=32) { return ((nlev+align-1)/align)
  *   V3 = jk-first, basic IN    (kernel V=3)
  *   V4 = jk-first, optimised IN (kernel V=4)
  *   V5 = jk-first, optimised IN, padded nlev (kernel V=4, nlev=pad(nlev_end))
+ *   V6 = flat 1D, jk-first, padded nlev      (kernel V=4 layout)
+ *   V7 = flat 1D with TX, jk-first, unpadded  (kernel V=4 layout)
  */
-inline int kern_v(int V) { return (V==5) ? 4 : V; }
+inline int kern_v(int V) { return (V >= 5) ? 4 : V; }
 
 #endif /* ICON_DATA_LOADER_H */
