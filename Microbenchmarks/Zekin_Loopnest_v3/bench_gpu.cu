@@ -156,6 +156,7 @@ __global__ void gpu_kernel_jk_first(
             vi0_a[ty]=vert_idx[IN<V>(je,0,N_e)]; vi1_a[ty]=vert_idx[IN<V>(je,1,N_e)];
             id_a[ty]=inv_dual[je]; ip_a[ty]=inv_primal[je]; tg_a[ty]=tangent[je];
         }}
+        int jk_base0 = ((int)blockIdx.y*BY+(int)threadIdx.y)*TY;
         #pragma unroll
         for (int ty=0;ty<TY;ty++){int je=je_base0+ty;if(je>=N_e)continue;
         #pragma unroll
