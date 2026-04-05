@@ -666,7 +666,7 @@ static void run_dist_block(
     CUDA_CHECK(hipMalloc(&d_ci,N_e*2*4)); CUDA_CHECK(hipMalloc(&d_vi,N_e*2*4));
     hipEvent_t ev0,ev1; CUDA_CHECK(hipEventCreate(&ev0)); CUDA_CHECK(hipEventCreate(&ev1));
     for(int V=V_start;V<=V_end;V++){
-        if(V==2||V==3) continue;
+        if(V==2) continue;
         bd.set_variant(kern_v(V),cell_logical,vert_logical);
         run_variant_configs(fcsv,V,N_e,N_c,N_v,nlev,nlev_end,dist_label,
             h_ref,bd,bd.sz_e,d_vn,d_id,d_w,d_ci,d_vt,d_ip,d_tg,d_zw,d_vi,d_out,ev0,ev1,h_gpu_out);
@@ -769,12 +769,10 @@ int main(int argc, char* argv[]) {
             for(int i=0;i<N_e*2;i++){ecl[i]=ied.cell_idx[i]; evl[i]=ied.vert_idx[i];}
             run_dist_block(fcsv,N_e,N_c,N_v,nlev_base,nlev_base,"exact",1,4,ecl,evl,
                 ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
-            if(nlev_padded!=nlev_base){
                 run_dist_block(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,"exact",5,5,ecl,evl,
                     ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
                 run_dist_block_v6(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,(unsigned)nlev_padded,
                     "exact",ecl,evl,ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
-            }
             run_dist_block_v7(fcsv,N_e,N_c,N_v,nlev_base,"exact",ecl,evl,
                 ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
             delete[]ecl; delete[]evl;
@@ -785,12 +783,10 @@ int main(int argc, char* argv[]) {
             gen_idx_logical(vert_logical,N_e,N_v,(CellDist)di,rng);
             run_dist_block(fcsv,N_e,N_c,N_v,nlev_base,nlev_base,dist_name[di],1,4,
                 cell_logical,vert_logical,nullptr,nullptr,nullptr);
-            if(nlev_padded!=nlev_base){
                 run_dist_block(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,dist_name[di],5,5,
                     cell_logical,vert_logical,nullptr,nullptr,nullptr);
                 run_dist_block_v6(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,(unsigned)nlev_padded,
                     dist_name[di],cell_logical,vert_logical,nullptr,nullptr,nullptr);
-            }
             run_dist_block_v7(fcsv,N_e,N_c,N_v,nlev_base,dist_name[di],
                 cell_logical,vert_logical,nullptr,nullptr,nullptr);
         }
