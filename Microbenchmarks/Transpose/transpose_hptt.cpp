@@ -31,13 +31,8 @@ using Plan = std::shared_ptr<hptt::Transpose<float>>;
 /* ═══════════════════════════════════════════════════════════════════════
  *  NUMA helpers (no libnuma — direct syscalls)
  * ═══════════════════════════════════════════════════════════════════════ */
-#ifndef MPOL_BIND
-#define MPOL_BIND 2
-#endif
-
 static long sys_mbind(void *a, unsigned long l, int m,
                       const unsigned long *nm, unsigned long mx, unsigned f) {
-    return syscall(SYS_mbind, a, l, m, nm, mx, f);
 }
 
 static int detect_numa_nodes() {
@@ -58,7 +53,6 @@ static void bind_pages(void *a, size_t l, int node) {
         return;
     unsigned long m[4] = {};
     m[node / 64] |= 1UL << (node % 64);
-    sys_mbind(a, l, MPOL_BIND, m, 257, 0);
 }
 
 static size_t g_pagesz = 0;
