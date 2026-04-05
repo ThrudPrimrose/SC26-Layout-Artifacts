@@ -341,51 +341,43 @@ static constexpr int N_GCFG = sizeof(GCFG)/sizeof(GCFG[0]);
 /*  GPU launch dispatch                                              */
 /* ================================================================ */
 template<int V>
-static void launch_gpu(int cfg,
+static bool launch_gpu(int cfg,
     double* out, const double* vn_ie, const double* inv_dual,
     const double* w, const int* cell_idx,
     const double* z_vt_ie, const double* inv_primal,
     const double* tangent, const double* z_w_v,
     const int* vert_idx, int N, int nlev, int nlev_end)
 {
+    bool launched = false;
+
     #define LG_JE(TX_,TY_,BX_,BY_) do {                                   \
         dim3 blk(BX_,BY_);                                                 \
         dim3 grd(((unsigned)N       +(BX_)*(TX_)-1)/((BX_)*(TX_)),        \
                  ((unsigned)nlev_end+(BY_)*(TY_)-1)/((BY_)*(TY_)));       \
+        if (grd.x>65535u||grd.y>65535u) break;                             \
         gpu_kernel_je_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(              \
             out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,      \
             z_w_v,vert_idx,N,nlev,nlev_end);                               \
-        CUDA_LAUNCH_CHECK();                                               \
+        CUDA_LAUNCH_CHECK(); launched=true;                                \
     } while(0)
 
-    #define LG_JK(TX_,TY_,BX_,BY_) do {                                       \
-        unsigned bx_ = (BX_), by_ = (BY_), tx_ = (TX_), ty_ = (TY_);          \
-        if (tx_ * bx_ > (unsigned)nlev_end) {                                  \
-            unsigned f_ = (bx_ + 95u) / 96u;                                   \
-            if (f_ < 1u) f_ = 1u;                                              \
-            bx_ = 90u;                                                         \
-            by_ *= f_;                                                         \
-            ty_ *= tx_;                                                        \
-            tx_ = 1u;                                                          \
-        }                                                                      \
-        dim3 blk(bx_, by_);                                                    \
-        dim3 grd(((unsigned)nlev_end + bx_*tx_ - 1u) / (bx_*tx_),             \
-                ((unsigned)N + by_*ty_ - 1u) / (by_*ty_));                    \
-        if (grd.x > 65535u) break;                                             \
-        while (grd.y > 65535u) {                                               \
-            ty_ *= 2u;                                                         \
-            grd.y = ((unsigned)N + by_*ty_ - 1u) / (by_*ty_);                 \
-        }                                                                      \
-        gpu_kernel_jk_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(                  \
-            out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,          \
-            z_w_v,vert_idx,N,nlev,nlev_end);                                   \
-        CUDA_LAUNCH_CHECK();                                                   \
+    #define LG_JK(TX_,TY_,BX_,BY_) do {                                   \
+        if ((BX_)*(TX_) > (unsigned)nlev_end) break;                       \
+        dim3 blk(BX_,BY_);                                                 \
+        dim3 grd(((unsigned)nlev_end+(BX_)*(TX_)-1)/((BX_)*(TX_)),        \
+                 ((unsigned)N       +(BY_)*(TY_)-1)/((BY_)*(TY_)));       \
+        if (grd.x>65535u||grd.y>65535u) break;                             \
+        gpu_kernel_jk_first<TX_,TY_,BX_,BY_,V><<<grd,blk>>>(              \
+            out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,      \
+            z_w_v,vert_idx,N,nlev,nlev_end);                               \
+        CUDA_LAUNCH_CHECK(); launched=true;                                \
     } while(0)
 
     #define LG(TX_,TY_,BX_,BY_) do {                                      \
         if constexpr (V<=2) { LG_JE(TX_,TY_,BX_,BY_); }                   \
         else                { LG_JK(TX_,TY_,BX_,BY_); }                   \
     } while(0)
+
 
     switch(cfg){
     /* ---- A: original configs ---- */
@@ -454,9 +446,10 @@ static void launch_gpu(int cfg,
     #undef LG
     #undef LG_JE
     #undef LG_JK
+    return launched;
 }
 
-static void launch_gpu_v(int V, int cfg,
+static bool launch_gpu_v(int V, int cfg,
     double* out, const double* vn_ie, const double* inv_dual,
     const double* w, const int* cell_idx,
     const double* z_vt_ie, const double* inv_primal,
@@ -465,11 +458,12 @@ static void launch_gpu_v(int V, int cfg,
 {
     int kV = kern_v(V);
     switch(kV){
-    case 1: launch_gpu<1>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
-    case 2: launch_gpu<2>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
-    case 3: launch_gpu<3>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
-    case 4: launch_gpu<4>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+    case 1: return launch_gpu<1>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+    case 2: return launch_gpu<2>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+    case 3: return launch_gpu<3>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
+    case 4: return launch_gpu<4>(cfg,out,vn_ie,inv_dual,w,cell_idx,z_vt_ie,inv_primal,tangent,z_w_v,vert_idx,N,nlev,nlev_end); break;
     }
+    return false;
 }
 
 /* ================================================================ */
@@ -543,13 +537,21 @@ static void run_variant_configs(
 
     for (int ci = 0; ci < N_GCFG; ci++) {
         CUDA_CHECK(hipMemset(d_out, 0, sz2d*8));
-
+        
+        bool launched = true;
         for (int r = 0; r < WARMUP; r++) {
             g_flush.flush();
-            launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
+            launched = launch_gpu_v(V, ci, d_out, d_vn_ie, d_inv_dual,
                 d_w, d_cidx, d_z_vt_ie, d_inv_primal,
                 d_tangent, d_z_w_v, d_vidx, N, nlev, nlev_end);
+            if (!launched) break;
             CUDA_CHECK(hipDeviceSynchronize());
+        }
+
+        if (!launched) {
+            printf("SKIP:        nlev=%d(%d) dist=%-12s V=%d cfg=%-14s  (does not fit)\n",
+                   nlev, nlev_end, dist_label, V, GCFG[ci].label);
+            continue;
         }
 
         CUDA_CHECK(hipMemcpy(h_gpu_out, d_out, sz2d*8, hipMemcpyDeviceToHost));
