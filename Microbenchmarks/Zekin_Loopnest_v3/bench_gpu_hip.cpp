@@ -198,6 +198,10 @@ static constexpr GpuCfg GCFG[] = {
     {1,2,128,4,"1x2_128x4"},{1,2,128,2,"1x2_128x2"},
     {1,1,16,16,"1x1_16x16"},{2,1,16,16,"2x1_16x16"},{1,2,16,16,"1x2_16x16"},
     {2,2,16,16,"2x2_16x16"},{4,1,16,16,"4x1_16x16"},{4,2,16,16,"4x2_16x16"},
+    {1,1,96,1,"1x1_96x1"},{1,2,96,1,"1x2_96x1"},{1,4,96,1,"1x2_96x1"},
+    {1,8,96,1,"1x8_96x1"},{1,1,96,2,"1x1_96x2"},{1,2,96,2,"1x2_96x2"},{1,4,96,2,"1x4_96x2"},
+    {1,8,96,2,"1x1_96x2"},{1,1,96,4,"1x1_96x4"},{1,2,96,4,"1x2_96x4"},{1,4,96,4,"1x4_96x4"},
+    {1,8,96,4,"1x1_96x4"},
 };
 static constexpr int N_GCFG = sizeof(GCFG)/sizeof(GCFG[0]);
 
@@ -267,6 +271,18 @@ static void launch_gpu(int cfg,
     case 61:LG(1,2,128,4);break; case 62:LG(1,2,128,2);break;
     case 63:LG(1,1,16,16);break; case 64:LG(2,1,16,16);break; case 65:LG(1,2,16,16);break;
     case 66:LG(2,2,16,16);break; case 67:LG(4,1,16,16);break; case 68:LG(4,2,16,16);break;
+    case 69:LG(1,1,96,1);break;
+    case 70:LG(1,2,96,1);break;
+    case 71:LG(1,4,96,1);break;
+    case 72:LG(1,8,96,1);break;
+    case 73:LG(1,1,96,2);break;
+    case 74:LG(1,2,96,2);break;
+    case 75:LG(1,4,96,2);break;
+    case 76:LG(1,8,96,2);break;
+    case 77:LG(1,1,96,4);break;
+    case 78:LG(1,2,96,4);break;
+    case 79:LG(1,4,96,4);break;
+    case 80:LG(1,8,96,4);break;
     }
     #undef LG
     #undef LG_JE
