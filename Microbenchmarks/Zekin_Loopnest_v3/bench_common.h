@@ -25,7 +25,7 @@
 #include <omp.h>
 #endif
 
-static constexpr int NLEVS[] = {90};
+static constexpr int NLEVS[] = {96};
 static constexpr int N_NLEVS = 1;
 static constexpr int WARMUP = 5;
 static constexpr int NRUNS = 100;
