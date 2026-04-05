@@ -822,12 +822,10 @@ int main(int argc, char* argv[]) {
             for(int i=0;i<N_e*2;i++){ecl[i]=ied.cell_idx[i]; evl[i]=ied.vert_idx[i];}
             run_dist_block(fcsv,N_e,N_c,N_v,nlev_base,nlev_base,"exact",1,4,ecl,evl,
                 ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
-            if(nlev_padded!=nlev_base){
-                run_dist_block(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,"exact",5,5,ecl,evl,
-                    ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
-                run_dist_block_v6(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,(unsigned)nlev_padded,
-                    "exact",ecl,evl,ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
-            }
+            run_dist_block(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,"exact",5,5,ecl,evl,
+                ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
+            run_dist_block_v6(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,(unsigned)nlev_padded,
+                "exact",ecl,evl,ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
             /* V7: flat+TX, unpadded — always runs */
             run_dist_block_v7(fcsv,N_e,N_c,N_v,nlev_base,"exact",ecl,evl,
                 ied.inv_dual.data(),ied.inv_primal.data(),ied.tangent_o.data());
@@ -840,12 +838,10 @@ int main(int argc, char* argv[]) {
             gen_idx_logical(vert_logical,N_e,N_v,(CellDist)di,rng);
             run_dist_block(fcsv,N_e,N_c,N_v,nlev_base,nlev_base,dist_name[di],1,4,
                 cell_logical,vert_logical,nullptr,nullptr,nullptr);
-            if(nlev_padded!=nlev_base){
-                run_dist_block(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,dist_name[di],5,5,
-                    cell_logical,vert_logical,nullptr,nullptr,nullptr);
-                run_dist_block_v6(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,(unsigned)nlev_padded,
-                    dist_name[di],cell_logical,vert_logical,nullptr,nullptr,nullptr);
-            }
+            run_dist_block(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,dist_name[di],5,5,
+                cell_logical,vert_logical,nullptr,nullptr,nullptr);
+            run_dist_block_v6(fcsv,N_e,N_c,N_v,nlev_padded,nlev_base,(unsigned)nlev_padded,
+                dist_name[di],cell_logical,vert_logical,nullptr,nullptr,nullptr);
             /* V7: flat+TX, unpadded — always runs */
             run_dist_block_v7(fcsv,N_e,N_c,N_v,nlev_base,dist_name[di],
                 cell_logical,vert_logical,nullptr,nullptr,nullptr);
