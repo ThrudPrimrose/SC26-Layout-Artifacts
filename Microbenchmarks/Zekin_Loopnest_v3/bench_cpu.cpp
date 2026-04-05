@@ -5,6 +5,11 @@
  * nlev     = array stride (padded for V5)
  * nlev_end = actual compute bound
  *
+ * Schedules:
+ *   omp_for       - parallel for over natural outer dim
+ *   omp_collapse2 - collapse(2) over both dims
+ *   omp_numa4     - 4 NUMA domains x (nthreads/4) threads, split on je
+ *
  * Compile: g++ -O3 -fopenmp -march=native -std=c++17 bench_cpu.cpp -o bench_cpu
  * Run:     ./bench_cpu [timestep] [L1_bytes]
  */
@@ -14,6 +19,7 @@
 #include <omp.h>
 #include <utility>
 #include <cassert>
+
 static SchedKind sched_for_par_for(int V) {
   int kV = kern_v(V);
   return (kV <= 2) ? SCHED_JK_OUTER : SCHED_JE_OUTER;
@@ -58,14 +64,42 @@ static void cpu_collapse2(
   }
 }
 
+/* ---- NUMA4 kernel: 4 NUMA domains, each with nthreads/4 threads ----
+ *  Splits the je (nproma) dimension into 4 contiguous chunks.
+ *  Each NUMA domain owns its chunk; inner threads parallelize over je
+ *  within that chunk.  Works for both je-first and jk-first layouts.
+ */
+template <int V>
+static void cpu_numa4(
+    double *__restrict__ out, const double *__restrict__ vn_ie,
+    const double *__restrict__ inv_dual, const double *__restrict__ w,
+    const int *__restrict__ cell_idx, const double *__restrict__ z_vt_ie,
+    const double *__restrict__ inv_primal, const double *__restrict__ tangent,
+    const double *__restrict__ z_w_v, const int *__restrict__ vert_idx,
+    int N, int nlev, int nlev_end) {
+  constexpr int ND = NUMA_DOMAINS;
+  int tpd = std::max(1, omp_get_max_threads() / ND);
+  int chunk = N / ND;
+  #pragma omp parallel num_threads(ND)
+  {
+    int d = omp_get_thread_num();
+    int je0 = d * chunk;
+    int je1 = (d == ND - 1) ? N : je0 + chunk;
+    #pragma omp parallel for schedule(static) num_threads(tpd)
+    for (int je = je0; je < je1; je++)
+      for (int jk = 0; jk < nlev_end; jk++) { STENCIL_BODY(V) }
+  }
+}
+
 typedef void (*kern_t)(double *, const double *, const double *, const double *,
                        const int *, const double *, const double *,
                        const double *, const double *, const int *,
                        int, int, int);
 
 /* index 0..3 for V1..V4; V5 uses index 3 (=V4) via kern_v() */
-static kern_t par_tbl[] = {cpu_par_for<1>, cpu_par_for<2>, cpu_par_for<3>, cpu_par_for<4>};
-static kern_t col_tbl[] = {cpu_collapse2<1>, cpu_collapse2<2>, cpu_collapse2<3>, cpu_collapse2<4>};
+static kern_t par_tbl[]   = {cpu_par_for<1>,   cpu_par_for<2>,   cpu_par_for<3>,   cpu_par_for<4>};
+static kern_t col_tbl[]   = {cpu_collapse2<1>, cpu_collapse2<2>, cpu_collapse2<3>, cpu_collapse2<4>};
+static kern_t numa4_tbl[] = {cpu_numa4<1>,     cpu_numa4<2>,     cpu_numa4<3>,     cpu_numa4<4>};
 
 /* ---- Blocked kernels ---- */
 template <int B>
@@ -159,103 +193,98 @@ static kern_t bref_tbl[] = {cpu_ref_blocked<8>, cpu_ref_blocked<16>,
 /* ---- Verify ---- */
 static bool verify(const double *got, const double *ref, size_t n,
                    int *nf, double *mr) {
-  *nf = 0; *mr = 0;
-  for (size_t i = 0; i < n; i++) {
-    double d = std::abs(got[i]-ref[i]),
-           dn = std::max(std::abs(ref[i]),1e-300), r = d/dn;
-    if (r > *mr) *mr = r;
-    if (d > 1e-12 + 1e-8*std::abs(ref[i])) (*nf)++;
+  *nf=0; *mr=0;
+  for (size_t i=0;i<n;i++) {
+    double d=std::abs(got[i]-ref[i]),
+           dn=std::max(std::abs(ref[i]),1e-300), r=d/dn;
+    if (r>*mr) *mr=r;
+    if (d > 1e-12+1e-8*std::abs(ref[i])) (*nf)++;
   }
-  return *nf == 0;
+  return *nf==0;
 }
 
 /* ---- Flush ---- */
-static constexpr int FN = 8192*2, FS = 3;
-static double *fb0 = nullptr, *fb1 = nullptr;
+static constexpr int FN=8192*2, FS=3;
+static double *fb0=nullptr, *fb1=nullptr;
 static void flush() {
-  static bool init = false;
+  static bool init=false;
   if (!init) {
-    size_t n = (size_t)FN*FN;
-    fb0 = numa_alloc_unfaulted<double>(n);
-    fb1 = numa_alloc_unfaulted<double>(n);
+    size_t n=(size_t)FN*FN;
+    fb0=numa_alloc_unfaulted<double>(n); fb1=numa_alloc_unfaulted<double>(n);
 #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < n; i++) {
-      uint64_t h = splitmix64(12345ULL+i);
-      fb0[i] = (double)(h>>11)/(double)(1ULL<<53); fb1[i] = fb0[i];
+    for (size_t i=0;i<n;i++) {
+      uint64_t h=splitmix64(12345ULL+i);
+      fb0[i]=(double)(h>>11)/(double)(1ULL<<53); fb1[i]=fb0[i];
     }
-    init = true;
+    init=true;
   }
-  double *A = fb0, *B = fb1;
-  for (int s = 0; s < FS; s++) {
+  double *A=fb0, *B=fb1;
+  for (int s=0;s<FS;s++) {
 #pragma omp parallel for schedule(static)
-    for (int i = 1; i < FN-1; i++)
-      for (int j = 1; j < FN-1; j++)
-        B[i*FN+j] = 0.25*(A[(i-1)*FN+j]+A[(i+1)*FN+j]+A[i*FN+(j-1)]+A[i*FN+(j+1)]);
-    std::swap(A, B);
+    for (int i=1;i<FN-1;i++)
+      for (int j=1;j<FN-1;j++)
+        B[i*FN+j]=0.25*(A[(i-1)*FN+j]+A[(i+1)*FN+j]+A[i*FN+(j-1)]+A[i*FN+(j+1)]);
+    std::swap(A,B);
+  }
+}
+
+/* ---- helper: benchmark one kernel variant ---- */
+static void bench_kernel(FILE *f, kern_t kern, const char *par_label,
+                         int V, int N, int nlev, int nlev_end,
+                         const char *dl, BenchData &bd, double *hr) {
+  /* warmup */
+  for (int r=0; r<WARMUP; r++) {
+    flush();
+    kern(bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
+         bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
+         bd.h_vidx, N, nlev, nlev_end);
+  }
+  flush();
+  { int nf; double mr;
+    verify(bd.h_out, hr, bd.sz2d, &nf, &mr);
+    printf("V%d %-12s %-10s %s mr=%.2e\n", V, dl, par_label, nf?"FAIL":"OK", mr); }
+
+  /* timed runs */
+  for (int r=0; r<NRUNS; r++) {
+    flush();
+    auto t0=std::chrono::high_resolution_clock::now();
+    kern(bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
+         bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
+         bd.h_vidx, N, nlev, nlev_end);
+    auto t1=std::chrono::high_resolution_clock::now();
+    fprintf(f, "cpu,%d,%d,%d,%s,0,%s,%d,%.9f\n", V, nlev_end, N, dl,
+            par_label, r, std::chrono::duration<double,std::milli>(t1-t0).count());
+    flush();
   }
 }
 
 /* ---- Run unblocked (V=label, nlev=stride, nlev_end=bound) ---- */
 static void run_unblocked(FILE *f, int V, int N, int nlev, int nlev_end,
                           const char *dl, BenchData &bd, double *hr) {
-  int Vi = kern_v(V) - 1; /* table index: 0..3 */
+  int Vi = kern_v(V) - 1;
 
+  /* compute reference */
   memset(hr, 0, bd.sz2d*sizeof(double));
-  memset(bd.h_out, 0, bd.sz2d*sizeof(double));
-
   bd.change_schedule(sched_for_par_for(V));
   cpu_ref_v(V, hr, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx, bd.h_z_vt_ie,
             bd.inv_primal, bd.tangent_o, bd.h_z_w_v, bd.h_vidx, N, nlev, nlev_end);
   flush();
 
-  /* omp_for */
-  for (int r = 0; r < WARMUP; r++) {
-    flush();
-    par_tbl[Vi](bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
-                bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
-                bd.h_vidx, N, nlev, nlev_end);
-  }
-  flush();
-  { int nf; double mr;
-    verify(bd.h_out, hr, bd.sz2d, &nf, &mr);
-    printf("V%d %-12s omp_for  %s mr=%.2e\n", V, dl, nf?"FAIL":"OK", mr); }
-  for (int r = 0; r < NRUNS; r++) {
-    flush();
-    auto t0 = std::chrono::high_resolution_clock::now();
-    par_tbl[Vi](bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
-                bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
-                bd.h_vidx, N, nlev, nlev_end);
-    auto t1 = std::chrono::high_resolution_clock::now();
-    fprintf(f, "cpu,%d,%d,%d,%s,0,omp_for,%d,%.9f\n", V, nlev_end, N, dl, r,
-            std::chrono::duration<double,std::milli>(t1-t0).count());
-    flush();
-  }
+  /* --- omp_for --- */
+  memset(bd.h_out, 0, bd.sz2d*sizeof(double));
+  bd.change_schedule(sched_for_par_for(V));
+  bench_kernel(f, par_tbl[Vi], "omp_for", V, N, nlev, nlev_end, dl, bd, hr);
 
-  /* collapse */
+  /* --- collapse --- */
   memset(bd.h_out, 0, bd.sz2d*sizeof(double));
   bd.change_schedule(SCHED_COLLAPSE2);
-  for (int r = 0; r < WARMUP; r++) {
-    flush();
-    col_tbl[Vi](bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
-                bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
-                bd.h_vidx, N, nlev, nlev_end);
-    flush();
-  }
-  { int nf; double mr;
-    verify(bd.h_out, hr, bd.sz2d, &nf, &mr);
-    printf("V%d %-12s collapse %s mr=%.2e\n", V, dl, nf?"FAIL":"OK", mr); }
-  flush();
-  for (int r = 0; r < NRUNS; r++) {
-    flush();
-    auto t0 = std::chrono::high_resolution_clock::now();
-    col_tbl[Vi](bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
-                bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
-                bd.h_vidx, N, nlev, nlev_end);
-    auto t1 = std::chrono::high_resolution_clock::now();
-    fprintf(f, "cpu,%d,%d,%d,%s,0,omp_collapse2,%d,%.9f\n", V, nlev_end, N, dl,
-            r, std::chrono::duration<double,std::milli>(t1-t0).count());
-    flush();
-  }
+  bench_kernel(f, col_tbl[Vi], "omp_collapse2", V, N, nlev, nlev_end, dl, bd, hr);
+
+  /* --- numa4 --- */
+  memset(bd.h_out, 0, bd.sz2d*sizeof(double));
+  bd.change_schedule(SCHED_NUMA4);
+  bench_kernel(f, numa4_tbl[Vi], "omp_numa4", V, N, nlev, nlev_end, dl, bd, hr);
+
   printf("Done: nlev=%d(%d) dist=%-12s V=%d\n", nlev, nlev_end, dl, V);
 }
 
@@ -271,7 +300,7 @@ static void run_blocked(FILE *f, int bi, int N, int nlev, int nlev_end,
                bd.h_vidx, N, nlev, nlev_end);
   flush();
   bd.change_schedule(SCHED_JE_OUTER);
-  for (int r = 0; r < WARMUP; r++) {
+  for (int r=0;r<WARMUP;r++) {
     flush();
     bfor_tbl[bi](bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
                  bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
@@ -281,20 +310,20 @@ static void run_blocked(FILE *f, int bi, int N, int nlev, int nlev_end,
   { int nf; double mr;
     verify(bd.h_out, hr, bd.sz2d, &nf, &mr);
     printf("B%d %-12s omp_for  %s mr=%.2e\n", B, dl, nf?"FAIL":"OK", mr); }
-  for (int r = 0; r < NRUNS; r++) {
+  for (int r=0;r<NRUNS;r++) {
     flush();
-    auto t0 = std::chrono::high_resolution_clock::now();
+    auto t0=std::chrono::high_resolution_clock::now();
     bfor_tbl[bi](bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
                  bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
                  bd.h_vidx, N, nlev, nlev_end);
-    auto t1 = std::chrono::high_resolution_clock::now();
+    auto t1=std::chrono::high_resolution_clock::now();
     fprintf(f, "cpu,0,%d,%d,%s,%d,blocked_omp_for,%d,%.9f\n", nlev_end, N, dl,
             B, r, std::chrono::duration<double,std::milli>(t1-t0).count());
     flush();
   }
   memset(bd.h_out, 0, bd.sz2d*sizeof(double));
   bd.change_schedule(SCHED_COLLAPSE2);
-  for (int r = 0; r < WARMUP; r++) {
+  for (int r=0;r<WARMUP;r++) {
     flush();
     bcol_tbl[bi](bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
                  bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
@@ -305,13 +334,13 @@ static void run_blocked(FILE *f, int bi, int N, int nlev, int nlev_end,
     verify(bd.h_out, hr, bd.sz2d, &nf, &mr);
     printf("B%d %-12s collapse %s mr=%.2e\n", B, dl, nf?"FAIL":"OK", mr); }
   flush();
-  for (int r = 0; r < NRUNS; r++) {
+  for (int r=0;r<NRUNS;r++) {
     flush();
-    auto t0 = std::chrono::high_resolution_clock::now();
+    auto t0=std::chrono::high_resolution_clock::now();
     bcol_tbl[bi](bd.h_out, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
                  bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
                  bd.h_vidx, N, nlev, nlev_end);
-    auto t1 = std::chrono::high_resolution_clock::now();
+    auto t1=std::chrono::high_resolution_clock::now();
     fprintf(f, "cpu,0,%d,%d,%s,%d,blocked_collapse2,%d,%.9f\n", nlev_end, N,
             dl, B, r, std::chrono::duration<double,std::milli>(t1-t0).count());
     flush();
@@ -327,25 +356,23 @@ static void run_unblocked_block(
     double* icon_inv_dual, double* icon_inv_primal, double* icon_tangent)
 {
     BenchData bd;
-    bd.alloc(N, nlev);
-    bd.fill(nlev);
+    bd.alloc(N, nlev); bd.fill(nlev);
     if (icon_inv_dual)
-      for (int je = 0; je < N; je++) {
-        bd.inv_dual[je]   = icon_inv_dual[je];
-        bd.inv_primal[je] = icon_inv_primal[je];
-        bd.tangent_o[je]  = icon_tangent[je];
+      for (int je=0;je<N;je++) {
+        bd.inv_dual[je]=icon_inv_dual[je];
+        bd.inv_primal[je]=icon_inv_primal[je];
+        bd.tangent_o[je]=icon_tangent[je];
       }
     double *hr = numa_alloc_unfaulted<double>(bd.sz2d);
 #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < bd.sz2d; i++) hr[i] = 0;
+    for (size_t i=0;i<bd.sz2d;i++) hr[i]=0;
 
-    for (int V = V_start; V <= V_end; V++) {
+    for (int V=V_start; V<=V_end; V++) {
       int kV = kern_v(V);
       bd.set_variant(kV, cell_logical, vert_logical, sched_for_par_for(V));
       run_unblocked(fcsv, V, N, nlev, nlev_end, dl, bd, hr);
       fflush(fcsv);
     }
-
     numa_dealloc(hr, bd.sz2d);
     bd.free_all();
 }
@@ -355,14 +382,16 @@ int main(int argc, char *argv[]) {
   int icon_step = (argc >= 2) ? atoi(argv[1]) : 9;
   int L1_bytes  = (argc >= 3) ? atoi(argv[2]) : 32768;
 
+  /* enable nested parallelism for NUMA4 schedule */
+  omp_set_max_active_levels(2);
+
   FILE *fcsv = fopen("z_v_grad_w_cpu.csv", "w");
   fprintf(fcsv, "backend,variant,nlev,nproma,cell_dist,blocking,"
                 "parallelization,run_id,time_ms\n");
 
   const int N = NPROMA;
   std::mt19937 rng(42);
-  VertData vd;
-  vd.init(N, rng);
+  VertData vd; vd.init(N, rng);
   int *cell_logical = new int[N*2];
 
   /* ---- load ICON exact data ---- */
@@ -380,118 +409,97 @@ int main(int argc, char *argv[]) {
            ied.nproma, ied.n_edges, ied.n_edges_valid, ied.n_cells, ied.n_verts);
   assert(have_exact);
 
-  printf("OMP threads: %d  L1: %d bytes\n", omp_get_max_threads(), L1_bytes);
-  for (int bi = 0; bi < N_BLOCK_SIZES; bi++)
-    printf("  B=%3d L1%%=%.1f%%\n", BLOCK_SIZES[bi],
-           l1_ratio(BLOCK_SIZES[bi], L1_bytes)*100);
+  int nthreads = omp_get_max_threads();
+  int tpd = nthreads / NUMA_DOMAINS;
+  printf("OMP threads: %d  NUMA domains: %d  threads/domain: %d  L1: %d bytes\n",
+         nthreads, NUMA_DOMAINS, tpd, L1_bytes);
+  for (int bi=0;bi<N_BLOCK_SIZES;bi++)
+    printf("  B=%3d L1%%=%.1f%%\n", BLOCK_SIZES[bi], l1_ratio(BLOCK_SIZES[bi],L1_bytes)*100);
   srand((unsigned)time(NULL));
   flush();
   printf("Ready\n\n");
 
-  for (int ni = 0; ni < N_NLEVS; ni++) {
+  for (int ni=0; ni<N_NLEVS; ni++) {
     int nlev_base   = NLEVS[ni];
     int nlev_padded = icon_pad_nlev(nlev_base);
 
-    /* ============================================================ */
-    /*  Synthetic distributions                                     */
-    /* ============================================================ */
-    for (int di = 0; di < 4; di++) {
+    /* Synthetic distributions */
+    for (int di=0; di<2; di++) {
       gen_cell_idx_logical(cell_logical, N, (CellDist)di, rng);
-
-      /* V1-V4: nlev = nlev_end = nlev_base (no padding) */
       run_unblocked_block(fcsv, N, nlev_base, nlev_base,
           dist_name[di], 1, 4, cell_logical, vd.logical,
           nullptr, nullptr, nullptr);
-
-      /* V5: nlev = padded, nlev_end = nlev_base */
-      if (nlev_padded != nlev_base) {
+      if (nlev_padded != nlev_base)
         run_unblocked_block(fcsv, N, nlev_padded, nlev_base,
             dist_name[di], 5, 5, cell_logical, vd.logical,
             nullptr, nullptr, nullptr);
-      }
     }
 
-    /* ============================================================ */
-    /*  EXACT distribution (only if ICON data loaded)               */
-    /* ============================================================ */
+    /* EXACT distribution */
     if (have_exact) {
       const int Ne = ied.n_edges;
       if (ied.n_cells > Ne || ied.n_verts > Ne) {
         fprintf(stderr, "WARNING: skipping exact nlev=%d\n", nlev_base);
       } else {
-        int *ecl = new int[Ne*2], *evl = new int[Ne*2];
-        for (int i = 0; i < Ne*2; i++) { ecl[i]=ied.cell_idx[i]; evl[i]=ied.vert_idx[i]; }
-
-        /* V1-V4: nlev = nlev_end = nlev_base */
+        int *ecl=new int[Ne*2], *evl=new int[Ne*2];
+        for (int i=0;i<Ne*2;i++) { ecl[i]=ied.cell_idx[i]; evl[i]=ied.vert_idx[i]; }
         run_unblocked_block(fcsv, Ne, nlev_base, nlev_base,
             "exact", 1, 4, ecl, evl,
             ied.inv_dual.data(), ied.inv_primal.data(), ied.tangent_o.data());
-
-        /* V5: nlev = padded, nlev_end = nlev_base */
-        if (nlev_padded != nlev_base) {
+        if (nlev_padded != nlev_base)
           run_unblocked_block(fcsv, Ne, nlev_padded, nlev_base,
               "exact", 5, 5, ecl, evl,
               ied.inv_dual.data(), ied.inv_primal.data(), ied.tangent_o.data());
-        }
-
-        delete[] ecl;
-        delete[] evl;
+        delete[] ecl; delete[] evl;
       }
     }
 
-    /* ============================================================ */
-    /*  Blocked synthetic (V1-V4 only, no V5 for blocked)           */
-    /* ============================================================ */
-    for (int di = 0; di < 4; di++) {
+    /* Blocked synthetic */
+    for (int di=0; di<2; di++) {
       rng.seed(42);
       gen_cell_idx_logical(cell_logical, N, (CellDist)di, rng);
       VertData vd2; vd2.init(N, rng);
-      for (int bi = 0; bi < N_BLOCK_SIZES; bi++) {
-        int B = BLOCK_SIZES[bi];
+      for (int bi=0;bi<N_BLOCK_SIZES;bi++) {
+        int B=BLOCK_SIZES[bi];
         if (N % B != 0) continue;
         BenchData bd; bd.alloc(N, nlev_base); bd.fill(nlev_base);
-        double *hr = numa_alloc_unfaulted<double>(bd.sz2d);
+        double *hr=numa_alloc_unfaulted<double>(bd.sz2d);
 #pragma omp parallel for schedule(static)
-        for (size_t i = 0; i < bd.sz2d; i++) hr[i] = 0;
+        for (size_t i=0;i<bd.sz2d;i++) hr[i]=0;
         bd.set_variant_blocked(B, cell_logical, vd2.logical, SCHED_JE_OUTER);
         run_blocked(fcsv, bi, N, nlev_base, nlev_base, dist_name[di], bd, hr);
         fflush(fcsv);
-        numa_dealloc(hr, bd.sz2d);
-        bd.free_all();
+        numa_dealloc(hr, bd.sz2d); bd.free_all();
       }
       vd2.free_all();
     }
 
-    /* ============================================================ */
-    /*  Blocked exact (V1-V4 only, no V5 for blocked)               */
-    /* ============================================================ */
+    /* Blocked exact */
     if (have_exact) {
       const int Ne = ied.n_edges;
       if (ied.n_cells > Ne || ied.n_verts > Ne) {
         fprintf(stderr, "WARNING: skipping blocked exact nlev=%d\n", nlev_base);
       } else {
-        int *ecl = new int[Ne*2], *evl = new int[Ne*2];
-        for (int i = 0; i < Ne*2; i++) { ecl[i]=ied.cell_idx[i]; evl[i]=ied.vert_idx[i]; }
-        for (int bi = 0; bi < N_BLOCK_SIZES; bi++) {
-          int B = BLOCK_SIZES[bi];
+        int *ecl=new int[Ne*2], *evl=new int[Ne*2];
+        for (int i=0;i<Ne*2;i++) { ecl[i]=ied.cell_idx[i]; evl[i]=ied.vert_idx[i]; }
+        for (int bi=0;bi<N_BLOCK_SIZES;bi++) {
+          int B=BLOCK_SIZES[bi];
           if (Ne % B != 0) { printf("SKIP B=%d !| Ne=%d\n", B, Ne); continue; }
           BenchData bd; bd.alloc(Ne, nlev_base); bd.fill(nlev_base);
-          for (int je = 0; je < Ne; je++) {
-            bd.inv_dual[je]   = ied.inv_dual[je];
-            bd.inv_primal[je] = ied.inv_primal[je];
-            bd.tangent_o[je]  = ied.tangent_o[je];
+          for (int je=0;je<Ne;je++) {
+            bd.inv_dual[je]=ied.inv_dual[je];
+            bd.inv_primal[je]=ied.inv_primal[je];
+            bd.tangent_o[je]=ied.tangent_o[je];
           }
-          double *hr = numa_alloc_unfaulted<double>(bd.sz2d);
+          double *hr=numa_alloc_unfaulted<double>(bd.sz2d);
 #pragma omp parallel for schedule(static)
-          for (size_t i = 0; i < bd.sz2d; i++) hr[i] = 0;
+          for (size_t i=0;i<bd.sz2d;i++) hr[i]=0;
           bd.set_variant_blocked(B, ecl, evl, SCHED_JE_OUTER);
           run_blocked(fcsv, bi, Ne, nlev_base, nlev_base, "exact", bd, hr);
           fflush(fcsv);
-          numa_dealloc(hr, bd.sz2d);
-          bd.free_all();
+          numa_dealloc(hr, bd.sz2d); bd.free_all();
         }
-        delete[] ecl;
-        delete[] evl;
+        delete[] ecl; delete[] evl;
       }
     }
   }

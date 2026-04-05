@@ -4,8 +4,9 @@
  * V1/V2 (je,jk) layout: threadIdx.x -> je (stride-1), threadIdx.y -> jk
  * V3/V4 (jk,je) layout: threadIdx.x -> jk (stride-1), threadIdx.y -> je
  * V5    same as V4 but nlev padded to next multiple of 32
+ * V6    flat 1D schedule over padded (96 × N) domain, jk-first layout
  *
- * nlev     = array stride (== nlev_end for V1-V4, padded for V5)
+ * nlev     = array stride (== nlev_end for V1-V4, padded for V5/V6)
  * nlev_end = actual compute bound
  *
  * Environment:
@@ -166,7 +167,43 @@ __global__ void gpu_kernel_jk_first(
 }
 
 /* ================================================================ */
-/*  GPU config table  (69 configs)                                   */
+/*  V6: Flat 1D schedule over padded (96 × N) domain                 */
+/*  jk-first layout (same as V4/V5), nlev padded to 96.             */
+/*  Each thread computes one (je, jk) via modulo/division.           */
+/*  96 % 32 == 0 → warps never straddle cell boundaries →           */
+/*  perfect coalescing, 100% cache line utilisation.                 */
+/* ================================================================ */
+template<unsigned BX, int V>
+__global__ void gpu_kernel_v6_flat(
+    double* __restrict__ out,
+    const double* __restrict__ vn_ie,   const double* __restrict__ inv_dual,
+    const double* __restrict__ w,       const int*    __restrict__ cell_idx,
+    const double* __restrict__ z_vt_ie, const double* __restrict__ inv_primal,
+    const double* __restrict__ tangent, const double* __restrict__ z_w_v,
+    const int*    __restrict__ vert_idx,
+    unsigned N, unsigned nlev, unsigned nlev_end, unsigned nlev_padded)
+{
+    unsigned bid = (unsigned)blockIdx.y * gridDim.x + (unsigned)blockIdx.x;
+    unsigned gid = bid * BX + threadIdx.x;
+    unsigned jk  = gid % nlev_padded;
+    unsigned je  = gid / nlev_padded;
+    if (je >= N || jk >= nlev_end) return;
+
+    int c2d = IC<V>((int)je, (int)jk, (int)N, (int)nlev);
+    int ci0 = cell_idx[IN<V>((int)je, 0, (int)N)];
+    int ci1 = cell_idx[IN<V>((int)je, 1, (int)N)];
+    int vi0 = vert_idx[IN<V>((int)je, 0, (int)N)];
+    int vi1 = vert_idx[IN<V>((int)je, 1, (int)N)];
+    out[c2d] = vn_ie[c2d] * inv_dual[je] *
+        (w[IC<V>(ci0, (int)jk, (int)N, (int)nlev)] -
+         w[IC<V>(ci1, (int)jk, (int)N, (int)nlev)])
+      + z_vt_ie[c2d] * inv_primal[je] * tangent[je] *
+        (z_w_v[IC<V>(vi0, (int)jk, (int)N, (int)nlev)] -
+         z_w_v[IC<V>(vi1, (int)jk, (int)N, (int)nlev)]);
+}
+
+/* ================================================================ */
+/*  GPU config table  (V1-V5 configs)                                */
 /* ================================================================ */
 struct GpuCfg { int tx, ty, bx, by; const char* label; };
 /* ================================================================ */
@@ -337,7 +374,26 @@ static constexpr GpuCfg GCFG[] = {
 static constexpr int N_GCFG = sizeof(GCFG)/sizeof(GCFG[0]);
 
 /* ================================================================ */
-/*  GPU launch dispatch                                              */
+/*  V6 config table (flat 1D: only block size varies)                */
+/* ================================================================ */
+struct GpuCfgV6 { unsigned bx; const char* label; };
+static constexpr GpuCfgV6 GCFG_V6[] = {
+    /* 0  */ {  32, "v6_32"},
+    /* 1  */ {  64, "v6_64"},
+    /* 2  */ {  96, "v6_96"},
+    /* 3  */ { 128, "v6_128"},
+    /* 4  */ { 192, "v6_192"},
+    /* 5  */ { 256, "v6_256"},
+    /* 6  */ { 288, "v6_288"},
+    /* 7  */ { 384, "v6_384"},
+    /* 8  */ { 512, "v6_512"},
+    /* 9  */ { 768, "v6_768"},
+    /* 10 */ {1024, "v6_1024"},
+};
+static constexpr int N_GCFG_V6 = sizeof(GCFG_V6)/sizeof(GCFG_V6[0]);
+
+/* ================================================================ */
+/*  GPU launch dispatch  (V1-V5)                                     */
 /* ================================================================ */
 template<int V>
 static bool launch_gpu(int cfg,
@@ -466,6 +522,60 @@ static bool launch_gpu_v(int V, int cfg,
 }
 
 /* ================================================================ */
+/*  GPU launch dispatch  (V6 flat 1D)                                */
+/*  Uses layout V4 (jk-first, interleaved indices).                  */
+/*  NOTE: kern_v(6) must return 4 in icon_data_loader.h              */
+/* ================================================================ */
+template<int V>
+static bool launch_gpu_v6(int cfg,
+    double* out, const double* vn_ie, const double* inv_dual,
+    const double* w, const int* cell_idx,
+    const double* z_vt_ie, const double* inv_primal,
+    const double* tangent, const double* z_w_v,
+    const int* vert_idx, int N, int nlev, int nlev_end,
+    unsigned nlev_padded)
+{
+    if (cfg < 0 || cfg >= N_GCFG_V6) return false;
+    unsigned BX = GCFG_V6[cfg].bx;
+    unsigned total = nlev_padded * (unsigned)N;
+    unsigned grd_linear = (total + BX - 1u) / BX;
+
+    dim3 blk(BX);
+    dim3 grd;
+    if (grd_linear <= 65535u) {
+        grd = dim3(grd_linear, 1);
+    } else {
+        grd.y = (grd_linear + 65534u) / 65535u;
+        grd.x = (grd_linear + grd.y - 1u) / grd.y;
+    }
+
+    #define LAUNCH_V6(BX_CONST) do {                                       \
+        gpu_kernel_v6_flat<BX_CONST, V><<<grd, blk>>>(                     \
+            out, vn_ie, inv_dual, w, cell_idx, z_vt_ie, inv_primal,        \
+            tangent, z_w_v, vert_idx,                                      \
+            (unsigned)N, (unsigned)nlev, (unsigned)nlev_end, nlev_padded);  \
+        CUDA_LAUNCH_CHECK();                                               \
+    } while(0)
+
+    switch (BX) {
+    case   32: LAUNCH_V6(  32); break;
+    case   64: LAUNCH_V6(  64); break;
+    case   96: LAUNCH_V6(  96); break;
+    case  128: LAUNCH_V6( 128); break;
+    case  192: LAUNCH_V6( 192); break;
+    case  256: LAUNCH_V6( 256); break;
+    case  288: LAUNCH_V6( 288); break;
+    case  384: LAUNCH_V6( 384); break;
+    case  512: LAUNCH_V6( 512); break;
+    case  768: LAUNCH_V6( 768); break;
+    case 1024: LAUNCH_V6(1024); break;
+    default: return false;
+    }
+    #undef LAUNCH_V6
+    return true;
+}
+
+/* ================================================================ */
 /*  GPU cache flush                                                  */
 /* ================================================================ */
 __global__ void flush_stencil_step(const double* __restrict__ A,
@@ -494,7 +604,7 @@ struct GpuFlush {
 static GpuFlush g_flush;
 
 /* ================================================================ */
-/*  run_variant_configs                                              */
+/*  run_variant_configs  (V1-V5)                                     */
 /*  V = label (1-5), nlev = stride, nlev_end = compute bound         */
 /* ================================================================ */
 static void run_variant_configs(
@@ -592,6 +702,103 @@ static void run_variant_configs(
 }
 
 /* ================================================================ */
+/*  run_v6_configs -- V6 flat 1D schedule                            */
+/*  Uses V4 layout (jk-first, interleaved indices).                  */
+/*  nlev = padded stride, nlev_end = actual levels.                  */
+/* ================================================================ */
+static void run_v6_configs(
+    FILE* fcsv,
+    int N, int nlev, int nlev_end, unsigned nlev_padded,
+    const char* dist_label,
+    double* h_ref,
+    double* h_vn_ie, double* inv_dual,
+    double* h_w, int* h_cidx,
+    double* h_z_vt_ie, double* inv_primal,
+    double* tangent_o, double* h_z_w_v,
+    int* h_vidx, size_t sz2d,
+    double* d_vn_ie, double* d_inv_dual,
+    double* d_w, int* d_cidx,
+    double* d_z_vt_ie, double* d_inv_primal,
+    double* d_tangent, double* d_z_w_v,
+    int* d_vidx, double* d_out,
+    cudaEvent_t ev0, cudaEvent_t ev1,
+    double* h_gpu_out)
+{
+    /* CPU reference -- uses V4 layout, zero-init for padding */
+    memset(h_ref, 0, sz2d * sizeof(double));
+    cpu_reference<4>(h_ref, h_vn_ie, inv_dual,
+        h_w, h_cidx, h_z_vt_ie, inv_primal,
+        tangent_o, h_z_w_v, h_vidx, N, nlev, nlev_end);
+
+    /* upload */
+    CUDA_CHECK(cudaMemcpy(d_vn_ie,      h_vn_ie,    sz2d*8, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_w,          h_w,        sz2d*8, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_z_vt_ie,    h_z_vt_ie,  sz2d*8, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_z_w_v,      h_z_w_v,    sz2d*8, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_cidx,       h_cidx,     N*2*4,  cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_vidx,       h_vidx,     N*2*4,  cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_inv_dual,   inv_dual,   N*8,    cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_inv_primal, inv_primal, N*8,    cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_tangent,    tangent_o,  N*8,    cudaMemcpyHostToDevice));
+
+    for (int ci = 0; ci < N_GCFG_V6; ci++) {
+        CUDA_CHECK(cudaMemset(d_out, 0, sz2d*8));
+
+        bool launched = true;
+        for (int r = 0; r < WARMUP; r++) {
+            g_flush.flush();
+            launched = launch_gpu_v6<4>(ci, d_out, d_vn_ie, d_inv_dual,
+                d_w, d_cidx, d_z_vt_ie, d_inv_primal,
+                d_tangent, d_z_w_v, d_vidx, N, nlev, nlev_end, nlev_padded);
+            if (!launched) break;
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
+
+        if (!launched) {
+            printf("SKIP:        nlev=%d(%d) dist=%-12s V=6 cfg=%-14s  (does not fit)\n",
+                   nlev, nlev_end, dist_label, GCFG_V6[ci].label);
+            continue;
+        }
+
+        CUDA_CHECK(cudaMemcpy(h_gpu_out, d_out, sz2d*8, cudaMemcpyDeviceToHost));
+        int n_fail=0; double max_rel=0; size_t first_fail=0;
+        bool ok = verify(h_gpu_out, h_ref, sz2d, 1e-8, 1e-12, &n_fail, &max_rel, &first_fail);
+        if (!ok) {
+            int ff_jk = first_fail % nlev;
+            int ff_je = first_fail / nlev;
+            printf("VERIFY FAIL: nlev=%d(%d) dist=%-12s V=6 cfg=%-14s  "
+                   "fails=%d/%zu max_rel=%.3e\n"
+                   "  first_fail: idx=%zu (je=%d,jk=%d) got=%.6e ref=%.6e\n",
+                   nlev, nlev_end, dist_label, GCFG_V6[ci].label,
+                   n_fail, sz2d, max_rel, first_fail, ff_je, ff_jk,
+                   h_gpu_out[first_fail], h_ref[first_fail]);
+            continue;
+        } else if (ci == 0) {
+            printf("VERIFY OK:   nlev=%d(%d) dist=%-12s V=6 max_rel=%.3e\n",
+                   nlev, nlev_end, dist_label, max_rel);
+        }
+
+        for (int r = 0; r < NRUNS; r++) {
+            g_flush.flush();
+            CUDA_CHECK(cudaEventRecord(ev0));
+            launch_gpu_v6<4>(ci, d_out, d_vn_ie, d_inv_dual,
+                d_w, d_cidx, d_z_vt_ie, d_inv_primal,
+                d_tangent, d_z_w_v, d_vidx, N, nlev, nlev_end, nlev_padded);
+            CUDA_CHECK(cudaEventRecord(ev1));
+            CUDA_CHECK(cudaEventSynchronize(ev1));
+            float ms=0; CUDA_CHECK(cudaEventElapsedTime(&ms, ev0, ev1));
+            /* CSV: TX=1, TY=1, BX=bx, BY=1 for V6 */
+            fprintf(fcsv, "gpu,%d,%d,%d,%s,%s,%d,%d,%d,%d,%d,%.6f\n",
+                6, nlev_end, N, dist_label, GCFG_V6[ci].label,
+                1, 1, (int)GCFG_V6[ci].bx, 1,
+                r, (double)ms);
+            g_flush.flush();
+        }
+    }
+    printf("Done: nlev=%d(%d)  dist=%-12s  V=6\n", nlev, nlev_end, dist_label);
+}
+
+/* ================================================================ */
 /*  run_dist_block -- allocate, run V_start..V_end, free             */
 /* ================================================================ */
 static void run_dist_block(
@@ -660,6 +867,72 @@ static void run_dist_block(
 }
 
 /* ================================================================ */
+/*  run_dist_block_v6 -- allocate, run V6, free                      */
+/*  Prepares V4 layout data, then runs V6 flat 1D configs.           */
+/* ================================================================ */
+static void run_dist_block_v6(
+    FILE* fcsv, int N, int nlev, int nlev_end, unsigned nlev_padded,
+    const char* dist_label,
+    int* cell_logical, int* vert_logical,
+    double* icon_inv_dual, double* icon_inv_primal, double* icon_tangent)
+{
+    BenchData bd;
+    bd.alloc(N, nlev);
+    bd.fill(nlev);
+
+    if (icon_inv_dual)
+        for (int je = 0; je < N; je++) {
+            bd.inv_dual[je]   = icon_inv_dual[je];
+            bd.inv_primal[je] = icon_inv_primal[je];
+            bd.tangent_o[je]  = icon_tangent[je];
+        }
+
+    /* V6 uses V4 layout (jk-first, interleaved indices) */
+    bd.set_variant(4, cell_logical, vert_logical);
+
+    size_t sz2d = bd.sz2d;
+    double* h_ref     = new double[sz2d];
+    double* h_gpu_out = new double[sz2d];
+
+    double *d_vn_ie, *d_w, *d_z_vt_ie, *d_z_w_v, *d_out;
+    double *d_inv_dual, *d_inv_primal, *d_tangent;
+    int *d_cidx, *d_vidx;
+    CUDA_CHECK(cudaMalloc(&d_vn_ie,      sz2d*8));
+    CUDA_CHECK(cudaMalloc(&d_w,          sz2d*8));
+    CUDA_CHECK(cudaMalloc(&d_z_vt_ie,    sz2d*8));
+    CUDA_CHECK(cudaMalloc(&d_z_w_v,      sz2d*8));
+    CUDA_CHECK(cudaMalloc(&d_out,        sz2d*8));
+    CUDA_CHECK(cudaMalloc(&d_inv_dual,   N*8));
+    CUDA_CHECK(cudaMalloc(&d_inv_primal, N*8));
+    CUDA_CHECK(cudaMalloc(&d_tangent,    N*8));
+    CUDA_CHECK(cudaMalloc(&d_cidx,       N*2*4));
+    CUDA_CHECK(cudaMalloc(&d_vidx,       N*2*4));
+
+    cudaEvent_t ev0, ev1;
+    CUDA_CHECK(cudaEventCreate(&ev0));
+    CUDA_CHECK(cudaEventCreate(&ev1));
+
+    run_v6_configs(fcsv, N, nlev, nlev_end, nlev_padded, dist_label,
+        h_ref, bd.h_vn_ie, bd.inv_dual, bd.h_w, bd.h_cidx,
+        bd.h_z_vt_ie, bd.inv_primal, bd.tangent_o, bd.h_z_w_v,
+        bd.h_vidx, sz2d,
+        d_vn_ie, d_inv_dual, d_w, d_cidx,
+        d_z_vt_ie, d_inv_primal, d_tangent, d_z_w_v,
+        d_vidx, d_out, ev0, ev1, h_gpu_out);
+    fflush(fcsv);
+
+    cudaFree(d_vn_ie); cudaFree(d_w); cudaFree(d_z_vt_ie);
+    cudaFree(d_z_w_v); cudaFree(d_out);
+    cudaFree(d_inv_dual); cudaFree(d_inv_primal); cudaFree(d_tangent);
+    cudaFree(d_cidx); cudaFree(d_vidx);
+    CUDA_CHECK(cudaEventDestroy(ev0));
+    CUDA_CHECK(cudaEventDestroy(ev1));
+    delete[] h_ref;
+    delete[] h_gpu_out;
+    bd.free_all();
+}
+
+/* ================================================================ */
 /*  main                                                             */
 /* ================================================================ */
 int main(int argc, char* argv[]) {
@@ -698,7 +971,7 @@ int main(int argc, char* argv[]) {
     cudaDeviceProp prop;
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
     printf("GPU: %s  SM count: %d\n", prop.name, prop.multiProcessorCount);
-    printf("Configs: %d\n", N_GCFG);
+    printf("Configs: V1-V5=%d  V6=%d\n", N_GCFG, N_GCFG_V6);
 
     srand((unsigned)time(NULL));
     g_flush.init();
@@ -742,6 +1015,16 @@ int main(int argc, char* argv[]) {
                     icon_ed.tangent_o.data());
             }
 
+            /* V6: flat 1D, nlev = padded, nlev_end = nlev_base */
+            if (nlev_padded != nlev_base) {
+                run_dist_block_v6(fcsv, Ne, nlev_padded, nlev_base,
+                    (unsigned)nlev_padded,
+                    "exact",
+                    ecl, evl,
+                    icon_ed.inv_dual.data(), icon_ed.inv_primal.data(),
+                    icon_ed.tangent_o.data());
+            }
+
             delete[] ecl;
             delete[] evl;
         }
@@ -766,9 +1049,15 @@ int main(int argc, char* argv[]) {
                     nullptr, nullptr, nullptr);
             }
 
+            /* V6: flat 1D, nlev = padded, nlev_end = nlev_base */
+            if (nlev_padded != nlev_base) {
+                run_dist_block_v6(fcsv, N, nlev_padded, nlev_base,
+                    (unsigned)nlev_padded,
+                    dist_name[di],
+                    cell_logical, vd.logical,
+                    nullptr, nullptr, nullptr);
+            }
         }
-
-
     }
 
     g_flush.destroy();
