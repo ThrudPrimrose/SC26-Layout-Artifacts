@@ -361,7 +361,7 @@ static bool launch_gpu(int cfg,
     } while(0)
 
     #define LG_JK(TX_,TY_,BX_,BY_) do {                                   \
-        if ((BX_)*(TX_) > (unsigned)nlev_end) break;                       \
+        if ((BX_)*(TX_) > (unsigned)(96+32)) break;                       \
         dim3 blk(BX_,BY_);                                                 \
         dim3 grd(((unsigned)nlev_end+(BX_)*(TX_)-1)/((BX_)*(TX_)),        \
                  ((unsigned)N       +(BY_)*(TY_)-1)/((BY_)*(TY_)));       \
