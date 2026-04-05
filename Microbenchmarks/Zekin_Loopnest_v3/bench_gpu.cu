@@ -273,6 +273,8 @@ static constexpr GpuCfg GCFG[] = {
     {1,1,96,4,"1x1_96x4"}, {1,8,96,4,"1x8_96x4"}, {1,8,96,8,"1x8_96x8"},
     /* Remaining useful */
     {1,8,256,1,"1x8_256x1"}, {2,4,16,16,"2x4_16x16"},
+
+    {4,1,16,16,"4x1_16x16"}, {2,2,16,16,"2x2_16x16"},
 };
 static constexpr int N_GCFG = sizeof(GCFG)/sizeof(GCFG[0]);
 
@@ -395,6 +397,8 @@ static bool launch_gpu(int cfg,
     case 61: LG(1,8,96,8); break;
     case 62: LG(1,8,256,1); break;
     case 63: LG(2,4,16,16); break;
+    case 64: LG(4,1,16,16); break;
+    case 65: LG(4,2,16,16); break;
     }
     #undef LG
     #undef LG_JE
