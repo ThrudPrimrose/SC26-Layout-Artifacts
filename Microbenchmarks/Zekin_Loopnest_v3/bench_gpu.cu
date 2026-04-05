@@ -842,6 +842,12 @@ static void run_dist_block(
     CUDA_CHECK(cudaEventCreate(&ev1));
 
     for (int V = V_start; V <= V_end; V++) {
+        if (V==2){
+            continue;
+        }
+        if (V==3){
+            continue;
+        }
         int kV = kern_v(V);
         bd.set_variant(kV, cell_logical, vert_logical);
 
@@ -986,7 +992,7 @@ int main(int argc, char* argv[]) {
         /*  EXACT distribution                                          */
         /* ============================================================ */
         if (have_exact) {
-            const int Ne = icon_ed.n_edges;
+            const int Ne = icon_ed.n_edges_valid;
             if (icon_ed.n_cells > Ne || icon_ed.n_verts > Ne) {
                 fprintf(stderr, "WARNING: n_cells/n_verts > Ne; skipping exact nlev=%d\n", nlev_base);
                 continue;
