@@ -5,7 +5,7 @@ Only the 2x2 violin bandwidth plots. Annotates median as % of STREAM peak
 directly below each violin in matching colour.
 
 Orange = Horizontal-first (V1), best config/schedule for V1
-Blue   = Best-performing vertical-first layout (V2/V3/V4), best config/schedule
+Blue   = Best-performing vertical-first layout (V2/V3/V4/V5), best config/schedule
 """
 import matplotlib
 matplotlib.use("Agg")
@@ -109,7 +109,7 @@ def get_overall_best_data(df_full, fcol, dist, nlev):
     Blue violin: pick whichever (variant, config/schedule) pair gives the
     highest median bandwidth — completely unconstrained.
     """
-    sub = df_full[(df_full["variant"].isin([3, 4])) &
+    sub = df_full[(df_full["variant"].isin([3, 4, 5])) &
                   (df_full["cell_dist"] == dist) &
                   (df_full["nlev"] == nlev)]
     if sub.empty:
@@ -296,7 +296,7 @@ def main():
                         print(f"{label:<22} {'orange':<10} {dist:<20} {'V1, ' + str(best_cfg):<30} {med:.4f}      {pct:.1f}%")
 
                 # --- blue (overall best) ---
-                sub_all = df_full[(df_full["variant"].isin([3, 4])) &
+                sub_all = df_full[(df_full["variant"].isin([3, 4, 5])) &
                                   (df_full["cell_dist"] == dist) &
                                   (df_full["nlev"] == NLEV)]
                 if not sub_all.empty:
