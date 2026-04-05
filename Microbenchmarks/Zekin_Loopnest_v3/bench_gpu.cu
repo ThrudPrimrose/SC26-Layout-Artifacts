@@ -156,17 +156,20 @@ __global__ void gpu_kernel_jk_first(
             vi0_a[ty]=vert_idx[IN<V>(je,0,N_e)]; vi1_a[ty]=vert_idx[IN<V>(je,1,N_e)];
             id_a[ty]=inv_dual[je]; ip_a[ty]=inv_primal[je]; tg_a[ty]=tangent[je];
         }}
-        int jk_base0 = ((int)blockIdx.y*BY+(int)threadIdx.y)*TY;
-        #pragma unroll
-        for (int ty=0;ty<TY;ty++){int je=je_base0+ty;if(je>=N_e)continue;
-        #pragma unroll
-        for (int tx=0;tx<TX;tx++){int jk=jk_base0+tx;if(jk>=nlev_end)continue;
-            int c2d=IC<V>(je,jk,N_e,nlev);
-            out[c2d]=vn_ie[c2d]*id_a[ty]*
-                (w[IC<V>(ci0_a[ty],jk,N_c,nlev)]-w[IC<V>(ci1_a[ty],jk,N_c,nlev)])
-                +z_vt_ie[c2d]*ip_a[ty]*tg_a[ty]*
-                (z_w_v[IC<V>(vi0_a[ty],jk,N_v,nlev)]-z_w_v[IC<V>(vi1_a[ty],jk,N_v,nlev)]);
-        }}
+        for (int jk_base0 = ((int)blockIdx.x*BX+(int)threadIdx.x)*TX;
+             jk_base0 < nlev_end; jk_base0 += jk_stride)
+        {
+            #pragma unroll
+            for (int ty=0;ty<TY;ty++){int je=je_base0+ty;if(je>=N_e)continue;
+            #pragma unroll
+            for (int tx=0;tx<TX;tx++){int jk=jk_base0+tx;if(jk>=nlev_end)continue;
+                int c2d=IC<V>(je,jk,N_e,nlev);
+                out[c2d]=vn_ie[c2d]*id_a[ty]*
+                    (w[IC<V>(ci0_a[ty],jk,N_c,nlev)]-w[IC<V>(ci1_a[ty],jk,N_c,nlev)])
+                    +z_vt_ie[c2d]*ip_a[ty]*tg_a[ty]*
+                    (z_w_v[IC<V>(vi0_a[ty],jk,N_v,nlev)]-z_w_v[IC<V>(vi1_a[ty],jk,N_v,nlev)]);
+            }}
+        }
     }
 }
 
