@@ -1,134 +1,62 @@
-#include "usxx_kernels_cpu.h"
-#include "usxx_kernels_cpu_impl.h"
+#include "types.h"
+#include "data_loading.h"
+#include "usxx_kernels.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <algorithm>
-#include <functional>
 #include <vector>
-#include <utility>
+#include <functional>
 
-#include <omp.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-
-// ============================================================
-// Data loading
-// ============================================================
-static bool file_exists(const char* fn) { struct stat st; return stat(fn, &st) == 0; }
-static long file_size_bytes(const char* fn) { struct stat st; return (stat(fn,&st)==0) ? st.st_size : -1; }
-
-static bool data_load_int(int& v, const char* fn) {
-    if (!file_exists(fn)) { printf("Missing: %s\n",fn); return false; }
-    FILE*f=fopen(fn,"rb"); fread(&v,4,1,f); fclose(f); return true;
-}
-static bool data_load_int_array(int* d, int n, const char* fn) {
-    if (!file_exists(fn)) { printf("Missing: %s\n",fn); return false; }
-    long fs=file_size_bytes(fn);
-    if (n != fs/4) { printf("Size mismatch %s: %d vs %ld\n",fn,n,fs); return false; }
-    FILE*f=fopen(fn,"rb"); fread(d,4,n,f); fclose(f); return true;
-}
-static bool data_load_real_array(double* d, int n, const char* fn) {
-    if (!file_exists(fn)) { printf("Missing: %s\n",fn); return false; }
-    long fs=file_size_bytes(fn);
-    if (n != fs/8) { printf("Size mismatch %s: %d vs %ld\n",fn,n,fs); return false; }
-    FILE*f=fopen(fn,"rb"); fread(d,8,n,f); fclose(f); return true;
-}
-static bool data_load_cmplx_array(Complex_DP* d, int n, const char* fn) {
-    if (!file_exists(fn)) { printf("Missing: %s\n",fn); return false; }
-    long fs=file_size_bytes(fn);
-    if (n != fs/16) { printf("Size mismatch %s: %d vs %ld\n",fn,n,fs); return false; }
-    FILE*f=fopen(fn,"rb"); fread(d,16,n,f); fclose(f); return true;
-}
-
-// ============================================================
-// NUMA helpers
-// ============================================================
-template<typename T>
-static T* numa_alloc(size_t count) {
-    size_t bytes = count * sizeof(T);
-    void* p = mmap(nullptr, bytes, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) { perror("mmap"); abort(); }
-    madvise(p, bytes, MADV_HUGEPAGE);
-    return static_cast<T*>(p);
-}
-
-template<typename T>
-static void first_touch_zero(T* arr, size_t count) {
-    #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < count; i++) arr[i] = T{};
-}
-
-template<typename T>
-static void first_touch_copy(T* dst, const T* src, size_t count) {
-    #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < count; i++) dst[i] = src[i];
-}
-
-// Cache flush
-static constexpr size_t FLUSH_ELEMS = 256ULL * 1024 * 1024 / sizeof(double);
-static double* g_flush = nullptr;
-
-static void init_flush() {
-    if (!g_flush) {
-        g_flush = numa_alloc<double>(FLUSH_ELEMS);
-        first_touch_zero(g_flush, FLUSH_ELEMS);
-    }
-}
-
-static void flush_caches() {
-    #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < FLUSH_ELEMS; i++) g_flush[i] = 1.0;
-}
-
-// ============================================================
-// Array dimensions
-// ============================================================
+// Array dimensions (matching Fortran ALLOCATEs)
 static constexpr int RHOC_SIZE   = 120000;
 static constexpr int BECPC_SIZE  = 122;
-static constexpr int QGM_ROWS    = 55191;
-static constexpr int QGM_COLS    = 397;
+static constexpr int QGM_ROWS   = 55191;
+static constexpr int QGM_COLS   = 397;
 static constexpr int EIGTS1_DIM1 = 217;
 static constexpr int EIGTS1_DIM2 = 10;
 static constexpr int EIGTS2_DIM1 = 109;
 static constexpr int EIGTS2_DIM2 = 10;
-static constexpr int NAT_MAX     = 10;
-static constexpr int NTYP_MAX    = 3;
-static constexpr int MILL_DIM1   = 3;
-static constexpr int MILL_DIM2   = 156121;
-static constexpr int NL_SIZE     = 55191;
-// Defined elsewhere
-//static constexpr int IJTOH_N1    = 19;
-//static constexpr int IJTOH_N2    = 19;
-static constexpr int IJTOH_N3    = 3;
+static constexpr int NAT_MAX    = 10;
+static constexpr int NTYP_MAX   = 3;
+static constexpr int MILL_DIM1  = 3;
+static constexpr int MILL_DIM2  = 156121;
+static constexpr int NL_SIZE    = 55191;
+static constexpr int IJTOH_N1   = 19;
+static constexpr int IJTOH_N2   = 19;
+static constexpr int IJTOH_N3   = 3;
 
-static constexpr int NUM_ITERS   = 100;
-static constexpr int NUM_WARMUP  = 5;
+static constexpr int NUM_ITERS  = 100;
+static constexpr int NUM_WARMUP = 5;
+static constexpr int TOTAL_ITERS = NUM_ITERS + NUM_WARMUP;
+
+static const int TBLOCK_SIZES[] = { 32, 64, 128, 256, 512, 1024 };
+static const int COARSEN_FACTORS[] = { 1, 2, 4, 8 };
+static constexpr int N_TBLOCK = sizeof(TBLOCK_SIZES) / sizeof(TBLOCK_SIZES[0]);
+static constexpr int N_COARSEN = sizeof(COARSEN_FACTORS) / sizeof(COARSEN_FACTORS[0]);
+
+// ---- Host arrays ----
+static int nkb, ngms, nat, ntyp;
+static Complex_DP rhoc[RHOC_SIZE], becphi_c[BECPC_SIZE], becpsi_c[BECPC_SIZE];
+static Complex_DP qgm[QGM_COLS * QGM_ROWS];
+static Complex_DP eigts1[EIGTS1_DIM2 * EIGTS1_DIM1];
+static Complex_DP eigts2[EIGTS2_DIM2 * EIGTS2_DIM1];
+static Complex_DP eigts3[EIGTS2_DIM2 * EIGTS2_DIM1];
+static Complex_DP rhoc_out[RHOC_SIZE], rhoc_out_sim[RHOC_SIZE];
+static DP xkq[3], xk[3], tau[NAT_MAX * 3];
+static int nij_type[NTYP_MAX], ityp[NAT_MAX], ofsbeta[NAT_MAX], nh[NTYP_MAX];
+static int ijtoh[IJTOH_N3 * IJTOH_N2 * IJTOH_N1];
+static int mill[MILL_DIM2 * MILL_DIM1];
+static int dfftt__nl[NL_SIZE], upf_tvanp[NTYP_MAX];
+
+static Complex_DP qgm_T[QGM_ROWS * QGM_COLS];
+static Complex_DP eigts1_T[EIGTS1_DIM1 * EIGTS1_DIM2];
+static Complex_DP eigts2_T[EIGTS2_DIM1 * EIGTS2_DIM2];
+static Complex_DP eigts3_T[EIGTS2_DIM1 * EIGTS2_DIM2];
+static int dfftt__nl_sorted[NL_SIZE], dfftt__nl_ix[NL_SIZE];
 
 static int file_id = 12;
-
-// ============================================================
-// NUMA-placed arrays
-// ============================================================
-struct NUMAArrays {
-    Complex_DP *rhoc, *rhoc_init, *rhoc_ref;
-    Complex_DP *becphi_c, *becpsi_c;
-    Complex_DP *qgm, *eigts1, *eigts2, *eigts3;
-    Complex_DP *eigts1_T, *eigts2_T, *eigts3_T;
-    double *rhoc_re, *rhoc_im, *rhoc_re_init, *rhoc_im_init;
-    double *becphi_re, *becphi_im, *becpsi_re, *becpsi_im;
-    double *qgm_re, *qgm_im;
-    double *eigts1_re, *eigts1_im, *eigts2_re, *eigts2_im, *eigts3_re, *eigts3_im;
-    double *eigts1_T_re, *eigts1_T_im, *eigts2_T_re, *eigts2_T_im, *eigts3_T_re, *eigts3_T_im;
-    DP xkq[3], xk[3], tau[NAT_MAX * 3];
-    int nkb, ngms, nat, ntyp;
-    int nij_type[NTYP_MAX], ityp[NAT_MAX], ofsbeta[NAT_MAX], nh[NTYP_MAX];
-    int upf_tvanp[NTYP_MAX];
-    int *ijtoh, *mill, *dfftt__nl;
-    int *dfftt__nl_sorted, *dfftt__nl_ix;
-};
 
 static void transpose_2d(const Complex_DP* A, Complex_DP* B, int m, int n) {
     for (int j = 0; j < n; j++)
@@ -136,283 +64,659 @@ static void transpose_2d(const Complex_DP* A, Complex_DP* B, int m, int n) {
             B[i * n + j] = A[j * m + i];
 }
 
-static NUMAArrays load_and_place() {
-    NUMAArrays a;
-    char fn[256];
-
-    #define L_INT(v, name) snprintf(fn,256,"./bin/addusxx_g__" name "_%d.bin",file_id); data_load_int(v,fn);
-    #define L_INTA(v,n,name) snprintf(fn,256,"./bin/addusxx_g__" name "_%d.bin",file_id); data_load_int_array(v,n,fn);
-    #define L_REAL(v,n,name) snprintf(fn,256,"./bin/addusxx_g__" name "_%d.bin",file_id); data_load_real_array(v,n,fn);
+static void init_addusxx_data() {
+    char filename[256];
+    #define LOAD_INT(var, name) \
+        snprintf(filename, sizeof(filename), "./bin/addusxx_g__" name "_%d.bin", file_id); \
+        data_load_int(var, filename);
+    #define LOAD_CMPLX(var, cnt, name) \
+        snprintf(filename, sizeof(filename), "./bin/addusxx_g__" name "_%d.bin", file_id); \
+        data_load_cmplx_array(var, cnt, filename);
+    #define LOAD_REAL(var, cnt, name) \
+        snprintf(filename, sizeof(filename), "./bin/addusxx_g__" name "_%d.bin", file_id); \
+        data_load_real_array(var, cnt, filename);
+    #define LOAD_INTA(var, cnt, name) \
+        snprintf(filename, sizeof(filename), "./bin/addusxx_g__" name "_%d.bin", file_id); \
+        data_load_int_array(var, cnt, filename);
 
     printf("Loading data...\n");
-    L_INT(a.nkb,"nkb"); L_INT(a.ngms,"ngms"); L_INT(a.nat,"nat"); L_INT(a.ntyp,"ntyp");
-    L_REAL(a.xkq,3,"xkq"); L_REAL(a.xk,3,"xk"); L_REAL(a.tau,3*NAT_MAX,"tau");
-    L_INTA(a.nij_type,NTYP_MAX,"nij_type"); L_INTA(a.ityp,NAT_MAX,"ityp");
-    L_INTA(a.ofsbeta,NAT_MAX,"ofsbeta"); L_INTA(a.nh,NTYP_MAX,"nh");
-    L_INTA(a.upf_tvanp,NTYP_MAX,"upf_tvanp");
+    LOAD_INT(nkb, "nkb"); LOAD_INT(ngms, "ngms"); LOAD_INT(nat, "nat"); LOAD_INT(ntyp, "ntyp");
+    LOAD_CMPLX(rhoc, RHOC_SIZE, "rhoc");
+    LOAD_CMPLX(becphi_c, BECPC_SIZE, "becphi_c");
+    LOAD_CMPLX(becpsi_c, BECPC_SIZE, "becpsi_c");
+    LOAD_CMPLX(qgm, QGM_ROWS * QGM_COLS, "qgm");
+    LOAD_CMPLX(eigts1, EIGTS1_DIM1 * EIGTS1_DIM2, "eigts1");
+    LOAD_CMPLX(eigts2, EIGTS2_DIM1 * EIGTS2_DIM2, "eigts2");
+    LOAD_CMPLX(eigts3, EIGTS2_DIM1 * EIGTS2_DIM2, "eigts3");
+    LOAD_CMPLX(rhoc_out, RHOC_SIZE, "rhoc_out");
+    LOAD_REAL(xkq, 3, "xkq"); LOAD_REAL(xk, 3, "xk"); LOAD_REAL(tau, 3 * NAT_MAX, "tau");
+    LOAD_INTA(nij_type, NTYP_MAX, "nij_type");
+    LOAD_INTA(ityp, NAT_MAX, "ityp");
+    LOAD_INTA(ofsbeta, NAT_MAX, "ofsbeta");
+    LOAD_INTA(nh, NTYP_MAX, "nh");
+    LOAD_INTA(ijtoh, IJTOH_N1 * IJTOH_N2 * IJTOH_N3, "ijtoh");
+    LOAD_INTA(mill, MILL_DIM1 * MILL_DIM2, "mill");
+    LOAD_INTA(dfftt__nl, NL_SIZE, "dfftt__nl");
+    LOAD_INTA(upf_tvanp, NTYP_MAX, "upf_tvanp");
 
-    int qgm_total = QGM_ROWS * QGM_COLS;
-    Complex_DP* tmp_qgm = new Complex_DP[qgm_total];
-    snprintf(fn,256,"./bin/addusxx_g__qgm_%d.bin",file_id);
-    data_load_cmplx_array(tmp_qgm, qgm_total, fn);
-    a.qgm = numa_alloc<Complex_DP>(qgm_total);
-    first_touch_copy(a.qgm, tmp_qgm, qgm_total);
-    a.qgm_re = numa_alloc<double>(qgm_total);
-    a.qgm_im = numa_alloc<double>(qgm_total);
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < qgm_total; i++) { a.qgm_re[i] = tmp_qgm[i].x; a.qgm_im[i] = tmp_qgm[i].y; }
-    delete[] tmp_qgm;
+    transpose_2d(qgm, qgm_T, QGM_ROWS, QGM_COLS);
+    transpose_2d(eigts1, eigts1_T, EIGTS1_DIM1, EIGTS1_DIM2);
+    transpose_2d(eigts2, eigts2_T, EIGTS2_DIM1, EIGTS2_DIM2);
+    transpose_2d(eigts3, eigts3_T, EIGTS2_DIM1, EIGTS2_DIM2);
 
-    int e1_total = EIGTS1_DIM1 * EIGTS1_DIM2;
-    int e2_total = EIGTS2_DIM1 * EIGTS2_DIM2;
-    Complex_DP *tmp_e1 = new Complex_DP[e1_total];
-    Complex_DP *tmp_e2 = new Complex_DP[e2_total];
-    Complex_DP *tmp_e3 = new Complex_DP[e2_total];
-    snprintf(fn,256,"./bin/addusxx_g__eigts1_%d.bin",file_id); data_load_cmplx_array(tmp_e1,e1_total,fn);
-    snprintf(fn,256,"./bin/addusxx_g__eigts2_%d.bin",file_id); data_load_cmplx_array(tmp_e2,e2_total,fn);
-    snprintf(fn,256,"./bin/addusxx_g__eigts3_%d.bin",file_id); data_load_cmplx_array(tmp_e3,e2_total,fn);
-
-    a.eigts1 = numa_alloc<Complex_DP>(e1_total); first_touch_copy(a.eigts1, tmp_e1, e1_total);
-    a.eigts2 = numa_alloc<Complex_DP>(e2_total); first_touch_copy(a.eigts2, tmp_e2, e2_total);
-    a.eigts3 = numa_alloc<Complex_DP>(e2_total); first_touch_copy(a.eigts3, tmp_e3, e2_total);
-
-    a.eigts1_T = numa_alloc<Complex_DP>(e1_total); transpose_2d(tmp_e1, a.eigts1_T, EIGTS1_DIM1, EIGTS1_DIM2);
-    a.eigts2_T = numa_alloc<Complex_DP>(e2_total); transpose_2d(tmp_e2, a.eigts2_T, EIGTS2_DIM1, EIGTS2_DIM2);
-    a.eigts3_T = numa_alloc<Complex_DP>(e2_total); transpose_2d(tmp_e3, a.eigts3_T, EIGTS2_DIM1, EIGTS2_DIM2);
-
-    a.eigts1_re = numa_alloc<double>(e1_total); a.eigts1_im = numa_alloc<double>(e1_total);
-    a.eigts2_re = numa_alloc<double>(e2_total); a.eigts2_im = numa_alloc<double>(e2_total);
-    a.eigts3_re = numa_alloc<double>(e2_total); a.eigts3_im = numa_alloc<double>(e2_total);
-    for (int i=0;i<e1_total;i++){a.eigts1_re[i]=tmp_e1[i].x; a.eigts1_im[i]=tmp_e1[i].y;}
-    for (int i=0;i<e2_total;i++){a.eigts2_re[i]=tmp_e2[i].x; a.eigts2_im[i]=tmp_e2[i].y;}
-    for (int i=0;i<e2_total;i++){a.eigts3_re[i]=tmp_e3[i].x; a.eigts3_im[i]=tmp_e3[i].y;}
-    a.eigts1_T_re = numa_alloc<double>(e1_total); a.eigts1_T_im = numa_alloc<double>(e1_total);
-    a.eigts2_T_re = numa_alloc<double>(e2_total); a.eigts2_T_im = numa_alloc<double>(e2_total);
-    a.eigts3_T_re = numa_alloc<double>(e2_total); a.eigts3_T_im = numa_alloc<double>(e2_total);
-    for (int i=0;i<e1_total;i++){a.eigts1_T_re[i]=a.eigts1_T[i].x; a.eigts1_T_im[i]=a.eigts1_T[i].y;}
-    for (int i=0;i<e2_total;i++){a.eigts2_T_re[i]=a.eigts2_T[i].x; a.eigts2_T_im[i]=a.eigts2_T[i].y;}
-    for (int i=0;i<e2_total;i++){a.eigts3_T_re[i]=a.eigts3_T[i].x; a.eigts3_T_im[i]=a.eigts3_T[i].y;}
-
-    delete[] tmp_e1; delete[] tmp_e2; delete[] tmp_e3;
-
-    Complex_DP tmp_bp[BECPC_SIZE], tmp_bs[BECPC_SIZE];
-    snprintf(fn,256,"./bin/addusxx_g__becphi_c_%d.bin",file_id); data_load_cmplx_array(tmp_bp,BECPC_SIZE,fn);
-    snprintf(fn,256,"./bin/addusxx_g__becpsi_c_%d.bin",file_id); data_load_cmplx_array(tmp_bs,BECPC_SIZE,fn);
-    a.becphi_c = numa_alloc<Complex_DP>(BECPC_SIZE); memcpy(a.becphi_c, tmp_bp, BECPC_SIZE*sizeof(Complex_DP));
-    a.becpsi_c = numa_alloc<Complex_DP>(BECPC_SIZE); memcpy(a.becpsi_c, tmp_bs, BECPC_SIZE*sizeof(Complex_DP));
-    a.becphi_re = numa_alloc<double>(BECPC_SIZE); a.becphi_im = numa_alloc<double>(BECPC_SIZE);
-    a.becpsi_re = numa_alloc<double>(BECPC_SIZE); a.becpsi_im = numa_alloc<double>(BECPC_SIZE);
-    aos_to_soa(tmp_bp, a.becphi_re, a.becphi_im, BECPC_SIZE);
-    aos_to_soa(tmp_bs, a.becpsi_re, a.becpsi_im, BECPC_SIZE);
-
-    Complex_DP tmp_rhoc[RHOC_SIZE], tmp_rhoc_out[RHOC_SIZE];
-    snprintf(fn,256,"./bin/addusxx_g__rhoc_%d.bin",file_id); data_load_cmplx_array(tmp_rhoc,RHOC_SIZE,fn);
-    snprintf(fn,256,"./bin/addusxx_g__rhoc_out_%d.bin",file_id); data_load_cmplx_array(tmp_rhoc_out,RHOC_SIZE,fn);
-    a.rhoc_init = numa_alloc<Complex_DP>(RHOC_SIZE); first_touch_copy(a.rhoc_init, tmp_rhoc, RHOC_SIZE);
-    a.rhoc_ref  = numa_alloc<Complex_DP>(RHOC_SIZE); first_touch_copy(a.rhoc_ref, tmp_rhoc_out, RHOC_SIZE);
-    a.rhoc      = numa_alloc<Complex_DP>(RHOC_SIZE);
-    a.rhoc_re_init = numa_alloc<double>(RHOC_SIZE); a.rhoc_im_init = numa_alloc<double>(RHOC_SIZE);
-    aos_to_soa(tmp_rhoc, a.rhoc_re_init, a.rhoc_im_init, RHOC_SIZE);
-    a.rhoc_re = numa_alloc<double>(RHOC_SIZE);
-    a.rhoc_im = numa_alloc<double>(RHOC_SIZE);
-
-    int ijtoh_total = IJTOH_N1*IJTOH_N2*IJTOH_N3;
-    int mill_total = MILL_DIM1*MILL_DIM2;
-    int* tmp_ijtoh = new int[ijtoh_total]; int* tmp_mill = new int[mill_total]; int* tmp_nl = new int[NL_SIZE];
-    snprintf(fn,256,"./bin/addusxx_g__ijtoh_%d.bin",file_id); data_load_int_array(tmp_ijtoh,ijtoh_total,fn);
-    snprintf(fn,256,"./bin/addusxx_g__mill_%d.bin",file_id); data_load_int_array(tmp_mill,mill_total,fn);
-    snprintf(fn,256,"./bin/addusxx_g__dfftt__nl_%d.bin",file_id); data_load_int_array(tmp_nl,NL_SIZE,fn);
-
-    a.ijtoh = numa_alloc<int>(ijtoh_total); memcpy(a.ijtoh, tmp_ijtoh, ijtoh_total*sizeof(int));
-    a.mill  = numa_alloc<int>(mill_total);  first_touch_copy(a.mill, tmp_mill, mill_total);
-    a.dfftt__nl = numa_alloc<int>(NL_SIZE); first_touch_copy(a.dfftt__nl, tmp_nl, NL_SIZE);
-
-    struct NLEntry { int val, orig; };
-    NLEntry* entries = new NLEntry[a.ngms];
-    for (int i=0; i<a.ngms; i++) { entries[i].val=tmp_nl[i]; entries[i].orig=i+1; }
-    std::sort(entries, entries+a.ngms, [](const NLEntry&a, const NLEntry&b){return a.val<b.val;});
-    a.dfftt__nl_sorted = numa_alloc<int>(NL_SIZE);
-    a.dfftt__nl_ix     = numa_alloc<int>(NL_SIZE);
-    for (int i=0; i<a.ngms; i++) { a.dfftt__nl_sorted[i]=entries[i].val; a.dfftt__nl_ix[i]=entries[i].orig; }
+    struct NLEntry { int val; int orig_idx; };
+    NLEntry* entries = new NLEntry[ngms];
+    for (int i = 0; i < ngms; i++) { entries[i].val = dfftt__nl[i]; entries[i].orig_idx = i + 1; }
+    std::sort(entries, entries + ngms, [](const NLEntry& a, const NLEntry& b) { return a.val < b.val; });
+    for (int i = 0; i < ngms; i++) { dfftt__nl_sorted[i] = entries[i].val; dfftt__nl_ix[i] = entries[i].orig_idx; }
     delete[] entries;
 
-    delete[] tmp_ijtoh; delete[] tmp_mill; delete[] tmp_nl;
-
-    return a;
-}
-
-// ============================================================
-// Correctness
-// ============================================================
-static bool check_aos(const Complex_DP* sim, const Complex_DP* ref, int n, const char* label) {
-    double maxd = 0;
-    for (int i=0; i<n; i++) { double d=cabs_val(csub(sim[i],ref[i])); if(d>maxd) maxd=d; }
-    if (maxd >= 1e-8) { printf("  %s FAILED (maxdiff=%.4e)\n",label,maxd); return false; }
-    printf("  %s PASSED\n",label); return true;
-}
-
-static bool check_soa(const double* re, const double* im, const Complex_DP* ref, int n, const char* label) {
-    double maxd = 0;
-    for (int i=0; i<n; i++) {
-        double dr=re[i]-ref[i].x, di=im[i]-ref[i].y;
-        double d=sqrt(dr*dr+di*di); if(d>maxd) maxd=d;
+    for (int i = 0; i < ngms; i++) {
+        if (dfftt__nl[dfftt__nl_ix[i] - 1] != dfftt__nl_sorted[i]) {
+            printf("Error in dfftt__nl_sorted/ix.\n"); break;
+        }
     }
-    if (maxd >= 1e-8) { printf("  %s FAILED (maxdiff=%.4e)\n",label,maxd); return false; }
-    printf("  %s PASSED\n",label); return true;
 }
 
 // ============================================================
-// Profiling
+// Device arrays — AoS (includes scratch buffers)
 // ============================================================
-static void profile(FILE* csv, const char* variant, int blocksize, NUMAArrays& a,
-                    std::function<void()> reset_fn,
-                    std::function<void()> kernel_fn,
-                    std::function<bool()> verify_fn,
-                    int nthreads)
+struct DeviceArrays {
+    Complex_DP *d_rhoc, *d_becphi_c, *d_becpsi_c;
+    Complex_DP *d_qgm, *d_eigts1, *d_eigts2, *d_eigts3;
+    Complex_DP *d_qgm_T, *d_eigts1_T, *d_eigts2_T, *d_eigts3_T;
+    DP *d_xkq, *d_xk, *d_tau;
+    int *d_upf_tvanp, *d_nij_type, *d_ityp, *d_ofsbeta, *d_nh;
+    int *d_ijtoh, *d_mill, *d_dfftt__nl;
+    int *d_dfftt__nl_sorted, *d_dfftt__nl_ix;
+    // Scratch buffers (pre-allocated)
+    Complex_DP *d_eigqts;        // size: nat
+};
+
+#define CUDA_AC(d_ptr, h_ptr, count, type) \
+    cudaMalloc(&da.d_ptr, (count) * sizeof(type)); \
+    cudaMemcpy(da.d_ptr, h_ptr, (count) * sizeof(type), cudaMemcpyHostToDevice);
+
+static DeviceArrays allocate_device_arrays() {
+    DeviceArrays da;
+    CUDA_AC(d_rhoc, rhoc, RHOC_SIZE, Complex_DP);
+    CUDA_AC(d_becphi_c, becphi_c, BECPC_SIZE, Complex_DP);
+    CUDA_AC(d_becpsi_c, becpsi_c, BECPC_SIZE, Complex_DP);
+    CUDA_AC(d_qgm, qgm, QGM_ROWS * QGM_COLS, Complex_DP);
+    CUDA_AC(d_eigts1, eigts1, EIGTS1_DIM1 * EIGTS1_DIM2, Complex_DP);
+    CUDA_AC(d_eigts2, eigts2, EIGTS2_DIM1 * EIGTS2_DIM2, Complex_DP);
+    CUDA_AC(d_eigts3, eigts3, EIGTS2_DIM1 * EIGTS2_DIM2, Complex_DP);
+    CUDA_AC(d_qgm_T, qgm_T, QGM_ROWS * QGM_COLS, Complex_DP);
+    CUDA_AC(d_eigts1_T, eigts1_T, EIGTS1_DIM1 * EIGTS1_DIM2, Complex_DP);
+    CUDA_AC(d_eigts2_T, eigts2_T, EIGTS2_DIM1 * EIGTS2_DIM2, Complex_DP);
+    CUDA_AC(d_eigts3_T, eigts3_T, EIGTS2_DIM1 * EIGTS2_DIM2, Complex_DP);
+    CUDA_AC(d_xkq, xkq, 3, DP);
+    CUDA_AC(d_xk, xk, 3, DP);
+    CUDA_AC(d_tau, tau, 3 * NAT_MAX, DP);
+    CUDA_AC(d_upf_tvanp, upf_tvanp, NTYP_MAX, int);
+    CUDA_AC(d_nij_type, nij_type, NTYP_MAX, int);
+    CUDA_AC(d_ityp, ityp, NAT_MAX, int);
+    CUDA_AC(d_ofsbeta, ofsbeta, NAT_MAX, int);
+    CUDA_AC(d_nh, nh, NTYP_MAX, int);
+    CUDA_AC(d_ijtoh, ijtoh, IJTOH_N1 * IJTOH_N2 * IJTOH_N3, int);
+    CUDA_AC(d_mill, mill, MILL_DIM1 * MILL_DIM2, int);
+    CUDA_AC(d_dfftt__nl, dfftt__nl, NL_SIZE, int);
+    CUDA_AC(d_dfftt__nl_sorted, dfftt__nl_sorted, NL_SIZE, int);
+    CUDA_AC(d_dfftt__nl_ix, dfftt__nl_ix, NL_SIZE, int);
+    // Scratch
+    cudaMalloc(&da.d_eigqts, nat * sizeof(Complex_DP));
+    return da;
+}
+
+static void free_device_arrays(DeviceArrays& da) {
+    cudaFree(da.d_rhoc); cudaFree(da.d_becphi_c); cudaFree(da.d_becpsi_c);
+    cudaFree(da.d_qgm); cudaFree(da.d_eigts1); cudaFree(da.d_eigts2); cudaFree(da.d_eigts3);
+    cudaFree(da.d_qgm_T); cudaFree(da.d_eigts1_T); cudaFree(da.d_eigts2_T); cudaFree(da.d_eigts3_T);
+    cudaFree(da.d_xkq); cudaFree(da.d_xk); cudaFree(da.d_tau);
+    cudaFree(da.d_upf_tvanp); cudaFree(da.d_nij_type); cudaFree(da.d_ityp);
+    cudaFree(da.d_ofsbeta); cudaFree(da.d_nh); cudaFree(da.d_ijtoh);
+    cudaFree(da.d_mill); cudaFree(da.d_dfftt__nl);
+    cudaFree(da.d_dfftt__nl_sorted); cudaFree(da.d_dfftt__nl_ix);
+    cudaFree(da.d_eigqts);
+}
+
+static void reset_rhoc_device(DeviceArrays& da) {
+    cudaMemcpy(da.d_rhoc, rhoc, RHOC_SIZE * sizeof(Complex_DP), cudaMemcpyHostToDevice);
+}
+
+// ============================================================
+// Device arrays — SoA (includes scratch buffers)
+// ============================================================
+struct DeviceArraysSoA {
+    double *d_rhoc_re, *d_rhoc_im;
+    double *d_becphi_re, *d_becphi_im, *d_becpsi_re, *d_becpsi_im;
+    double *d_qgm_re, *d_qgm_im, *d_eigts1_re, *d_eigts1_im;
+    double *d_eigts2_re, *d_eigts2_im, *d_eigts3_re, *d_eigts3_im;
+    double *d_qgm_T_re, *d_qgm_T_im, *d_eigts1_T_re, *d_eigts1_T_im;
+    double *d_eigts2_T_re, *d_eigts2_T_im, *d_eigts3_T_re, *d_eigts3_T_im;
+    DP *d_xkq, *d_xk, *d_tau;
+    int *d_upf_tvanp, *d_nij_type, *d_ityp, *d_ofsbeta, *d_nh;
+    int *d_ijtoh, *d_mill, *d_dfftt__nl;
+    int *d_dfftt__nl_sorted, *d_dfftt__nl_ix;
+    // Scratch buffers (pre-allocated)
+    double *d_eigqts_re, *d_eigqts_im;    // size: nat each
+};
+
+static void alloc_soa_pair(double*& d_re, double*& d_im, const Complex_DP* h_aos, int n) {
+    double* h_re = new double[n]; double* h_im = new double[n];
+    aos_to_soa(h_aos, h_re, h_im, n);
+    cudaMalloc(&d_re, n * sizeof(double)); cudaMalloc(&d_im, n * sizeof(double));
+    cudaMemcpy(d_re, h_re, n * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_im, h_im, n * sizeof(double), cudaMemcpyHostToDevice);
+    delete[] h_re; delete[] h_im;
+}
+
+#define SOA_INT_AC(d_ptr, h_ptr, count) \
+    cudaMalloc(&ds.d_ptr, (count) * sizeof(int)); \
+    cudaMemcpy(ds.d_ptr, h_ptr, (count) * sizeof(int), cudaMemcpyHostToDevice);
+#define SOA_DP_AC(d_ptr, h_ptr, count) \
+    cudaMalloc(&ds.d_ptr, (count) * sizeof(DP)); \
+    cudaMemcpy(ds.d_ptr, h_ptr, (count) * sizeof(DP), cudaMemcpyHostToDevice);
+
+static DeviceArraysSoA allocate_device_arrays_soa() {
+    DeviceArraysSoA ds;
+    alloc_soa_pair(ds.d_rhoc_re, ds.d_rhoc_im, rhoc, RHOC_SIZE);
+    alloc_soa_pair(ds.d_becphi_re, ds.d_becphi_im, becphi_c, BECPC_SIZE);
+    alloc_soa_pair(ds.d_becpsi_re, ds.d_becpsi_im, becpsi_c, BECPC_SIZE);
+    alloc_soa_pair(ds.d_qgm_re, ds.d_qgm_im, qgm, QGM_ROWS * QGM_COLS);
+    alloc_soa_pair(ds.d_eigts1_re, ds.d_eigts1_im, eigts1, EIGTS1_DIM1 * EIGTS1_DIM2);
+    alloc_soa_pair(ds.d_eigts2_re, ds.d_eigts2_im, eigts2, EIGTS2_DIM1 * EIGTS2_DIM2);
+    alloc_soa_pair(ds.d_eigts3_re, ds.d_eigts3_im, eigts3, EIGTS2_DIM1 * EIGTS2_DIM2);
+    alloc_soa_pair(ds.d_qgm_T_re, ds.d_qgm_T_im, qgm_T, QGM_ROWS * QGM_COLS);
+    alloc_soa_pair(ds.d_eigts1_T_re, ds.d_eigts1_T_im, eigts1_T, EIGTS1_DIM1 * EIGTS1_DIM2);
+    alloc_soa_pair(ds.d_eigts2_T_re, ds.d_eigts2_T_im, eigts2_T, EIGTS2_DIM1 * EIGTS2_DIM2);
+    alloc_soa_pair(ds.d_eigts3_T_re, ds.d_eigts3_T_im, eigts3_T, EIGTS2_DIM1 * EIGTS2_DIM2);
+    SOA_DP_AC(d_xkq, xkq, 3); SOA_DP_AC(d_xk, xk, 3); SOA_DP_AC(d_tau, tau, 3 * NAT_MAX);
+    SOA_INT_AC(d_upf_tvanp, upf_tvanp, NTYP_MAX);
+    SOA_INT_AC(d_nij_type, nij_type, NTYP_MAX);
+    SOA_INT_AC(d_ityp, ityp, NAT_MAX);
+    SOA_INT_AC(d_ofsbeta, ofsbeta, NAT_MAX);
+    SOA_INT_AC(d_nh, nh, NTYP_MAX);
+    SOA_INT_AC(d_ijtoh, ijtoh, IJTOH_N1 * IJTOH_N2 * IJTOH_N3);
+    SOA_INT_AC(d_mill, mill, MILL_DIM1 * MILL_DIM2);
+    SOA_INT_AC(d_dfftt__nl, dfftt__nl, NL_SIZE);
+    SOA_INT_AC(d_dfftt__nl_sorted, dfftt__nl_sorted, NL_SIZE);
+    SOA_INT_AC(d_dfftt__nl_ix, dfftt__nl_ix, NL_SIZE);
+    // Scratch
+    cudaMalloc(&ds.d_eigqts_re, nat * sizeof(double));
+    cudaMalloc(&ds.d_eigqts_im, nat * sizeof(double));
+    return ds;
+}
+
+static void free_device_arrays_soa(DeviceArraysSoA& ds) {
+    cudaFree(ds.d_rhoc_re); cudaFree(ds.d_rhoc_im);
+    cudaFree(ds.d_becphi_re); cudaFree(ds.d_becphi_im);
+    cudaFree(ds.d_becpsi_re); cudaFree(ds.d_becpsi_im);
+    cudaFree(ds.d_qgm_re); cudaFree(ds.d_qgm_im);
+    cudaFree(ds.d_eigts1_re); cudaFree(ds.d_eigts1_im);
+    cudaFree(ds.d_eigts2_re); cudaFree(ds.d_eigts2_im);
+    cudaFree(ds.d_eigts3_re); cudaFree(ds.d_eigts3_im);
+    cudaFree(ds.d_qgm_T_re); cudaFree(ds.d_qgm_T_im);
+    cudaFree(ds.d_eigts1_T_re); cudaFree(ds.d_eigts1_T_im);
+    cudaFree(ds.d_eigts2_T_re); cudaFree(ds.d_eigts2_T_im);
+    cudaFree(ds.d_eigts3_T_re); cudaFree(ds.d_eigts3_T_im);
+    cudaFree(ds.d_xkq); cudaFree(ds.d_xk); cudaFree(ds.d_tau);
+    cudaFree(ds.d_upf_tvanp); cudaFree(ds.d_nij_type); cudaFree(ds.d_ityp);
+    cudaFree(ds.d_ofsbeta); cudaFree(ds.d_nh); cudaFree(ds.d_ijtoh);
+    cudaFree(ds.d_mill); cudaFree(ds.d_dfftt__nl);
+    cudaFree(ds.d_dfftt__nl_sorted); cudaFree(ds.d_dfftt__nl_ix);
+    cudaFree(ds.d_eigqts_re); cudaFree(ds.d_eigqts_im);
+}
+
+static void reset_rhoc_soa(DeviceArraysSoA& ds) {
+    double* h_re = new double[RHOC_SIZE]; double* h_im = new double[RHOC_SIZE];
+    aos_to_soa(rhoc, h_re, h_im, RHOC_SIZE);
+    cudaMemcpy(ds.d_rhoc_re, h_re, RHOC_SIZE * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(ds.d_rhoc_im, h_im, RHOC_SIZE * sizeof(double), cudaMemcpyHostToDevice);
+    delete[] h_re; delete[] h_im;
+}
+
+// ============================================================
+// Correctness checks
+// ============================================================
+static bool check_correctness(const Complex_DP* sim, const Complex_DP* ref, int n, const char* label) {
+    double maxdiff = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = cabs_val(csub(sim[i], ref[i]));
+        if (d > maxdiff) maxdiff = d;
+    }
+    if (maxdiff >= 1.0e-8) {
+        printf("  %s -- FAILED. Max diff: %12.4e\n", label, maxdiff);
+        return false;
+    }
+    printf("  %s -- PASSED\n", label);
+    return true;
+}
+
+static bool check_correctness_soa(DeviceArraysSoA& ds, const Complex_DP* ref, int n, const char* label) {
+    double* h_re = new double[n]; double* h_im = new double[n];
+    cudaMemcpy(h_re, ds.d_rhoc_re, n * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_im, ds.d_rhoc_im, n * sizeof(double), cudaMemcpyDeviceToHost);
+    double maxdiff = 0.0;
+    for (int i = 0; i < n; i++) {
+        double dr = h_re[i] - creal_val(ref[i]);
+        double di = h_im[i] - cimag_val(ref[i]);
+        double d = sqrt(dr * dr + di * di);
+        if (d > maxdiff) maxdiff = d;
+    }
+    delete[] h_re; delete[] h_im;
+    if (maxdiff >= 1.0e-8) {
+        printf("  %s -- FAILED. Max diff: %12.4e\n", label, maxdiff);
+        return false;
+    }
+    printf("  %s -- PASSED\n", label);
+    return true;
+}
+
+// ============================================================
+// Generic GPU profiling
+// ============================================================
+static float profile_kernel(
+    std::function<void()> reset_fn,
+    std::function<void()> kernel_fn)
 {
-    omp_set_num_threads(nthreads);
-    reset_fn(); kernel_fn();
-    if (!verify_fn()) return;
-    for (int i = 0; i < NUM_WARMUP; i++) { reset_fn(); kernel_fn(); }
-    for (int r = 0; r < NUM_ITERS; r++) {
-        reset_fn();
-        flush_caches();
-        double t0 = omp_get_wtime();
+    cudaEvent_t start_ev[TOTAL_ITERS], stop_ev[TOTAL_ITERS];
+    float ms[TOTAL_ITERS];
+    for (int i = 0; i < TOTAL_ITERS; i++) {
+        cudaEventCreate(&start_ev[i]);
+        cudaEventCreate(&stop_ev[i]);
+    }
+
+    reset_fn();
+    for (int i = 0; i < TOTAL_ITERS; i++) {
+        cudaEventRecord(start_ev[i], 0);
         kernel_fn();
-        double t1 = omp_get_wtime();
-        double ms = (t1 - t0) * 1000.0;
-        fprintf(csv, "%s,%d,%d,%d,%d,%d,%.6f\n", variant, blocksize, a.ngms, RHOC_SIZE, nthreads, r, ms);
+        cudaEventRecord(stop_ev[i], 0);
+        cudaEventSynchronize(stop_ev[i]);
     }
+
+    float total = 0.0f;
+    for (int i = NUM_WARMUP; i < TOTAL_ITERS; i++) {
+        cudaEventElapsedTime(&ms[i], start_ev[i], stop_ev[i]);
+        total += ms[i];
+    }
+
+    for (int i = 0; i < TOTAL_ITERS; i++) {
+        cudaEventDestroy(start_ev[i]);
+        cudaEventDestroy(stop_ev[i]);
+    }
+    return total / NUM_ITERS;
 }
 
 // ============================================================
-// Template dispatch: run all 6 kernels for a given BLOCKSIZE
+// CPU baseline
 // ============================================================
-template<int BS>
-static void run_all_for_blocksize(FILE* csv, NUMAArrays& a, int nt) {
-    char label[64];
+static void profile_cpu_original() {
+    printf("\n=== (1) CPU baseline ===\n");
+    memcpy(rhoc_out_sim, rhoc, RHOC_SIZE * sizeof(Complex_DP));
+    addusxx_g_cpu(rhoc_out_sim, xkq, xk, tau, becphi_c, becpsi_c,
+                  nkb, ngms, nat, ntyp, upf_tvanp, nij_type,
+                  ityp, ofsbeta, nh, ijtoh, qgm, eigts1, eigts2, eigts3,
+                  mill, dfftt__nl);
+    check_correctness(rhoc_out_sim, rhoc_out, RHOC_SIZE, "CPU");
 
-    snprintf(label, sizeof(label), "baseline_aos");
-    profile(csv, label, BS, a,
-        [&]{ first_touch_copy(a.rhoc, a.rhoc_init, RHOC_SIZE); },
-        [&]{ cpu_addusxx_baseline_aos<BS>(a.rhoc, a.xkq, a.xk, a.tau,
-                a.becphi_c, a.becpsi_c, a.nkb, a.ngms, a.nat, a.ntyp,
-                a.upf_tvanp, a.nij_type, a.ityp, a.ofsbeta, a.nh, a.ijtoh,
-                a.qgm, a.eigts1, a.eigts2, a.eigts3, a.mill, a.dfftt__nl); },
-        [&]{ return check_aos(a.rhoc, a.rhoc_ref, RHOC_SIZE, label); },
-        nt);
-
-    snprintf(label, sizeof(label), "eigts_t_aos");
-    profile(csv, label, BS, a,
-        [&]{ first_touch_copy(a.rhoc, a.rhoc_init, RHOC_SIZE); },
-        [&]{ cpu_addusxx_eigts_transposed_aos<BS>(a.rhoc, a.xkq, a.xk, a.tau,
-                a.becphi_c, a.becpsi_c, a.nkb, a.ngms, a.nat, a.ntyp,
-                a.upf_tvanp, a.nij_type, a.ityp, a.ofsbeta, a.nh, a.ijtoh,
-                a.qgm, a.eigts1_T, a.eigts2_T, a.eigts3_T, a.mill, a.dfftt__nl); },
-        [&]{ return check_aos(a.rhoc, a.rhoc_ref, RHOC_SIZE, label); },
-        nt);
-
-    snprintf(label, sizeof(label), "sorted_aos");
-    profile(csv, label, BS, a,
-        [&]{ first_touch_copy(a.rhoc, a.rhoc_init, RHOC_SIZE); },
-        [&]{ cpu_addusxx_sorted_aos<BS>(a.rhoc, a.xkq, a.xk, a.tau,
-                a.becphi_c, a.becpsi_c, a.nkb, a.ngms, a.nat, a.ntyp,
-                a.upf_tvanp, a.nij_type, a.ityp, a.ofsbeta, a.nh, a.ijtoh,
-                a.qgm, a.eigts1_T, a.eigts2_T, a.eigts3_T, a.mill,
-                a.dfftt__nl_sorted, a.dfftt__nl_ix); },
-        [&]{ return check_aos(a.rhoc, a.rhoc_ref, RHOC_SIZE, label); },
-        nt);
-
-    snprintf(label, sizeof(label), "baseline_soa");
-    profile(csv, label, BS, a,
-        [&]{ first_touch_copy(a.rhoc_re, a.rhoc_re_init, RHOC_SIZE);
-             first_touch_copy(a.rhoc_im, a.rhoc_im_init, RHOC_SIZE); },
-        [&]{ cpu_addusxx_baseline_soa<BS>(a.rhoc_re, a.rhoc_im, a.xkq, a.xk, a.tau,
-                a.becphi_re, a.becphi_im, a.becpsi_re, a.becpsi_im,
-                a.nkb, a.ngms, a.nat, a.ntyp,
-                a.upf_tvanp, a.nij_type, a.ityp, a.ofsbeta, a.nh, a.ijtoh,
-                a.qgm_re, a.qgm_im,
-                a.eigts1_re, a.eigts1_im, a.eigts2_re, a.eigts2_im,
-                a.eigts3_re, a.eigts3_im, a.mill, a.dfftt__nl); },
-        [&]{ return check_soa(a.rhoc_re, a.rhoc_im, a.rhoc_ref, RHOC_SIZE, label); },
-        nt);
-
-    snprintf(label, sizeof(label), "eigts_t_soa");
-    profile(csv, label, BS, a,
-        [&]{ first_touch_copy(a.rhoc_re, a.rhoc_re_init, RHOC_SIZE);
-             first_touch_copy(a.rhoc_im, a.rhoc_im_init, RHOC_SIZE); },
-        [&]{ cpu_addusxx_eigts_transposed_soa<BS>(a.rhoc_re, a.rhoc_im, a.xkq, a.xk, a.tau,
-                a.becphi_re, a.becphi_im, a.becpsi_re, a.becpsi_im,
-                a.nkb, a.ngms, a.nat, a.ntyp,
-                a.upf_tvanp, a.nij_type, a.ityp, a.ofsbeta, a.nh, a.ijtoh,
-                a.qgm_re, a.qgm_im,
-                a.eigts1_T_re, a.eigts1_T_im, a.eigts2_T_re, a.eigts2_T_im,
-                a.eigts3_T_re, a.eigts3_T_im, a.mill, a.dfftt__nl); },
-        [&]{ return check_soa(a.rhoc_re, a.rhoc_im, a.rhoc_ref, RHOC_SIZE, label); },
-        nt);
-
-    snprintf(label, sizeof(label), "sorted_soa");
-    profile(csv, label, BS, a,
-        [&]{ first_touch_copy(a.rhoc_re, a.rhoc_re_init, RHOC_SIZE);
-             first_touch_copy(a.rhoc_im, a.rhoc_im_init, RHOC_SIZE); },
-        [&]{ cpu_addusxx_sorted_soa<BS>(a.rhoc_re, a.rhoc_im, a.xkq, a.xk, a.tau,
-                a.becphi_re, a.becphi_im, a.becpsi_re, a.becpsi_im,
-                a.nkb, a.ngms, a.nat, a.ntyp,
-                a.upf_tvanp, a.nij_type, a.ityp, a.ofsbeta, a.nh, a.ijtoh,
-                a.qgm_re, a.qgm_im,
-                a.eigts1_T_re, a.eigts1_T_im, a.eigts2_T_re, a.eigts2_T_im,
-                a.eigts3_T_re, a.eigts3_T_im, a.mill,
-                a.dfftt__nl_sorted, a.dfftt__nl_ix); },
-        [&]{ return check_soa(a.rhoc_re, a.rhoc_im, a.rhoc_ref, RHOC_SIZE, label); },
-        nt);
-
-    fflush(csv);
+    auto reset = [&]() { memcpy(rhoc_out_sim, rhoc, RHOC_SIZE * sizeof(Complex_DP)); };
+    auto kernel = [&]() {
+        addusxx_g_cpu(rhoc_out_sim, xkq, xk, tau, becphi_c, becpsi_c,
+                      nkb, ngms, nat, ntyp, upf_tvanp, nij_type,
+                      ityp, ofsbeta, nh, ijtoh, qgm, eigts1, eigts2, eigts3,
+                      mill, dfftt__nl);
+    };
+    float avg = profile_kernel(reset, kernel);
+    printf("  time: %13.6f ms\n", avg);
 }
 
 // ============================================================
-// Compile-time iteration over powers of 2
+// GPU sweep — all 4 variants x tblock_sizes x coarsen_factors
 // ============================================================
-template<int BS>
-struct BlockSweep {
-    static void run(FILE* csv, NUMAArrays& a, int nt) {
-        BlockSweep<BS / 2>::run(csv, a, nt);   // recurse smaller first
-        printf("\n--- blocksize=%d ---\n", BS);
-        run_all_for_blocksize<BS>(csv, a, nt);
-    }
-};
+static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
+    printf("\n=== GPU SWEEP: variant x tblock_size x coarsen ===\n");
+    printf("%-30s %8s %8s %13s %8s\n", "variant", "tblock", "coarsen", "time_ms", "correct");
+    printf("----------------------------------------------------------------------\n");
 
-template<>
-struct BlockSweep<1> {
-    static void run(FILE* csv, NUMAArrays& a, int nt) {
-        printf("\n--- blocksize=1 ---\n");
-        run_all_for_blocksize<1>(csv, a, nt);
-    }
-};
+    FILE* csv = fopen("addusxx_gpu_sweep.csv", "w");
+    fprintf(csv, "variant,tblock,coarsen,time_ms,correct\n");
 
-// ============================================================
-// Main
-// ============================================================
-int main() {
-    init_flush();
-    NUMAArrays a = load_and_place();
+    for (int ti = 0; ti < N_TBLOCK; ti++) {
+        int tbs = TBLOCK_SIZES[ti];
+        for (int ci = 0; ci < N_COARSEN; ci++) {
+            int cf = COARSEN_FACTORS[ci];
 
-    int max_threads = omp_get_max_threads();
-    std::vector<int> thread_counts;
-    if (max_threads >= 96) thread_counts = {96};
-    else if (max_threads >= 72) thread_counts = {288};
-    else thread_counts = {std::max(1,max_threads/2), max_threads};
+            // ---- (2) GPU baseline AoS ----
+            {
+                reset_rhoc_device(da);
+                addusxx_g_gpu(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                    da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                    da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                    da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1, da.d_eigts2,
+                    da.d_eigts3, da.d_mill, da.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    da.d_eigqts);
+                cudaMemcpy(rhoc_out_sim, da.d_rhoc, RHOC_SIZE * sizeof(Complex_DP), cudaMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++)
+                    if (cabs_val(csub(rhoc_out_sim[i], rhoc_out[i])) >= 1.0e-8) ok = false;
 
-    printf("Threads: "); for (int t : thread_counts) printf("%d ",t); printf("\n");
+                auto reset = [&]() { reset_rhoc_device(da); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                        da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                        da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                        da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1, da.d_eigts2,
+                        da.d_eigts3, da.d_mill, da.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        da.d_eigqts);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_baseline_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_baseline_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
 
-    FILE* csv = fopen("addusxx_cpu_sweep.csv", "w");
-    fprintf(csv, "variant,blocksize,ngms,rhoc_size,nthreads,rep,time_ms\n");
+            // ---- (2b) GPU eigts-transposed AoS ----
+            {
+                reset_rhoc_device(da);
+                addusxx_g_gpu_eigts_transposed(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                    da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                    da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                    da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1_T,
+                    da.d_eigts2_T, da.d_eigts3_T, da.d_mill, da.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    da.d_eigqts);
+                cudaMemcpy(rhoc_out_sim, da.d_rhoc, RHOC_SIZE * sizeof(Complex_DP), cudaMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++)
+                    if (cabs_val(csub(rhoc_out_sim[i], rhoc_out[i])) >= 1.0e-8) ok = false;
 
-    for (int nt : thread_counts) {
-        printf("\n=== nthreads=%d ===\n", nt);
-        BlockSweep<256>::run(csv, a, nt);
+                auto reset = [&]() { reset_rhoc_device(da); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_eigts_transposed(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                        da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                        da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                        da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1_T,
+                        da.d_eigts2_T, da.d_eigts3_T, da.d_mill, da.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        da.d_eigqts);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_eigts_t_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_eigts_t_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
+            // ---- (2c) GPU shared-bec AoS ----
+            {
+                reset_rhoc_device(da);
+                addusxx_g_gpu_shared_bec(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                    da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                    da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                    da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1_T,
+                    da.d_eigts2_T, da.d_eigts3_T, da.d_mill, da.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    da.d_eigqts);
+                cudaMemcpy(rhoc_out_sim, da.d_rhoc, RHOC_SIZE * sizeof(Complex_DP), cudaMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++)
+                    if (cabs_val(csub(rhoc_out_sim[i], rhoc_out[i])) >= 1.0e-8) ok = false;
+
+                auto reset = [&]() { reset_rhoc_device(da); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_shared_bec(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                        da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                        da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                        da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1_T,
+                        da.d_eigts2_T, da.d_eigts3_T, da.d_mill, da.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        da.d_eigqts);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_shared_bec_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_shared_bec_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
+            // ---- (3) GPU optimized AoS ----
+            {
+                reset_rhoc_device(da);
+                addusxx_g_gpu_optimized(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                    da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                    da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                    da.d_nh, da.d_ijtoh, da.d_qgm_T, da.d_eigts1_T,
+                    da.d_eigts2_T, da.d_eigts3_T, da.d_mill,
+                    da.d_dfftt__nl_sorted, da.d_dfftt__nl_ix,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    da.d_eigqts);
+                cudaMemcpy(rhoc_out_sim, da.d_rhoc, RHOC_SIZE * sizeof(Complex_DP), cudaMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++)
+                    if (cabs_val(csub(rhoc_out_sim[i], rhoc_out[i])) >= 1.0e-8) ok = false;
+
+                auto reset = [&]() { reset_rhoc_device(da); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_optimized(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                        da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                        da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                        da.d_nh, da.d_ijtoh, da.d_qgm_T, da.d_eigts1_T,
+                        da.d_eigts2_T, da.d_eigts3_T, da.d_mill,
+                        da.d_dfftt__nl_sorted, da.d_dfftt__nl_ix,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        da.d_eigqts);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_optimized_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_optimized_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
+            // ---- (4) GPU baseline SoA ----
+            {
+                reset_rhoc_soa(ds);
+                addusxx_g_gpu_soa(
+                    ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                    ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                    nkb, ngms, nat, ntyp,
+                    ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                    ds.d_nh, ds.d_ijtoh,
+                    ds.d_qgm_re, ds.d_qgm_im,
+                    ds.d_eigts1_re, ds.d_eigts1_im,
+                    ds.d_eigts2_re, ds.d_eigts2_im,
+                    ds.d_eigts3_re, ds.d_eigts3_im,
+                    ds.d_mill, ds.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    ds.d_eigqts_re, ds.d_eigqts_im);
+                double* h_re = new double[RHOC_SIZE]; double* h_im = new double[RHOC_SIZE];
+                cudaMemcpy(h_re, ds.d_rhoc_re, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+                cudaMemcpy(h_im, ds.d_rhoc_im, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++) {
+                    double dr = h_re[i] - creal_val(rhoc_out[i]);
+                    double di = h_im[i] - cimag_val(rhoc_out[i]);
+                    if (sqrt(dr*dr + di*di) >= 1.0e-8) ok = false;
+                }
+                delete[] h_re; delete[] h_im;
+
+                auto reset = [&]() { reset_rhoc_soa(ds); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_soa(
+                        ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                        ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                        nkb, ngms, nat, ntyp,
+                        ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                        ds.d_nh, ds.d_ijtoh,
+                        ds.d_qgm_re, ds.d_qgm_im,
+                        ds.d_eigts1_re, ds.d_eigts1_im,
+                        ds.d_eigts2_re, ds.d_eigts2_im,
+                        ds.d_eigts3_re, ds.d_eigts3_im,
+                        ds.d_mill, ds.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        ds.d_eigqts_re, ds.d_eigqts_im);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_baseline_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_baseline_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
+            // ---- (4b) GPU eigts-transposed SoA ----
+            {
+                reset_rhoc_soa(ds);
+                addusxx_g_gpu_eigts_transposed_soa(
+                    ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                    ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                    nkb, ngms, nat, ntyp,
+                    ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                    ds.d_nh, ds.d_ijtoh,
+                    ds.d_qgm_re, ds.d_qgm_im,
+                    ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                    ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                    ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                    ds.d_mill, ds.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    ds.d_eigqts_re, ds.d_eigqts_im);
+                double* h_re = new double[RHOC_SIZE]; double* h_im = new double[RHOC_SIZE];
+                cudaMemcpy(h_re, ds.d_rhoc_re, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+                cudaMemcpy(h_im, ds.d_rhoc_im, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++) {
+                    double dr = h_re[i] - creal_val(rhoc_out[i]);
+                    double di = h_im[i] - cimag_val(rhoc_out[i]);
+                    if (sqrt(dr*dr + di*di) >= 1.0e-8) ok = false;
+                }
+                delete[] h_re; delete[] h_im;
+
+                auto reset = [&]() { reset_rhoc_soa(ds); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_eigts_transposed_soa(
+                        ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                        ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                        nkb, ngms, nat, ntyp,
+                        ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                        ds.d_nh, ds.d_ijtoh,
+                        ds.d_qgm_re, ds.d_qgm_im,
+                        ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                        ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                        ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                        ds.d_mill, ds.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        ds.d_eigqts_re, ds.d_eigqts_im);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_eigts_t_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_eigts_t_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
+            // ---- (4c) GPU shared-bec SoA ----
+            {
+                reset_rhoc_soa(ds);
+                addusxx_g_gpu_shared_bec_soa(
+                    ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                    ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                    nkb, ngms, nat, ntyp,
+                    ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                    ds.d_nh, ds.d_ijtoh,
+                    ds.d_qgm_re, ds.d_qgm_im,
+                    ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                    ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                    ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                    ds.d_mill, ds.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    ds.d_eigqts_re, ds.d_eigqts_im);
+                double* h_re = new double[RHOC_SIZE]; double* h_im = new double[RHOC_SIZE];
+                cudaMemcpy(h_re, ds.d_rhoc_re, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+                cudaMemcpy(h_im, ds.d_rhoc_im, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++) {
+                    double dr = h_re[i] - creal_val(rhoc_out[i]);
+                    double di = h_im[i] - cimag_val(rhoc_out[i]);
+                    if (sqrt(dr*dr + di*di) >= 1.0e-8) ok = false;
+                }
+                delete[] h_re; delete[] h_im;
+
+                auto reset = [&]() { reset_rhoc_soa(ds); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_shared_bec_soa(
+                        ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                        ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                        nkb, ngms, nat, ntyp,
+                        ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                        ds.d_nh, ds.d_ijtoh,
+                        ds.d_qgm_re, ds.d_qgm_im,
+                        ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                        ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                        ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                        ds.d_mill, ds.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        ds.d_eigqts_re, ds.d_eigqts_im);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_shared_bec_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_shared_bec_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
+            // ---- (5) GPU optimized SoA ----
+            {
+                reset_rhoc_soa(ds);
+                addusxx_g_gpu_optimized_soa(
+                    ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                    ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                    nkb, ngms, nat, ntyp,
+                    ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                    ds.d_nh, ds.d_ijtoh,
+                    ds.d_qgm_T_re, ds.d_qgm_T_im,
+                    ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                    ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                    ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                    ds.d_mill, ds.d_dfftt__nl_sorted, ds.d_dfftt__nl_ix,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    ds.d_eigqts_re, ds.d_eigqts_im);
+                double* h_re = new double[RHOC_SIZE]; double* h_im = new double[RHOC_SIZE];
+                cudaMemcpy(h_re, ds.d_rhoc_re, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+                cudaMemcpy(h_im, ds.d_rhoc_im, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++) {
+                    double dr = h_re[i] - creal_val(rhoc_out[i]);
+                    double di = h_im[i] - cimag_val(rhoc_out[i]);
+                    if (sqrt(dr*dr + di*di) >= 1.0e-8) ok = false;
+                }
+                delete[] h_re; delete[] h_im;
+
+                auto reset = [&]() { reset_rhoc_soa(ds); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_optimized_soa(
+                        ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                        ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                        nkb, ngms, nat, ntyp,
+                        ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                        ds.d_nh, ds.d_ijtoh,
+                        ds.d_qgm_T_re, ds.d_qgm_T_im,
+                        ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                        ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                        ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                        ds.d_mill, ds.d_dfftt__nl_sorted, ds.d_dfftt__nl_ix,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        ds.d_eigqts_re, ds.d_eigqts_im);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_optimized_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_optimized_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+        }
     }
 
     fclose(csv);
-    printf("\nDone. CSV: addusxx_cpu_sweep.csv\n");
+    printf("\nCSV: addusxx_gpu_sweep.csv\n");
+}
+
+int main() {
+    init_addusxx_data();
+
+    DeviceArrays da = allocate_device_arrays();
+    DeviceArraysSoA ds = allocate_device_arrays_soa();
+
+    profile_cpu_original();
+    sweep_gpu(da, ds);
+
+    free_device_arrays(da);
+    free_device_arrays_soa(ds);
     return 0;
 }

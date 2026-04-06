@@ -379,6 +379,9 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
     printf("%-30s %8s %8s %13s %8s\n", "variant", "tblock", "coarsen", "time_ms", "correct");
     printf("----------------------------------------------------------------------\n");
 
+    FILE* csv = fopen("addusxx_gpu_sweep.csv", "w");
+    fprintf(csv, "variant,tblock,coarsen,time_ms,correct\n");
+
     for (int ti = 0; ti < N_TBLOCK; ti++) {
         int tbs = TBLOCK_SIZES[ti];
         for (int ci = 0; ci < N_COARSEN; ci++) {
@@ -411,6 +414,7 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_baseline_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_baseline_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
 
             // ---- (2b) GPU eigts-transposed AoS ----
@@ -440,6 +444,7 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_eigts_t_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_eigts_t_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
 
             // ---- (2c) GPU shared-bec AoS ----
@@ -469,6 +474,7 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_shared_bec_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_shared_bec_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
 
             // ---- (3) GPU optimized AoS ----
@@ -500,6 +506,7 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_optimized_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_optimized_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
 
             // ---- (4) GPU baseline SoA ----
@@ -547,6 +554,7 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_baseline_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_baseline_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
 
             // ---- (4b) GPU eigts-transposed SoA ----
@@ -594,6 +602,7 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_eigts_t_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_eigts_t_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
 
             // ---- (4c) GPU shared-bec SoA ----
@@ -641,6 +650,7 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_shared_bec_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_shared_bec_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
 
             // ---- (5) GPU optimized SoA ----
@@ -688,9 +698,13 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_optimized_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+                fprintf(csv, "%s,%d,%d,%.6f,%s\n", "gpu_optimized_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
         }
     }
+
+    fclose(csv);
+    printf("\nCSV: addusxx_gpu_sweep.csv\n");
 }
 
 int main() {
