@@ -2,10 +2,6 @@
 #include "usxx_kernels_cpu.h"
 #include <omp.h>
 
-static constexpr int QGM_NROWS  = 55191;
-static constexpr int IJTOH_N1   = 19;
-static constexpr int IJTOH_N2   = 19;
-
 // ============================================================
 // Shared: compute eigqts
 // ============================================================
