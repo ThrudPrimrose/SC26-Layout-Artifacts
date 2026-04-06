@@ -158,7 +158,8 @@ def paint_subplot(ax, df, platform_label, is_gpu):
     nice_top = np.ceil(global_max * 1.25 * 4) / 4  # round up to nearest 0.25
     ax.set_ylim(bottom=0, top=nice_top)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=5))
-    ax.minorticks_on()
+    from matplotlib.ticker import AutoMinorLocator
+    ax.yaxis.set_minor_locator(AutoMinorLocator(2))  # 2 subdivisions = 1 minor tick
     ax.grid(axis="y", which="major", alpha=0.3, linewidth=0.8)
     ax.grid(axis="y", which="minor", alpha=0.15, linewidth=0.4)
     ax.tick_params(axis="x", which="minor", bottom=False)
@@ -219,10 +220,10 @@ def main():
     nrows = len(GRID)
     ncols = 2
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(3.4 * 1.6, 2.8 * 1.6),
+                             figsize=(3.4 * 1.55, 2.8 * 1.55),
                              squeeze=False)
 
-    fig.suptitle("`addusxx` Function — Original vs Transformed Layout",
+    fig.suptitle("`addusxx_g` Function — Original vs Transformed Layout",
                  fontsize=11, y=0.91)
 
     for ri, row in enumerate(GRID):
@@ -245,7 +246,7 @@ def main():
                bbox_to_anchor=(0.5, -0.00), ncol=2,
                framealpha=0.9, columnspacing=1.5, fontsize=8)
 
-    fig.tight_layout(rect=[0, 0.05, 1, 0.96])
+    fig.tight_layout(rect=[0, 0.05, 1, 0.96], h_pad=0.4, w_pad=0.2)
     fig.savefig("addusxx_sweep.png", dpi=180, bbox_inches="tight")
     fig.savefig("addusxx_sweep.pdf", dpi=180, bbox_inches="tight")
     plt.close(fig)
