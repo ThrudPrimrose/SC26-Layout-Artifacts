@@ -33,8 +33,7 @@ __global__ void kernel_eigqts_soa(
 }
 
 // ============================================================
-// Helper: SoA structure factor multiply (4 muls chained)
-// sf = eigqts * eigts1 * eigts2 * eigts3, all in SoA
+// Helper: SoA structure factor multiply
 // ============================================================
 __device__ inline void compute_sf_soa(
     double& sr, double& si,
@@ -47,15 +46,12 @@ __device__ inline void compute_sf_soa(
 {
     sr = eigqts_re[na]; si = eigqts_im[na];
     double tr, ti;
-    // *= eigts1
     tr = sr; ti = si;
     sr = SOA_MUL_RE(tr, ti, e1_re[e1_idx], e1_im[e1_idx]);
     si = SOA_MUL_IM(tr, ti, e1_re[e1_idx], e1_im[e1_idx]);
-    // *= eigts2
     tr = sr; ti = si;
     sr = SOA_MUL_RE(tr, ti, e2_re[e2_idx], e2_im[e2_idx]);
     si = SOA_MUL_IM(tr, ti, e2_re[e2_idx], e2_im[e2_idx]);
-    // *= eigts3
     tr = sr; ti = si;
     sr = SOA_MUL_RE(tr, ti, e3_re[e3_idx], e3_im[e3_idx]);
     si = SOA_MUL_IM(tr, ti, e3_re[e3_idx], e3_im[e3_idx]);
@@ -102,11 +98,11 @@ __global__ void kernel_addusxx_baseline_soa(
                     int ijtoh_val = ijtoh[IDX3(ih, jh, (nt_1based - 1), IJTOH_N1, IJTOH_N2)];
                     int idx = (nij + ijtoh_val - 1) * QGM_NROWS + gi;
                     double qr = qgm_re[idx], qi = qgm_im[idx];
-                    double br = becpsi_re[ijkb0 + jh - 1], bi = becpsi_im[ijkb0 + jh - 1];
+                    double br = becpsi_re[ijkb0 + jh], bi = becpsi_im[ijkb0 + jh];
                     a1r += SOA_MUL_RE(qr, qi, br, bi);
                     a1i += SOA_MUL_IM(qr, qi, br, bi);
                 }
-                double pr = becphi_re[ijkb0 + ih - 1], pi = becphi_im[ijkb0 + ih - 1];
+                double pr = becphi_re[ijkb0 + ih], pi = becphi_im[ijkb0 + ih];
                 a2r += SOA_MULCONJ_RE(a1r, a1i, pr, pi);
                 a2i += SOA_MULCONJ_IM(a1r, a1i, pr, pi);
             }
@@ -215,11 +211,11 @@ __global__ void kernel_addusxx_opt_soa_compute(
                     int ijtoh_val = ijtoh[IDX3(ih, jh, (nt_1based - 1), IJTOH_N1, IJTOH_N2)];
                     int idx = gi * QGMT_NROWS + (nij + ijtoh_val - 1);
                     double qr = qgm_T_re[idx], qi = qgm_T_im[idx];
-                    double br = becpsi_re[ijkb0 + jh - 1], bi = becpsi_im[ijkb0 + jh - 1];
+                    double br = becpsi_re[ijkb0 + jh], bi = becpsi_im[ijkb0 + jh];
                     a1r += SOA_MUL_RE(qr, qi, br, bi);
                     a1i += SOA_MUL_IM(qr, qi, br, bi);
                 }
-                double pr = becphi_re[ijkb0 + ih - 1], pi = becphi_im[ijkb0 + ih - 1];
+                double pr = becphi_re[ijkb0 + ih], pi = becphi_im[ijkb0 + ih];
                 a2r += SOA_MULCONJ_RE(a1r, a1i, pr, pi);
                 a2i += SOA_MULCONJ_IM(a1r, a1i, pr, pi);
             }

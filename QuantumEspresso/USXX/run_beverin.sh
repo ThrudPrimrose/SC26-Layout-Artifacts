@@ -51,7 +51,7 @@ hipcc -O3 -std=c++17 \
     -mllvm -amdgpu-function-calls=false \
     -fgpu-flush-denormals-to-zero \
     -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
-    -fopenmp -fgpu-rdc \
+    -fgpu-rdc \
     -o addusxx_gpu_beverin \
     main_hip.cpp usxx_kernels_hip.cpp usxx_kernels_soa_hip.cpp
 

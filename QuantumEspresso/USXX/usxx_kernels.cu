@@ -4,7 +4,7 @@
 #include <cstring>
 
 // ============================================================
-// CPU baseline (unchanged)
+// CPU baseline
 // ============================================================
 void addusxx_g_cpu(
     Complex_DP* rhoc, const DP* xkq, const DP* xk, const DP* tau,
@@ -49,16 +49,15 @@ void addusxx_g_cpu(
 
                     for (int s = 0; s < rbs; s++) aux2[s] = make_cmplx(0.0, 0.0);
                     for (int ih = 0; ih < nh_nt; ih++) {
-                        int ikb = ijkb0 + ih;
                         for (int s = 0; s < rbs; s++) aux1[s] = make_cmplx(0.0, 0.0);
                         for (int jh = 0; jh < nh_nt; jh++) {
                             int ijtoh_val = ijtoh[IDX3(ih, jh, nt, ijtoh_n1, ijtoh_n2)];
                             int qgm_col = nij + ijtoh_val - 1;
-                            Complex_DP bpsi = becpsi_c[ijkb0 + jh - 1];
+                            Complex_DP bpsi = becpsi_c[ijkb0 + jh];
                             for (int s = 0; s < rbs; s++)
                                 aux1[s] = cadd(aux1[s], cmul(qgm[qgm_col * qgm_nrows + offset + s], bpsi));
                         }
-                        Complex_DP cbphi = cconj(becphi_c[ikb - 1]);
+                        Complex_DP cbphi = cconj(becphi_c[ijkb0 + ih]);
                         for (int s = 0; s < rbs; s++)
                             aux2[s] = cadd(aux2[s], cmul(aux1[s], cbphi));
                     }
@@ -99,7 +98,6 @@ __global__ void kernel_eigqts(Complex_DP* eigqts, const DP* xkq, const DP* xk,
 
 // ============================================================
 // GPU baseline AoS — coarsened, no atomics
-// dfftt__nl is injective => each g-vector writes to a unique rhoc slot
 // ============================================================
 __global__ void kernel_addusxx_baseline(
     Complex_DP* __restrict__ rhoc,
@@ -127,7 +125,6 @@ __global__ void kernel_addusxx_baseline(
         int gi = g_start + c;
         if (gi >= ngms) return;
 
-        // Accumulate contributions from all matching atoms
         Complex_DP accum = make_cmplx(0.0, 0.0);
 
         for (int na = 0; na < nat; na++) {
@@ -142,10 +139,10 @@ __global__ void kernel_addusxx_baseline(
                     int ijtoh_val = ijtoh[IDX3(ih, jh, (nt_1based - 1), ijtoh_n1, ijtoh_n2)];
                     aux1_val = cadd(aux1_val,
                         cmul(qgm[(nij + ijtoh_val - 1) * qgm_nrows + gi],
-                             becpsi_c[ijkb0 + jh - 1]));
+                             becpsi_c[ijkb0 + jh]));
                 }
                 aux2_val = cadd(aux2_val,
-                    cmul(aux1_val, cconj(becphi_c[ijkb0 + ih - 1])));
+                    cmul(aux1_val, cconj(becphi_c[ijkb0 + ih])));
             }
 
             int m1 = mill[gi * 3 + 0], m2 = mill[gi * 3 + 1], m3 = mill[gi * 3 + 2];
@@ -234,10 +231,10 @@ __global__ void kernel_addusxx_optimized_compute(
                     int ijtoh_val = ijtoh[IDX3(ih, jh, (nt_1based - 1), ijtoh_n1, ijtoh_n2)];
                     aux1_val = cadd(aux1_val,
                         cmul(qgm_T[gi * qgmT_nrows + (nij + ijtoh_val - 1)],
-                             becpsi_c[ijkb0 + jh - 1]));
+                             becpsi_c[ijkb0 + jh]));
                 }
                 aux2_val = cadd(aux2_val,
-                    cmul(aux1_val, cconj(becphi_c[ijkb0 + ih - 1])));
+                    cmul(aux1_val, cconj(becphi_c[ijkb0 + ih])));
             }
 
             int m1 = mill[gi * 3 + 0], m2 = mill[gi * 3 + 1], m3 = mill[gi * 3 + 2];
@@ -250,7 +247,7 @@ __global__ void kernel_addusxx_optimized_compute(
     }
 }
 
-// Scatter — no atomics (dfftt__nl_sorted injective)
+// Scatter — no atomics
 __global__ void kernel_addusxx_optimized_scatter(
     Complex_DP* __restrict__ rhoc,
     const Complex_DP* __restrict__ aux2_array,
