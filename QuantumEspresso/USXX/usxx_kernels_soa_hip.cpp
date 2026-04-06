@@ -3,9 +3,6 @@
 #include <cstdio>
 #include <cmath>
 
-// ============================================================
-// SoA complex arithmetic
-// ============================================================
 #define SOA_MUL_RE(ar, ai, br, bi) ((ar)*(br) - (ai)*(bi))
 #define SOA_MUL_IM(ar, ai, br, bi) ((ar)*(bi) + (ai)*(br))
 #define SOA_MULCONJ_RE(ar, ai, br, bi) ((ar)*(br) + (ai)*(bi))
@@ -16,9 +13,6 @@ static constexpr int QGMT_NROWS = 397;
 static constexpr int IJTOH_N1   = 19;
 static constexpr int IJTOH_N2   = 19;
 
-// ============================================================
-// eigqts SoA kernel
-// ============================================================
 __global__ void kernel_eigqts_soa(
     double* eigqts_re, double* eigqts_im,
     const double* xkq, const double* xk, const double* tau, int nat)
@@ -32,12 +26,8 @@ __global__ void kernel_eigqts_soa(
     eigqts_im[na] = -sin(arg);
 }
 
-// ============================================================
-// Helper: SoA structure factor multiply
-// ============================================================
 __device__ inline void compute_sf_soa(
-    double& sr, double& si,
-    int na, int m1, int m2, int m3,
+    double& sr, double& si, int na,
     const double* eigqts_re, const double* eigqts_im,
     const double* e1_re, const double* e1_im,
     const double* e2_re, const double* e2_im,
@@ -58,7 +48,7 @@ __device__ inline void compute_sf_soa(
 }
 
 // ============================================================
-// GPU baseline SoA — coarsened, no atomics
+// GPU baseline SoA — faithful to Fortran: writes per atom
 // ============================================================
 __global__ void kernel_addusxx_baseline_soa(
     double* __restrict__ rhoc_re, double* __restrict__ rhoc_im,
@@ -83,8 +73,8 @@ __global__ void kernel_addusxx_baseline_soa(
         int gi = g_start + c;
         if (gi >= ngms) return;
 
-        double acc_r = 0.0, acc_i = 0.0;
         int m1 = mill[gi * 3 + 0], m2 = mill[gi * 3 + 1], m3 = mill[gi * 3 + 2];
+        int nl_idx = dfftt__nl[gi] - 1;
 
         for (int na = 0; na < nat; na++) {
             if (ityp[na] != nt_1based) continue;
@@ -108,20 +98,20 @@ __global__ void kernel_addusxx_baseline_soa(
             }
 
             double sr, si;
-            compute_sf_soa(sr, si, na, m1, m2, m3,
+            compute_sf_soa(sr, si, na,
                            eigqts_re, eigqts_im,
                            eigts1_re, eigts1_im,
                            eigts2_re, eigts2_im,
                            eigts3_re, eigts3_im,
                            EIGTS1_IDX(m1, na), EIGTS2_IDX(m2, na), EIGTS3_IDX(m3, na));
 
-            acc_r += SOA_MUL_RE(a2r, a2i, sr, si);
-            acc_i += SOA_MUL_IM(a2r, a2i, sr, si);
-        }
+            double rr = SOA_MUL_RE(a2r, a2i, sr, si);
+            double ri = SOA_MUL_IM(a2r, a2i, sr, si);
 
-        int nl_idx = dfftt__nl[gi] - 1;
-        rhoc_re[nl_idx] += acc_r;
-        rhoc_im[nl_idx] += acc_i;
+            // Write per atom — matches Fortran
+            rhoc_re[nl_idx] += rr;
+            rhoc_im[nl_idx] += ri;
+        }
     }
 }
 
@@ -139,11 +129,9 @@ void addusxx_g_gpu_soa(
     const double* d_eigts3_re, const double* d_eigts3_im,
     const int* d_mill, const int* d_dfftt__nl,
     const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh,
-    int tblock_size, int coarsen)
+    int tblock_size, int coarsen,
+    double* d_eigqts_re, double* d_eigqts_im)
 {
-    double *d_eigqts_re, *d_eigqts_im;
-    hipMalloc(&d_eigqts_re, nat * sizeof(double));
-    hipMalloc(&d_eigqts_im, nat * sizeof(double));
     kernel_eigqts_soa<<<(nat + 255) / 256, 256>>>(
         d_eigqts_re, d_eigqts_im, d_xkq, d_xk, d_tau, nat);
 
@@ -167,15 +155,14 @@ void addusxx_g_gpu_soa(
             d_eigqts_re, d_eigqts_im,
             coarsen);
     }
-    hipFree(d_eigqts_re);
-    hipFree(d_eigqts_im);
 }
 
 // ============================================================
-// GPU optimized SoA — compute with coarsening
+// GPU optimized SoA — FUSED compute+scatter
+// Sorted iteration: sequential writes, random reads via orig_g
 // ============================================================
-__global__ void kernel_addusxx_opt_soa_compute(
-    double* __restrict__ aux2_re, double* __restrict__ aux2_im,
+__global__ void kernel_addusxx_optimized_fused_soa(
+    double* __restrict__ rhoc_re, double* __restrict__ rhoc_im,
     const double* __restrict__ becphi_re, const double* __restrict__ becphi_im,
     const double* __restrict__ becpsi_re, const double* __restrict__ becpsi_im,
     int nkb, int ngms, int nat,
@@ -187,6 +174,8 @@ __global__ void kernel_addusxx_opt_soa_compute(
     const double* __restrict__ eigts2_T_re, const double* __restrict__ eigts2_T_im,
     const double* __restrict__ eigts3_T_re, const double* __restrict__ eigts3_T_im,
     const int* __restrict__ mill,
+    const int* __restrict__ dfftt__nl_sorted,
+    const int* __restrict__ dfftt__nl_ix,
     const double* __restrict__ eigqts_re, const double* __restrict__ eigqts_im,
     int coarsen)
 {
@@ -197,7 +186,14 @@ __global__ void kernel_addusxx_opt_soa_compute(
         int gi = g_start + c;
         if (gi >= ngms) return;
 
-        int m1 = mill[gi * 3 + 0], m2 = mill[gi * 3 + 1], m3 = mill[gi * 3 + 2];
+        int nl_idx = dfftt__nl_sorted[gi] - 1;   // sequential write target
+        int orig_g = dfftt__nl_ix[gi] - 1;        // original g-vector for reads
+
+        int m1 = mill[orig_g * 3 + 0];
+        int m2 = mill[orig_g * 3 + 1];
+        int m3 = mill[orig_g * 3 + 2];
+
+        double acc_r = 0.0, acc_i = 0.0;
 
         for (int na = 0; na < nat; na++) {
             if (ityp[na] != nt_1based) continue;
@@ -209,7 +205,7 @@ __global__ void kernel_addusxx_opt_soa_compute(
                 #pragma unroll 4
                 for (int jh = 0; jh < nh_nt; jh++) {
                     int ijtoh_val = ijtoh[IDX3(ih, jh, (nt_1based - 1), IJTOH_N1, IJTOH_N2)];
-                    int idx = gi * QGMT_NROWS + (nij + ijtoh_val - 1);
+                    int idx = orig_g * QGMT_NROWS + (nij + ijtoh_val - 1);
                     double qr = qgm_T_re[idx], qi = qgm_T_im[idx];
                     double br = becpsi_re[ijkb0 + jh], bi = becpsi_im[ijkb0 + jh];
                     a1r += SOA_MUL_RE(qr, qi, br, bi);
@@ -221,47 +217,18 @@ __global__ void kernel_addusxx_opt_soa_compute(
             }
 
             double sr, si;
-            compute_sf_soa(sr, si, na, m1, m2, m3,
+            compute_sf_soa(sr, si, na,
                            eigqts_re, eigqts_im,
                            eigts1_T_re, eigts1_T_im,
                            eigts2_T_re, eigts2_T_im,
                            eigts3_T_re, eigts3_T_im,
                            EIGTS1T_IDX(na, m1), EIGTS2T_IDX(na, m2), EIGTS3T_IDX(na, m3));
 
-            int out_idx = gi * nat + na;
-            aux2_re[out_idx] = SOA_MUL_RE(a2r, a2i, sr, si);
-            aux2_im[out_idx] = SOA_MUL_IM(a2r, a2i, sr, si);
+            acc_r += SOA_MUL_RE(a2r, a2i, sr, si);
+            acc_i += SOA_MUL_IM(a2r, a2i, sr, si);
         }
-    }
-}
 
-// Scatter — no atomics
-__global__ void kernel_addusxx_opt_soa_scatter(
-    double* __restrict__ rhoc_re, double* __restrict__ rhoc_im,
-    const double* __restrict__ aux2_re, const double* __restrict__ aux2_im,
-    int ngms, int nat, int nt_1based,
-    const int* __restrict__ ityp,
-    const int* __restrict__ dfftt__nl_sorted,
-    const int* __restrict__ dfftt__nl_ix,
-    int coarsen)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int g_start = tid * coarsen;
-
-    for (int c = 0; c < coarsen; c++) {
-        int gi = g_start + c;
-        if (gi >= ngms) return;
-
-        int nl_idx = dfftt__nl_sorted[gi] - 1;
-        int ix = dfftt__nl_ix[gi] - 1;
-
-        double acc_r = 0.0, acc_i = 0.0;
-        for (int na = 0; na < nat; na++) {
-            if (ityp[na] != nt_1based) continue;
-            int src = ix * nat + na;
-            acc_r += aux2_re[src];
-            acc_i += aux2_im[src];
-        }
+        // Single sequential write
         rhoc_re[nl_idx] += acc_r;
         rhoc_im[nl_idx] += acc_i;
     }
@@ -281,16 +248,9 @@ void addusxx_g_gpu_optimized_soa(
     const double* d_eigts3_T_re, const double* d_eigts3_T_im,
     const int* d_mill, const int* d_dfftt__nl_sorted, const int* d_dfftt__nl_ix,
     const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh,
-    int tblock_size, int coarsen)
+    int tblock_size, int coarsen,
+    double* d_eigqts_re, double* d_eigqts_im)
 {
-    double *d_eigqts_re, *d_eigqts_im;
-    hipMalloc(&d_eigqts_re, nat * sizeof(double));
-    hipMalloc(&d_eigqts_im, nat * sizeof(double));
-    double *d_aux2_re, *d_aux2_im;
-    size_t aux2_bytes = (size_t)nat * ngms * sizeof(double);
-    hipMalloc(&d_aux2_re, aux2_bytes);
-    hipMalloc(&d_aux2_im, aux2_bytes);
-
     kernel_eigqts_soa<<<(nat + 255) / 256, 256>>>(
         d_eigqts_re, d_eigqts_im, d_xkq, d_xk, d_tau, nat);
 
@@ -299,11 +259,8 @@ void addusxx_g_gpu_optimized_soa(
 
     for (int nt = 0; nt < ntyp; nt++) {
         if (h_upf_tvanp[nt] != 1) continue;
-        hipMemset(d_aux2_re, 0, aux2_bytes);
-        hipMemset(d_aux2_im, 0, aux2_bytes);
-
-        kernel_addusxx_opt_soa_compute<<<blocks, tblock_size>>>(
-            d_aux2_re, d_aux2_im,
+        kernel_addusxx_optimized_fused_soa<<<blocks, tblock_size>>>(
+            d_rhoc_re, d_rhoc_im,
             d_becphi_re, d_becphi_im,
             d_becpsi_re, d_becpsi_im,
             nkb, ngms, nat,
@@ -313,20 +270,8 @@ void addusxx_g_gpu_optimized_soa(
             d_eigts1_T_re, d_eigts1_T_im,
             d_eigts2_T_re, d_eigts2_T_im,
             d_eigts3_T_re, d_eigts3_T_im,
-            d_mill,
+            d_mill, d_dfftt__nl_sorted, d_dfftt__nl_ix,
             d_eigqts_re, d_eigqts_im,
             coarsen);
-
-        kernel_addusxx_opt_soa_scatter<<<blocks, tblock_size>>>(
-            d_rhoc_re, d_rhoc_im,
-            d_aux2_re, d_aux2_im,
-            ngms, nat, nt + 1, d_ityp,
-            d_dfftt__nl_sorted, d_dfftt__nl_ix,
-            coarsen);
     }
-
-    hipFree(d_aux2_re);
-    hipFree(d_aux2_im);
-    hipFree(d_eigqts_re);
-    hipFree(d_eigqts_im);
 }

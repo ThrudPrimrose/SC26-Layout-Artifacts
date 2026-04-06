@@ -31,7 +31,6 @@ static constexpr int NUM_ITERS  = 100;
 static constexpr int NUM_WARMUP = 5;
 static constexpr int TOTAL_ITERS = NUM_ITERS + NUM_WARMUP;
 
-// ---- Sweep configuration ----
 static const int TBLOCK_SIZES[] = { 32, 64, 128, 256, 512, 1024 };
 static const int COARSEN_FACTORS[] = { 1, 2, 4, 8 };
 static constexpr int N_TBLOCK = sizeof(TBLOCK_SIZES) / sizeof(TBLOCK_SIZES[0]);
@@ -120,7 +119,7 @@ static void init_addusxx_data() {
 }
 
 // ============================================================
-// Device arrays — AoS
+// Device arrays — AoS (includes scratch buffers)
 // ============================================================
 struct DeviceArrays {
     Complex_DP *d_rhoc, *d_becphi_c, *d_becpsi_c;
@@ -130,6 +129,8 @@ struct DeviceArrays {
     int *d_upf_tvanp, *d_nij_type, *d_ityp, *d_ofsbeta, *d_nh;
     int *d_ijtoh, *d_mill, *d_dfftt__nl;
     int *d_dfftt__nl_sorted, *d_dfftt__nl_ix;
+    // Scratch buffers (pre-allocated)
+    Complex_DP *d_eigqts;        // size: nat
 };
 
 #define CUDA_AC(d_ptr, h_ptr, count, type) \
@@ -162,6 +163,8 @@ static DeviceArrays allocate_device_arrays() {
     CUDA_AC(d_dfftt__nl, dfftt__nl, NL_SIZE, int);
     CUDA_AC(d_dfftt__nl_sorted, dfftt__nl_sorted, NL_SIZE, int);
     CUDA_AC(d_dfftt__nl_ix, dfftt__nl_ix, NL_SIZE, int);
+    // Scratch
+    cudaMalloc(&da.d_eigqts, nat * sizeof(Complex_DP));
     return da;
 }
 
@@ -174,6 +177,7 @@ static void free_device_arrays(DeviceArrays& da) {
     cudaFree(da.d_ofsbeta); cudaFree(da.d_nh); cudaFree(da.d_ijtoh);
     cudaFree(da.d_mill); cudaFree(da.d_dfftt__nl);
     cudaFree(da.d_dfftt__nl_sorted); cudaFree(da.d_dfftt__nl_ix);
+    cudaFree(da.d_eigqts);
 }
 
 static void reset_rhoc_device(DeviceArrays& da) {
@@ -181,7 +185,7 @@ static void reset_rhoc_device(DeviceArrays& da) {
 }
 
 // ============================================================
-// Device arrays — SoA
+// Device arrays — SoA (includes scratch buffers)
 // ============================================================
 struct DeviceArraysSoA {
     double *d_rhoc_re, *d_rhoc_im;
@@ -194,6 +198,8 @@ struct DeviceArraysSoA {
     int *d_upf_tvanp, *d_nij_type, *d_ityp, *d_ofsbeta, *d_nh;
     int *d_ijtoh, *d_mill, *d_dfftt__nl;
     int *d_dfftt__nl_sorted, *d_dfftt__nl_ix;
+    // Scratch buffers (pre-allocated)
+    double *d_eigqts_re, *d_eigqts_im;    // size: nat each
 };
 
 static void alloc_soa_pair(double*& d_re, double*& d_im, const Complex_DP* h_aos, int n) {
@@ -236,6 +242,9 @@ static DeviceArraysSoA allocate_device_arrays_soa() {
     SOA_INT_AC(d_dfftt__nl, dfftt__nl, NL_SIZE);
     SOA_INT_AC(d_dfftt__nl_sorted, dfftt__nl_sorted, NL_SIZE);
     SOA_INT_AC(d_dfftt__nl_ix, dfftt__nl_ix, NL_SIZE);
+    // Scratch
+    cudaMalloc(&ds.d_eigqts_re, nat * sizeof(double));
+    cudaMalloc(&ds.d_eigqts_im, nat * sizeof(double));
     return ds;
 }
 
@@ -256,6 +265,7 @@ static void free_device_arrays_soa(DeviceArraysSoA& ds) {
     cudaFree(ds.d_ofsbeta); cudaFree(ds.d_nh); cudaFree(ds.d_ijtoh);
     cudaFree(ds.d_mill); cudaFree(ds.d_dfftt__nl);
     cudaFree(ds.d_dfftt__nl_sorted); cudaFree(ds.d_dfftt__nl_ix);
+    cudaFree(ds.d_eigqts_re); cudaFree(ds.d_eigqts_im);
 }
 
 static void reset_rhoc_soa(DeviceArraysSoA& ds) {
@@ -304,7 +314,7 @@ static bool check_correctness_soa(DeviceArraysSoA& ds, const Complex_DP* ref, in
 }
 
 // ============================================================
-// Generic GPU profiling: time a callable over iterations
+// Generic GPU profiling
 // ============================================================
 static float profile_kernel(
     std::function<void()> reset_fn,
@@ -339,7 +349,7 @@ static float profile_kernel(
 }
 
 // ============================================================
-// CPU baseline (single run, no sweep)
+// CPU baseline
 // ============================================================
 static void profile_cpu_original() {
     printf("\n=== (1) CPU baseline ===\n");
@@ -362,7 +372,7 @@ static void profile_cpu_original() {
 }
 
 // ============================================================
-// Sweep all 4 GPU variants x tblock_sizes x coarsen_factors
+// GPU sweep — all 4 variants x tblock_sizes x coarsen_factors
 // ============================================================
 static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
     printf("\n=== GPU SWEEP: variant x tblock_size x coarsen ===\n");
@@ -382,12 +392,12 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                     da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
                     da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1, da.d_eigts2,
                     da.d_eigts3, da.d_mill, da.d_dfftt__nl,
-                    upf_tvanp, nij_type, nh, tbs, cf);
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    da.d_eigqts);
                 cudaMemcpy(rhoc_out_sim, da.d_rhoc, RHOC_SIZE * sizeof(Complex_DP), cudaMemcpyDeviceToHost);
                 bool ok = true;
-                for (int i = 0; i < RHOC_SIZE && ok; i++) {
+                for (int i = 0; i < RHOC_SIZE && ok; i++)
                     if (cabs_val(csub(rhoc_out_sim[i], rhoc_out[i])) >= 1.0e-8) ok = false;
-                }
 
                 auto reset = [&]() { reset_rhoc_device(da); };
                 auto kernel = [&]() {
@@ -396,7 +406,8 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                         da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
                         da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1, da.d_eigts2,
                         da.d_eigts3, da.d_mill, da.d_dfftt__nl,
-                        upf_tvanp, nij_type, nh, tbs, cf);
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        da.d_eigqts);
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_baseline_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
@@ -411,12 +422,12 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                     da.d_nh, da.d_ijtoh, da.d_qgm_T, da.d_eigts1_T,
                     da.d_eigts2_T, da.d_eigts3_T, da.d_mill,
                     da.d_dfftt__nl_sorted, da.d_dfftt__nl_ix,
-                    upf_tvanp, nij_type, nh, tbs, cf);
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    da.d_eigqts);
                 cudaMemcpy(rhoc_out_sim, da.d_rhoc, RHOC_SIZE * sizeof(Complex_DP), cudaMemcpyDeviceToHost);
                 bool ok = true;
-                for (int i = 0; i < RHOC_SIZE && ok; i++) {
+                for (int i = 0; i < RHOC_SIZE && ok; i++)
                     if (cabs_val(csub(rhoc_out_sim[i], rhoc_out[i])) >= 1.0e-8) ok = false;
-                }
 
                 auto reset = [&]() { reset_rhoc_device(da); };
                 auto kernel = [&]() {
@@ -426,7 +437,8 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                         da.d_nh, da.d_ijtoh, da.d_qgm_T, da.d_eigts1_T,
                         da.d_eigts2_T, da.d_eigts3_T, da.d_mill,
                         da.d_dfftt__nl_sorted, da.d_dfftt__nl_ix,
-                        upf_tvanp, nij_type, nh, tbs, cf);
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        da.d_eigqts);
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_optimized_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
@@ -446,8 +458,8 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                     ds.d_eigts2_re, ds.d_eigts2_im,
                     ds.d_eigts3_re, ds.d_eigts3_im,
                     ds.d_mill, ds.d_dfftt__nl,
-                    upf_tvanp, nij_type, nh, tbs, cf);
-                // Check
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    ds.d_eigqts_re, ds.d_eigqts_im);
                 double* h_re = new double[RHOC_SIZE]; double* h_im = new double[RHOC_SIZE];
                 cudaMemcpy(h_re, ds.d_rhoc_re, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
                 cudaMemcpy(h_im, ds.d_rhoc_im, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
@@ -472,7 +484,8 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                         ds.d_eigts2_re, ds.d_eigts2_im,
                         ds.d_eigts3_re, ds.d_eigts3_im,
                         ds.d_mill, ds.d_dfftt__nl,
-                        upf_tvanp, nij_type, nh, tbs, cf);
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        ds.d_eigqts_re, ds.d_eigqts_im);
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_baseline_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
@@ -492,7 +505,8 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                     ds.d_eigts2_T_re, ds.d_eigts2_T_im,
                     ds.d_eigts3_T_re, ds.d_eigts3_T_im,
                     ds.d_mill, ds.d_dfftt__nl_sorted, ds.d_dfftt__nl_ix,
-                    upf_tvanp, nij_type, nh, tbs, cf);
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    ds.d_eigqts_re, ds.d_eigqts_im);
                 double* h_re = new double[RHOC_SIZE]; double* h_im = new double[RHOC_SIZE];
                 cudaMemcpy(h_re, ds.d_rhoc_re, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
                 cudaMemcpy(h_im, ds.d_rhoc_im, RHOC_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
@@ -517,7 +531,8 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                         ds.d_eigts2_T_re, ds.d_eigts2_T_im,
                         ds.d_eigts3_T_re, ds.d_eigts3_T_im,
                         ds.d_mill, ds.d_dfftt__nl_sorted, ds.d_dfftt__nl_ix,
-                        upf_tvanp, nij_type, nh, tbs, cf);
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        ds.d_eigqts_re, ds.d_eigqts_im);
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_optimized_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");

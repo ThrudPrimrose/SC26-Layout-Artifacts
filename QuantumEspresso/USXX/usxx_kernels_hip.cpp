@@ -71,6 +71,7 @@ void addusxx_g_cpu(
                                             eigts3[EIGTS3_IDX(m3, na)])));
                         aux2[s] = cmul(aux2[s], sf);
                     }
+                    // Write per atom — matches Fortran
                     for (int s = 0; s < rbs; s++) {
                         int nl_idx = dfftt__nl[offset + s] - 1;
                         rhoc[nl_idx] = cadd(rhoc[nl_idx], aux2[s]);
@@ -98,7 +99,8 @@ __global__ void kernel_eigqts(Complex_DP* eigqts, const DP* xkq, const DP* xk,
 }
 
 // ============================================================
-// GPU baseline AoS — coarsened, no atomics
+// GPU baseline AoS — faithful to Fortran OpenACC:
+// writes to rhoc inside the na loop (per-atom global write)
 // ============================================================
 __global__ void kernel_addusxx_baseline(
     Complex_DP* __restrict__ rhoc,
@@ -126,7 +128,8 @@ __global__ void kernel_addusxx_baseline(
         int gi = g_start + c;
         if (gi >= ngms) return;
 
-        Complex_DP accum = make_cmplx(0.0, 0.0);
+        int m1 = mill[gi * 3 + 0], m2 = mill[gi * 3 + 1], m3 = mill[gi * 3 + 2];
+        int nl_idx = dfftt__nl[gi] - 1;
 
         for (int na = 0; na < nat; na++) {
             if (ityp[na] != nt_1based) continue;
@@ -146,16 +149,15 @@ __global__ void kernel_addusxx_baseline(
                     cmul(aux1_val, cconj(becphi_c[ijkb0 + ih])));
             }
 
-            int m1 = mill[gi * 3 + 0], m2 = mill[gi * 3 + 1], m3 = mill[gi * 3 + 2];
             Complex_DP sf = cmul(eigqts[na],
                            cmul(eigts1[EIGTS1_IDX(m1, na)],
                            cmul(eigts2[EIGTS2_IDX(m2, na)],
                                 eigts3[EIGTS3_IDX(m3, na)])));
-            accum = cadd(accum, cmul(aux2_val, sf));
-        }
+            aux2_val = cmul(aux2_val, sf);
 
-        int nl_idx = dfftt__nl[gi] - 1;
-        rhoc[nl_idx] = cadd(rhoc[nl_idx], accum);
+            // Write per atom — matches Fortran OpenACC baseline
+            rhoc[nl_idx] = cadd(rhoc[nl_idx], aux2_val);
+        }
     }
 }
 
@@ -169,10 +171,9 @@ void addusxx_g_gpu(
     const Complex_DP* d_eigts2, const Complex_DP* d_eigts3,
     const int* d_mill, const int* d_dfftt__nl,
     const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh,
-    int tblock_size, int coarsen)
+    int tblock_size, int coarsen,
+    Complex_DP* d_eigqts)
 {
-    Complex_DP* d_eigqts;
-    hipMalloc(&d_eigqts, nat * sizeof(Complex_DP));
     kernel_eigqts<<<(nat + 255) / 256, 256>>>(d_eigqts, d_xkq, d_xk, d_tau, nat);
 
     int n_logical = (ngms + coarsen - 1) / coarsen;
@@ -189,14 +190,23 @@ void addusxx_g_gpu(
             d_mill, d_dfftt__nl, d_eigqts,
             coarsen);
     }
-    hipFree(d_eigqts);
 }
 
 // ============================================================
-// GPU optimized AoS — compute with coarsening
+// GPU optimized AoS — FUSED compute+scatter
+//
+// Iterates in sorted dfftt__nl order:
+//   - dfftt__nl_sorted[gi] → sequential destination in rhoc
+//   - dfftt__nl_ix[gi]     → original g-vector index for data reads
+//
+// Benefits over baseline:
+//   1. Sequential writes to rhoc (sorted order)
+//   2. Transposed eigts for coalesced structure-factor reads
+//   3. Register accumulation across atoms (single write per gi)
+//   4. Single kernel (no intermediate buffer)
 // ============================================================
-__global__ void kernel_addusxx_optimized_compute(
-    Complex_DP* __restrict__ aux2_array,
+__global__ void kernel_addusxx_optimized_fused(
+    Complex_DP* __restrict__ rhoc,
     const Complex_DP* __restrict__ becphi_c,
     const Complex_DP* __restrict__ becpsi_c,
     int nkb, int ngms, int nat,
@@ -208,11 +218,14 @@ __global__ void kernel_addusxx_optimized_compute(
     const Complex_DP* __restrict__ eigts2_T,
     const Complex_DP* __restrict__ eigts3_T,
     const int* __restrict__ mill,
+    const int* __restrict__ dfftt__nl_sorted,
+    const int* __restrict__ dfftt__nl_ix,
     const Complex_DP* __restrict__ eigqts,
     int coarsen)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int g_start = tid * coarsen;
+
     constexpr int qgmT_nrows = 397;
     constexpr int ijtoh_n1 = 19, ijtoh_n2 = 19;
 
@@ -220,59 +233,43 @@ __global__ void kernel_addusxx_optimized_compute(
         int gi = g_start + c;
         if (gi >= ngms) return;
 
+        // Sorted order: sequential destination, random source
+        int nl_idx = dfftt__nl_sorted[gi] - 1;  // sequential write target
+        int orig_g = dfftt__nl_ix[gi] - 1;       // original g-vector for reads
+
+        int m1 = mill[orig_g * 3 + 0];
+        int m2 = mill[orig_g * 3 + 1];
+        int m3 = mill[orig_g * 3 + 2];
+
+        // Accumulate all atoms in register
+        Complex_DP accum = make_cmplx(0.0, 0.0);
+
         for (int na = 0; na < nat; na++) {
             if (ityp[na] != nt_1based) continue;
             int ijkb0 = ofsbeta[na];
-            Complex_DP aux2_val = make_cmplx(0.0, 0.0);
 
+            Complex_DP aux2_val = make_cmplx(0.0, 0.0);
             for (int ih = 0; ih < nh_nt; ih++) {
                 Complex_DP aux1_val = make_cmplx(0.0, 0.0);
                 #pragma unroll 4
                 for (int jh = 0; jh < nh_nt; jh++) {
                     int ijtoh_val = ijtoh[IDX3(ih, jh, (nt_1based - 1), ijtoh_n1, ijtoh_n2)];
                     aux1_val = cadd(aux1_val,
-                        cmul(qgm_T[gi * qgmT_nrows + (nij + ijtoh_val - 1)],
+                        cmul(qgm_T[orig_g * qgmT_nrows + (nij + ijtoh_val - 1)],
                              becpsi_c[ijkb0 + jh]));
                 }
                 aux2_val = cadd(aux2_val,
                     cmul(aux1_val, cconj(becphi_c[ijkb0 + ih])));
             }
 
-            int m1 = mill[gi * 3 + 0], m2 = mill[gi * 3 + 1], m3 = mill[gi * 3 + 2];
             Complex_DP sf = cmul(eigqts[na],
                            cmul(eigts1_T[EIGTS1T_IDX(na, m1)],
                            cmul(eigts2_T[EIGTS2T_IDX(na, m2)],
                                 eigts3_T[EIGTS3T_IDX(na, m3)])));
-            aux2_array[gi * nat + na] = cmul(aux2_val, sf);
+            accum = cadd(accum, cmul(aux2_val, sf));
         }
-    }
-}
 
-// Scatter — no atomics
-__global__ void kernel_addusxx_optimized_scatter(
-    Complex_DP* __restrict__ rhoc,
-    const Complex_DP* __restrict__ aux2_array,
-    int ngms, int nat, int nt_1based,
-    const int* __restrict__ ityp,
-    const int* __restrict__ dfftt__nl_sorted,
-    const int* __restrict__ dfftt__nl_ix,
-    int coarsen)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int g_start = tid * coarsen;
-
-    for (int c = 0; c < coarsen; c++) {
-        int gi = g_start + c;
-        if (gi >= ngms) return;
-
-        int nl_idx = dfftt__nl_sorted[gi] - 1;
-        int ix = dfftt__nl_ix[gi] - 1;
-
-        Complex_DP accum = make_cmplx(0.0, 0.0);
-        for (int na = 0; na < nat; na++) {
-            if (ityp[na] != nt_1based) continue;
-            accum = cadd(accum, aux2_array[ix * nat + na]);
-        }
+        // Single sequential write per g-vector
         rhoc[nl_idx] = cadd(rhoc[nl_idx], accum);
     }
 }
@@ -287,13 +284,9 @@ void addusxx_g_gpu_optimized(
     const Complex_DP* d_eigts2_T, const Complex_DP* d_eigts3_T,
     const int* d_mill, const int* d_dfftt__nl_sorted, const int* d_dfftt__nl_ix,
     const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh,
-    int tblock_size, int coarsen)
+    int tblock_size, int coarsen,
+    Complex_DP* d_eigqts)
 {
-    Complex_DP* d_eigqts;
-    hipMalloc(&d_eigqts, nat * sizeof(Complex_DP));
-    Complex_DP* d_aux2_array;
-    hipMalloc(&d_aux2_array, (size_t)nat * ngms * sizeof(Complex_DP));
-
     kernel_eigqts<<<(nat + 255) / 256, 256>>>(d_eigqts, d_xkq, d_xk, d_tau, nat);
 
     int n_logical = (ngms + coarsen - 1) / coarsen;
@@ -301,22 +294,13 @@ void addusxx_g_gpu_optimized(
 
     for (int nt = 0; nt < ntyp; nt++) {
         if (h_upf_tvanp[nt] != 1) continue;
-        hipMemset(d_aux2_array, 0, (size_t)nat * ngms * sizeof(Complex_DP));
-
-        kernel_addusxx_optimized_compute<<<blocks, tblock_size>>>(
-            d_aux2_array, d_becphi_c, d_becpsi_c,
+        kernel_addusxx_optimized_fused<<<blocks, tblock_size>>>(
+            d_rhoc, d_becphi_c, d_becpsi_c,
             nkb, ngms, nat,
             h_nij_type[nt], h_nh[nt], nt + 1,
             d_ityp, d_ofsbeta, d_ijtoh,
             d_qgm_T, d_eigts1_T, d_eigts2_T, d_eigts3_T,
-            d_mill, d_eigqts, coarsen);
-
-        kernel_addusxx_optimized_scatter<<<blocks, tblock_size>>>(
-            d_rhoc, d_aux2_array,
-            ngms, nat, nt + 1, d_ityp,
-            d_dfftt__nl_sorted, d_dfftt__nl_ix, coarsen);
+            d_mill, d_dfftt__nl_sorted, d_dfftt__nl_ix,
+            d_eigqts, coarsen);
     }
-
-    hipFree(d_aux2_array);
-    hipFree(d_eigqts);
 }
