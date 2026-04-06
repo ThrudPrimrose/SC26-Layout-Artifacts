@@ -152,13 +152,19 @@ def paint_subplot(ax, df, platform_label, is_gpu):
                 ha="center", va="top", fontsize=8.5,
                 fontweight="bold", color=GROUP_COLORS["transformed"])
 
-    # ylim: add headroom above max
+    # ylim + ticks + grid
+    from matplotlib.ticker import MaxNLocator
     global_max = max(np.max(d) for d in data_all)
-    ax.set_ylim(bottom=0, top=global_max * 1.25)
+    nice_top = np.ceil(global_max * 1.25 * 4) / 4  # round up to nearest 0.25
+    ax.set_ylim(bottom=0, top=nice_top)
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=5))
+    ax.minorticks_on()
+    ax.grid(axis="y", which="major", alpha=0.3, linewidth=0.8)
+    ax.grid(axis="y", which="minor", alpha=0.15, linewidth=0.4)
+    ax.tick_params(axis="x", which="minor", bottom=False)
 
     ax.set_xticks(positions)
     ax.set_xticklabels(tick_labels, fontsize=7)
-    ax.grid(axis="y", alpha=0.3)
     ax.set_title(platform_label, fontsize=9)
 
 
