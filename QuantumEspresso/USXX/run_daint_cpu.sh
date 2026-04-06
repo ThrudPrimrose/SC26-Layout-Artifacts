@@ -2,7 +2,7 @@
 #SBATCH --job-name=addusxx_cpu_daint
 #SBATCH --nodes=1
 #SBATCH --partition=normal
-#SBATCH --time=02:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=addusxx_cpu_daint_%j.out
 #SBATCH --error=addusxx_cpu_daint_%j.err
 #SBATCH --ntasks=1
@@ -41,7 +41,7 @@ g++ -O3 -std=c++17 \
     -fno-vect-cost-model \
     -ftree-vectorize \
     -o addusxx_cpu_daint \
-    main_cpu.cpp usxx_kernels_cpu.cpp \
+    main_cpu.cpp \
     -lgomp
 
 ./addusxx_cpu_daint
