@@ -46,6 +46,24 @@ void addusxx_g_gpu(
     Complex_DP* d_eigqts);
 
 // ============================================================
+// GPU eigts-transposed AoS — natural g-vector order,
+// original qgm (coalesced), transposed eigts, register accum.
+// Scratch: d_eigqts (nat)
+// ============================================================
+void addusxx_g_gpu_eigts_transposed(
+    Complex_DP* d_rhoc, const DP* d_xkq, const DP* d_xk, const DP* d_tau,
+    const Complex_DP* d_becphi_c, const Complex_DP* d_becpsi_c,
+    int nkb, int ngms, int nat, int ntyp,
+    const int* d_upf_tvanp, const int* d_nij_type, const int* d_ityp,
+    const int* d_ofsbeta, const int* d_nh, const int* d_ijtoh,
+    const Complex_DP* d_qgm, const Complex_DP* d_eigts1_T,
+    const Complex_DP* d_eigts2_T, const Complex_DP* d_eigts3_T,
+    const int* d_mill, const int* d_dfftt__nl,
+    const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh,
+    int tblock_size, int coarsen,
+    Complex_DP* d_eigqts);
+
+// ============================================================
 // GPU optimized AoS — fused compute+scatter, sorted writes,
 // transposed layouts. No intermediate buffer.
 // Scratch: d_eigqts (nat)
@@ -79,6 +97,28 @@ void addusxx_g_gpu_soa(
     const double* d_eigts1_re, const double* d_eigts1_im,
     const double* d_eigts2_re, const double* d_eigts2_im,
     const double* d_eigts3_re, const double* d_eigts3_im,
+    const int* d_mill, const int* d_dfftt__nl,
+    const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh,
+    int tblock_size, int coarsen,
+    double* d_eigqts_re, double* d_eigqts_im);
+
+// ============================================================
+// GPU eigts-transposed SoA — natural order, original qgm,
+// transposed eigts, register accum.
+// Scratch: d_eigqts_re/im (nat each)
+// ============================================================
+void addusxx_g_gpu_eigts_transposed_soa(
+    double* d_rhoc_re, double* d_rhoc_im,
+    const DP* d_xkq, const DP* d_xk, const DP* d_tau,
+    const double* d_becphi_re, const double* d_becphi_im,
+    const double* d_becpsi_re, const double* d_becpsi_im,
+    int nkb, int ngms, int nat, int ntyp,
+    const int* d_upf_tvanp, const int* d_nij_type, const int* d_ityp,
+    const int* d_ofsbeta, const int* d_nh, const int* d_ijtoh,
+    const double* d_qgm_re, const double* d_qgm_im,
+    const double* d_eigts1_T_re, const double* d_eigts1_T_im,
+    const double* d_eigts2_T_re, const double* d_eigts2_T_im,
+    const double* d_eigts3_T_re, const double* d_eigts3_T_im,
     const int* d_mill, const int* d_dfftt__nl,
     const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh,
     int tblock_size, int coarsen,

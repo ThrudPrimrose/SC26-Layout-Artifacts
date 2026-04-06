@@ -157,6 +157,128 @@ void addusxx_g_gpu_soa(
 }
 
 // ============================================================
+// GPU eigts-transposed SoA — natural order, original qgm,
+// transposed eigts, register accumulation
+// ============================================================
+__global__ void kernel_addusxx_eigts_transposed_soa(
+    double* __restrict__ rhoc_re, double* __restrict__ rhoc_im,
+    const double* __restrict__ becphi_re, const double* __restrict__ becphi_im,
+    const double* __restrict__ becpsi_re, const double* __restrict__ becpsi_im,
+    int nkb, int ngms, int nat,
+    int nij, int nh_nt, int nt_1based,
+    const int* __restrict__ ityp, const int* __restrict__ ofsbeta,
+    const int* __restrict__ ijtoh,
+    const double* __restrict__ qgm_re, const double* __restrict__ qgm_im,
+    const double* __restrict__ eigts1_T_re, const double* __restrict__ eigts1_T_im,
+    const double* __restrict__ eigts2_T_re, const double* __restrict__ eigts2_T_im,
+    const double* __restrict__ eigts3_T_re, const double* __restrict__ eigts3_T_im,
+    const int* __restrict__ mill, const int* __restrict__ dfftt__nl,
+    const double* __restrict__ eigqts_re, const double* __restrict__ eigqts_im,
+    int coarsen)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int g_start = tid * coarsen;
+
+    for (int c = 0; c < coarsen; c++) {
+        int gi = g_start + c;
+        if (gi >= ngms) return;
+
+        int m1 = mill[gi * 3 + 0], m2 = mill[gi * 3 + 1], m3 = mill[gi * 3 + 2];
+
+        double acc_r = 0.0, acc_i = 0.0;
+
+        for (int na = 0; na < nat; na++) {
+            if (ityp[na] != nt_1based) continue;
+            int ijkb0 = ofsbeta[na];
+            double a2r = 0.0, a2i = 0.0;
+
+            for (int ih = 0; ih < nh_nt; ih++) {
+                double a1r = 0.0, a1i = 0.0;
+                #pragma unroll 4
+                for (int jh = 0; jh < nh_nt; jh++) {
+                    int ijtoh_val = ijtoh[IDX3(ih, jh, (nt_1based - 1), IJTOH_N1, IJTOH_N2)];
+                    // Original qgm layout — coalesced
+                    int idx = (nij + ijtoh_val - 1) * QGM_NROWS + gi;
+                    double qr = qgm_re[idx], qi = qgm_im[idx];
+                    double br = becpsi_re[ijkb0 + jh], bi = becpsi_im[ijkb0 + jh];
+                    a1r += SOA_MUL_RE(qr, qi, br, bi);
+                    a1i += SOA_MUL_IM(qr, qi, br, bi);
+                }
+                double pr = becphi_re[ijkb0 + ih], pi = becphi_im[ijkb0 + ih];
+                a2r += SOA_MULCONJ_RE(a1r, a1i, pr, pi);
+                a2i += SOA_MULCONJ_IM(a1r, a1i, pr, pi);
+            }
+
+            // Transposed eigts
+            double sr = eigqts_re[na], si = eigqts_im[na];
+            double tr, ti;
+            int idx;
+            idx = EIGTS1T_IDX(na, m1);
+            tr = sr; ti = si;
+            sr = SOA_MUL_RE(tr, ti, eigts1_T_re[idx], eigts1_T_im[idx]);
+            si = SOA_MUL_IM(tr, ti, eigts1_T_re[idx], eigts1_T_im[idx]);
+            idx = EIGTS2T_IDX(na, m2);
+            tr = sr; ti = si;
+            sr = SOA_MUL_RE(tr, ti, eigts2_T_re[idx], eigts2_T_im[idx]);
+            si = SOA_MUL_IM(tr, ti, eigts2_T_re[idx], eigts2_T_im[idx]);
+            idx = EIGTS3T_IDX(na, m3);
+            tr = sr; ti = si;
+            sr = SOA_MUL_RE(tr, ti, eigts3_T_re[idx], eigts3_T_im[idx]);
+            si = SOA_MUL_IM(tr, ti, eigts3_T_re[idx], eigts3_T_im[idx]);
+
+            acc_r += SOA_MUL_RE(a2r, a2i, sr, si);
+            acc_i += SOA_MUL_IM(a2r, a2i, sr, si);
+        }
+
+        int nl_idx = dfftt__nl[gi] - 1;
+        rhoc_re[nl_idx] += acc_r;
+        rhoc_im[nl_idx] += acc_i;
+    }
+}
+
+void addusxx_g_gpu_eigts_transposed_soa(
+    double* d_rhoc_re, double* d_rhoc_im,
+    const DP* d_xkq, const DP* d_xk, const DP* d_tau,
+    const double* d_becphi_re, const double* d_becphi_im,
+    const double* d_becpsi_re, const double* d_becpsi_im,
+    int nkb, int ngms, int nat, int ntyp,
+    const int* d_upf_tvanp, const int* d_nij_type, const int* d_ityp,
+    const int* d_ofsbeta, const int* d_nh, const int* d_ijtoh,
+    const double* d_qgm_re, const double* d_qgm_im,
+    const double* d_eigts1_T_re, const double* d_eigts1_T_im,
+    const double* d_eigts2_T_re, const double* d_eigts2_T_im,
+    const double* d_eigts3_T_re, const double* d_eigts3_T_im,
+    const int* d_mill, const int* d_dfftt__nl,
+    const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh,
+    int tblock_size, int coarsen,
+    double* d_eigqts_re, double* d_eigqts_im)
+{
+    kernel_eigqts_soa<<<(nat + 255) / 256, 256>>>(
+        d_eigqts_re, d_eigqts_im, d_xkq, d_xk, d_tau, nat);
+
+    int n_logical = (ngms + coarsen - 1) / coarsen;
+    int blocks = (n_logical + tblock_size - 1) / tblock_size;
+
+    for (int nt = 0; nt < ntyp; nt++) {
+        if (h_upf_tvanp[nt] != 1) continue;
+        kernel_addusxx_eigts_transposed_soa<<<blocks, tblock_size>>>(
+            d_rhoc_re, d_rhoc_im,
+            d_becphi_re, d_becphi_im,
+            d_becpsi_re, d_becpsi_im,
+            nkb, ngms, nat,
+            h_nij_type[nt], h_nh[nt], nt + 1,
+            d_ityp, d_ofsbeta, d_ijtoh,
+            d_qgm_re, d_qgm_im,
+            d_eigts1_T_re, d_eigts1_T_im,
+            d_eigts2_T_re, d_eigts2_T_im,
+            d_eigts3_T_re, d_eigts3_T_im,
+            d_mill, d_dfftt__nl,
+            d_eigqts_re, d_eigqts_im,
+            coarsen);
+    }
+}
+
+// ============================================================
 // GPU optimized SoA — FUSED compute+scatter
 // Sorted iteration: sequential writes, random reads via orig_g
 // ============================================================

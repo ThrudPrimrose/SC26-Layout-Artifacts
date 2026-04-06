@@ -192,6 +192,106 @@ void addusxx_g_gpu(
 }
 
 // ============================================================
+// GPU eigts-transposed AoS — natural g-vector order,
+// original qgm (coalesced reads), transposed eigts,
+// register accumulation across atoms (single write per gi)
+// ============================================================
+__global__ void kernel_addusxx_eigts_transposed(
+    Complex_DP* __restrict__ rhoc,
+    const Complex_DP* __restrict__ becphi_c,
+    const Complex_DP* __restrict__ becpsi_c,
+    int nkb, int ngms, int nat,
+    int nij, int nh_nt, int nt_1based,
+    const int* __restrict__ ityp, const int* __restrict__ ofsbeta,
+    const int* __restrict__ ijtoh,
+    const Complex_DP* __restrict__ qgm,
+    const Complex_DP* __restrict__ eigts1_T,
+    const Complex_DP* __restrict__ eigts2_T,
+    const Complex_DP* __restrict__ eigts3_T,
+    const int* __restrict__ mill, const int* __restrict__ dfftt__nl,
+    const Complex_DP* __restrict__ eigqts,
+    int coarsen)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int g_start = tid * coarsen;
+
+    constexpr int qgm_nrows = 55191;
+    constexpr int ijtoh_n1 = 19, ijtoh_n2 = 19;
+
+    for (int c = 0; c < coarsen; c++) {
+        int gi = g_start + c;
+        if (gi >= ngms) return;
+
+        int m1 = mill[gi * 3 + 0], m2 = mill[gi * 3 + 1], m3 = mill[gi * 3 + 2];
+
+        // Register accumulation across all matching atoms
+        Complex_DP accum = make_cmplx(0.0, 0.0);
+
+        for (int na = 0; na < nat; na++) {
+            if (ityp[na] != nt_1based) continue;
+            int ijkb0 = ofsbeta[na];
+
+            Complex_DP aux2_val = make_cmplx(0.0, 0.0);
+            for (int ih = 0; ih < nh_nt; ih++) {
+                Complex_DP aux1_val = make_cmplx(0.0, 0.0);
+                #pragma unroll 4
+                for (int jh = 0; jh < nh_nt; jh++) {
+                    int ijtoh_val = ijtoh[IDX3(ih, jh, (nt_1based - 1), ijtoh_n1, ijtoh_n2)];
+                    // Original qgm layout — coalesced across threads
+                    aux1_val = cadd(aux1_val,
+                        cmul(qgm[(nij + ijtoh_val - 1) * qgm_nrows + gi],
+                             becpsi_c[ijkb0 + jh]));
+                }
+                aux2_val = cadd(aux2_val,
+                    cmul(aux1_val, cconj(becphi_c[ijkb0 + ih])));
+            }
+
+            // Transposed eigts — better access pattern
+            Complex_DP sf = cmul(eigqts[na],
+                           cmul(eigts1_T[EIGTS1T_IDX(na, m1)],
+                           cmul(eigts2_T[EIGTS2T_IDX(na, m2)],
+                                eigts3_T[EIGTS3T_IDX(na, m3)])));
+            accum = cadd(accum, cmul(aux2_val, sf));
+        }
+
+        // Single write per g-vector
+        int nl_idx = dfftt__nl[gi] - 1;
+        rhoc[nl_idx] = cadd(rhoc[nl_idx], accum);
+    }
+}
+
+void addusxx_g_gpu_eigts_transposed(
+    Complex_DP* d_rhoc, const DP* d_xkq, const DP* d_xk, const DP* d_tau,
+    const Complex_DP* d_becphi_c, const Complex_DP* d_becpsi_c,
+    int nkb, int ngms, int nat, int ntyp,
+    const int* d_upf_tvanp, const int* d_nij_type, const int* d_ityp,
+    const int* d_ofsbeta, const int* d_nh, const int* d_ijtoh,
+    const Complex_DP* d_qgm, const Complex_DP* d_eigts1_T,
+    const Complex_DP* d_eigts2_T, const Complex_DP* d_eigts3_T,
+    const int* d_mill, const int* d_dfftt__nl,
+    const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh,
+    int tblock_size, int coarsen,
+    Complex_DP* d_eigqts)
+{
+    kernel_eigqts<<<(nat + 255) / 256, 256>>>(d_eigqts, d_xkq, d_xk, d_tau, nat);
+
+    int n_logical = (ngms + coarsen - 1) / coarsen;
+    int blocks = (n_logical + tblock_size - 1) / tblock_size;
+
+    for (int nt = 0; nt < ntyp; nt++) {
+        if (h_upf_tvanp[nt] != 1) continue;
+        kernel_addusxx_eigts_transposed<<<blocks, tblock_size>>>(
+            d_rhoc, d_becphi_c, d_becpsi_c,
+            nkb, ngms, nat,
+            h_nij_type[nt], h_nh[nt], nt + 1,
+            d_ityp, d_ofsbeta, d_ijtoh,
+            d_qgm, d_eigts1_T, d_eigts2_T, d_eigts3_T,
+            d_mill, d_dfftt__nl, d_eigqts,
+            coarsen);
+    }
+}
+
+// ============================================================
 // GPU optimized AoS — FUSED compute+scatter
 //
 // Iterates in sorted dfftt__nl order:
