@@ -413,6 +413,64 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_baseline_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
 
+            // ---- (2b) GPU eigts-transposed AoS ----
+            {
+                reset_rhoc_device(da);
+                addusxx_g_gpu_eigts_transposed(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                    da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                    da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                    da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1_T,
+                    da.d_eigts2_T, da.d_eigts3_T, da.d_mill, da.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    da.d_eigqts);
+                hipMemcpy(rhoc_out_sim, da.d_rhoc, RHOC_SIZE * sizeof(Complex_DP), hipMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++)
+                    if (cabs_val(csub(rhoc_out_sim[i], rhoc_out[i])) >= 1.0e-8) ok = false;
+
+                auto reset = [&]() { reset_rhoc_device(da); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_eigts_transposed(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                        da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                        da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                        da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1_T,
+                        da.d_eigts2_T, da.d_eigts3_T, da.d_mill, da.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        da.d_eigqts);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_eigts_t_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
+            // ---- (2c) GPU shared-bec AoS ----
+            {
+                reset_rhoc_device(da);
+                addusxx_g_gpu_shared_bec(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                    da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                    da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                    da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1_T,
+                    da.d_eigts2_T, da.d_eigts3_T, da.d_mill, da.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    da.d_eigqts);
+                hipMemcpy(rhoc_out_sim, da.d_rhoc, RHOC_SIZE * sizeof(Complex_DP), hipMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++)
+                    if (cabs_val(csub(rhoc_out_sim[i], rhoc_out[i])) >= 1.0e-8) ok = false;
+
+                auto reset = [&]() { reset_rhoc_device(da); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_shared_bec(da.d_rhoc, da.d_xkq, da.d_xk, da.d_tau,
+                        da.d_becphi_c, da.d_becpsi_c, nkb, ngms, nat, ntyp,
+                        da.d_upf_tvanp, da.d_nij_type, da.d_ityp, da.d_ofsbeta,
+                        da.d_nh, da.d_ijtoh, da.d_qgm, da.d_eigts1_T,
+                        da.d_eigts2_T, da.d_eigts3_T, da.d_mill, da.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        da.d_eigqts);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_shared_bec_aos", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
             // ---- (3) GPU optimized AoS ----
             {
                 reset_rhoc_device(da);
@@ -489,6 +547,100 @@ static void sweep_gpu(DeviceArrays& da, DeviceArraysSoA& ds) {
                 };
                 float avg = profile_kernel(reset, kernel);
                 printf("%-30s %8d %8d %13.6f %8s\n", "gpu_baseline_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
+            // ---- (4b) GPU eigts-transposed SoA ----
+            {
+                reset_rhoc_soa(ds);
+                addusxx_g_gpu_eigts_transposed_soa(
+                    ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                    ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                    nkb, ngms, nat, ntyp,
+                    ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                    ds.d_nh, ds.d_ijtoh,
+                    ds.d_qgm_re, ds.d_qgm_im,
+                    ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                    ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                    ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                    ds.d_mill, ds.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    ds.d_eigqts_re, ds.d_eigqts_im);
+                double* h_re = new double[RHOC_SIZE]; double* h_im = new double[RHOC_SIZE];
+                hipMemcpy(h_re, ds.d_rhoc_re, RHOC_SIZE * sizeof(double), hipMemcpyDeviceToHost);
+                hipMemcpy(h_im, ds.d_rhoc_im, RHOC_SIZE * sizeof(double), hipMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++) {
+                    double dr = h_re[i] - creal_val(rhoc_out[i]);
+                    double di = h_im[i] - cimag_val(rhoc_out[i]);
+                    if (sqrt(dr*dr + di*di) >= 1.0e-8) ok = false;
+                }
+                delete[] h_re; delete[] h_im;
+
+                auto reset = [&]() { reset_rhoc_soa(ds); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_eigts_transposed_soa(
+                        ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                        ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                        nkb, ngms, nat, ntyp,
+                        ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                        ds.d_nh, ds.d_ijtoh,
+                        ds.d_qgm_re, ds.d_qgm_im,
+                        ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                        ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                        ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                        ds.d_mill, ds.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        ds.d_eigqts_re, ds.d_eigqts_im);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_eigts_t_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
+            }
+
+            // ---- (4c) GPU shared-bec SoA ----
+            {
+                reset_rhoc_soa(ds);
+                addusxx_g_gpu_shared_bec_soa(
+                    ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                    ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                    nkb, ngms, nat, ntyp,
+                    ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                    ds.d_nh, ds.d_ijtoh,
+                    ds.d_qgm_re, ds.d_qgm_im,
+                    ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                    ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                    ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                    ds.d_mill, ds.d_dfftt__nl,
+                    upf_tvanp, nij_type, nh, tbs, cf,
+                    ds.d_eigqts_re, ds.d_eigqts_im);
+                double* h_re = new double[RHOC_SIZE]; double* h_im = new double[RHOC_SIZE];
+                hipMemcpy(h_re, ds.d_rhoc_re, RHOC_SIZE * sizeof(double), hipMemcpyDeviceToHost);
+                hipMemcpy(h_im, ds.d_rhoc_im, RHOC_SIZE * sizeof(double), hipMemcpyDeviceToHost);
+                bool ok = true;
+                for (int i = 0; i < RHOC_SIZE && ok; i++) {
+                    double dr = h_re[i] - creal_val(rhoc_out[i]);
+                    double di = h_im[i] - cimag_val(rhoc_out[i]);
+                    if (sqrt(dr*dr + di*di) >= 1.0e-8) ok = false;
+                }
+                delete[] h_re; delete[] h_im;
+
+                auto reset = [&]() { reset_rhoc_soa(ds); };
+                auto kernel = [&]() {
+                    addusxx_g_gpu_shared_bec_soa(
+                        ds.d_rhoc_re, ds.d_rhoc_im, ds.d_xkq, ds.d_xk, ds.d_tau,
+                        ds.d_becphi_re, ds.d_becphi_im, ds.d_becpsi_re, ds.d_becpsi_im,
+                        nkb, ngms, nat, ntyp,
+                        ds.d_upf_tvanp, ds.d_nij_type, ds.d_ityp, ds.d_ofsbeta,
+                        ds.d_nh, ds.d_ijtoh,
+                        ds.d_qgm_re, ds.d_qgm_im,
+                        ds.d_eigts1_T_re, ds.d_eigts1_T_im,
+                        ds.d_eigts2_T_re, ds.d_eigts2_T_im,
+                        ds.d_eigts3_T_re, ds.d_eigts3_T_im,
+                        ds.d_mill, ds.d_dfftt__nl,
+                        upf_tvanp, nij_type, nh, tbs, cf,
+                        ds.d_eigqts_re, ds.d_eigqts_im);
+                };
+                float avg = profile_kernel(reset, kernel);
+                printf("%-30s %8d %8d %13.6f %8s\n", "gpu_shared_bec_soa", tbs, cf, avg, ok ? "PASS" : "FAIL");
             }
 
             // ---- (5) GPU optimized SoA ----
