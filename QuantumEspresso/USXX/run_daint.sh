@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=addusxx_gpu_daint
 #SBATCH --nodes=1
-#SBATCH --partition=normal
-#SBATCH --time=02:00:00
+#SBATCH --partition=debug
+#SBATCH --time=00:30:00
 #SBATCH --output=addusxx_gpu_daint_%j.out
 #SBATCH --error=addusxx_gpu_daint_%j.err
 #SBATCH --ntasks=1
