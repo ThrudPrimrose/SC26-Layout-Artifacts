@@ -53,7 +53,7 @@
 /*  Cache-flush helper                                               */
 /* ================================================================ */
 static double *d_flush = nullptr;
-static constexpr size_t FLUSH_SIZE = 256ULL * 1024 * 1024;
+static constexpr size_t FLUSH_SIZE = 256ULL * 1024 * 1024 * 8;
 
 __global__ void flush_kernel(double *buf, size_t n)
 {

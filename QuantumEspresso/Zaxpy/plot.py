@@ -20,6 +20,16 @@ Usage:
         --gpu-amd-1gb-csv   amd/zaxpy_sweep_1gb.csv   \
         --gpu-nv-small-csv  nv/zaxpy_sweep_small.csv   \
         --gpu-nv-1gb-csv    nv/zaxpy_sweep_1gb.csv
+
+    python plot.py \
+        --gpu-amd-small-csv zaxpy_sweep_small.csv \
+        --gpu-amd-1gb-csv   zaxpy_sweep_1gb.csv   \
+        --gpu-nv-small-csv  zaxpy_sweep_small.csv   \
+        --gpu-nv-1gb-csv    zaxpy_sweep_1gb.csv \
+        --cpu-amd-small-csv zaxpy_sweep_small_cpu.csv \
+        --cpu-amd-1gb-csv   zaxpy_sweep_1gb_cpu.csv   \
+        --cpu-nv-small-csv  zaxpy_sweep_small_cpu.csv   \
+        --cpu-nv-1gb-csv    zaxpy_sweep_1gb_cpu.csv
 """
 import matplotlib
 matplotlib.use("Agg")

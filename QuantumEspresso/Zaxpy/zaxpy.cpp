@@ -77,7 +77,7 @@ static void first_touch_copy(T *dst, const T *src, size_t count)
  * Flush caches: write a large buffer to evict resident data.
  * Uses same 256 MiB approach as the GPU version.
  */
-static constexpr size_t FLUSH_ELEMS = 256ULL * 1024 * 1024 / sizeof(double);
+static constexpr size_t FLUSH_ELEMS = 256ULL * 1024 * 1024 * 8 / sizeof(double);
 static double *g_flush = nullptr;
 
 static void init_flush()
