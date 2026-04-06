@@ -15,8 +15,8 @@ from matplotlib.ticker import MaxNLocator
 import pandas as pd, numpy as np, argparse
 
 # ---- CONFIG ----
-GPU_AMD_CSV = "z_v_grad_w_gpu.csv"
-GPU_NV_CSV  = "z_v_grad_w_gpu.csv"
+GPU_AMD_CSV = "z_v_grad_w_gpu_old.csv"
+GPU_NV_CSV  = "z_v_grad_w_gpu_old.csv"
 CPU_AMD_CSV = "z_v_grad_w_cpu.csv"
 CPU_NV_CSV  = "z_v_grad_w_cpu.csv"
 

@@ -588,3 +588,286 @@ The unconstrained bundles from §8 are post-processed: invalid-sized bundles are
 | Largest | 7 | 8 |
 | Valid-sized | 2/16 | 10/10 |
 
+## 11. Utilization-aware bundles (zero cache waste)
+
+A bundle packed as AoS or AoSoA wastes cache-line bandwidth whenever a nest accesses some but not all members.  The **bundle utilization** measures the worst case:
+
+$$\text{util}(B) = \min_{N:\, N \cap B \neq \emptyset} \frac{|N \cap B|}{|B|}$$
+
+util${}=1.0$: every nest uses every field (zero waste). util${}=0.5$: some nest loads the record but ignores half.
+
+### Utilization of Jaccard bundles (§9)
+
+| Bundle | Size | Util | Worst nest | Accessed | Wasted |
+|-------:|-----:|-----:|-----------:|---------:|-------:|
+| 1 | 4 | 25% ⚠ | N5 | 1/4 | `p_prog%vn`, `p_diag%vn_ie`, `z_kin_hor_e` |
+| 2 | 2 | 50% ⚠ | N7 | 1/2 | `z_w_con_c` |
+| 3 | 2 | 50% ⚠ | N5 | 1/2 | `p_metrics%wgtfacq_e` |
+| 4 | 4 | 25% ⚠ | N16 | 1/4 | `z_w_concorr_me`, `p_metrics%ddxn_z_full`, `p_metrics%ddxt_z_full` |
+| 5 | 8 | 12% ⚠ | N4 | 1/8 | `z_ekinh`, `p_diag%ddt_vn_apc_pc`, `p_int%c_lin_e`, `p_metrics%coeff_gradekin`, `p_metrics%ddqz_z_full_e`, `p_patch%edges%f_e`, `zeta` |
+| 6 | 4 | 100% | — | 0/4 | — |
+| 7 | 2 | 50% ⚠ | N10 | 1/2 | `p_metrics%wgtfac_c` |
+| 8 | 2 | 50% ⚠ | N17 | 1/2 | `p_diag%w_concorr_c` |
+| 9 | 4 | 25% ⚠ | N16 | 1/4 | `p_diag%vn_ie_ubc`, `p_metrics%coeff1_dwdz`, `p_metrics%coeff2_dwdz` |
+| 10 | 2 | 50% ⚠ | N16 | 1/2 | `p_int%rbf_vec_coeff_e` |
+
+### Strict co-access bundles (util = 1.0)
+
+Arrays with identical nest-membership sets are grouped, then groups are merged only if the merged bundle maintains util = 1.0 (every nest that touches the bundle uses every field).
+
+24 bundles: sizes [6, 4, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], total 34 arrays.
+
+### Strict bundle 1 (6 arrays) — util=100%
+
+- Nests ∩: [17]
+- Nests ∪: [17]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_diag%ddt_vn_apc_pc` | 1 | [17] |
+| `p_int%c_lin_e` | 1 | [17] |
+| `p_metrics%coeff_gradekin` | 1 | [17] |
+| `p_metrics%ddqz_z_full_e` | 1 | [17] |
+| `p_patch%edges%f_e` | 1 | [17] |
+| `zeta` | 1 | [17] |
+
+### Strict bundle 2 (4 arrays) — util=100%
+
+- Nests ∩: [7]
+- Nests ∪: [7]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_patch%edges%inv_dual_edge_length` | 1 | [7] |
+| `p_patch%edges%inv_primal_edge_length` | 1 | [7] |
+| `p_patch%edges%tangent_orientation` | 1 | [7] |
+| `z_w_v` | 1 | [7] |
+
+### Strict bundle 3 (2 arrays) — util=100%
+
+- Nests ∩: [15]
+- Nests ∪: [15]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_metrics%coeff1_dwdz` | 1 | [15] |
+| `p_metrics%coeff2_dwdz` | 1 | [15] |
+
+### Strict bundle 4 (2 arrays) — util=100%
+
+- Nests ∩: [6]
+- Nests ∪: [6]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_metrics%ddxn_z_full` | 1 | [6] |
+| `p_metrics%ddxt_z_full` | 1 | [6] |
+
+### Strict bundle 5 (1 arrays) — util=100%
+
+- Nests ∩: [15, 16]
+- Nests ∪: [15, 16]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_diag%ddt_w_adv_pc` | 2 | [15, 16] |
+
+### Strict bundle 6 (1 arrays) — util=100%
+
+- Nests ∩: [1, 2, 4, 7, 17]
+- Nests ∪: [1, 2, 4, 7, 17]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_diag%vn_ie` | 5 | [1, 2, 4, 7, 17] |
+
+### Strict bundle 7 (1 arrays) — util=100%
+
+- Nests ∩: [2]
+- Nests ∪: [2]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_diag%vn_ie_ubc` | 1 | [2] |
+
+### Strict bundle 8 (1 arrays) — util=100%
+
+- Nests ∩: [1, 2, 3, 4, 5, 6, 17]
+- Nests ∪: [1, 2, 3, 4, 5, 6, 17]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_diag%vt` | 7 | [1, 2, 3, 4, 5, 6, 17] |
+
+### Strict bundle 9 (1 arrays) — util=100%
+
+- Nests ∩: [11, 13]
+- Nests ∪: [11, 13]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_diag%w_concorr_c` | 2 | [11, 13] |
+
+### Strict bundle 10 (1 arrays) — util=100%
+
+- Nests ∩: [9, 10, 16]
+- Nests ∪: [9, 10, 16]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_int%e_bln_c_s` | 3 | [9, 10, 16] |
+
+### Strict bundle 11 (1 arrays) — util=100%
+
+- Nests ∩: [3]
+- Nests ∪: [3]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_int%rbf_vec_coeff_e` | 1 | [3] |
+
+### Strict bundle 12 (1 arrays) — util=100%
+
+- Nests ∩: [11]
+- Nests ∪: [11]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_metrics%wgtfac_c` | 1 | [11] |
+
+### Strict bundle 13 (1 arrays) — util=100%
+
+- Nests ∩: [4, 5]
+- Nests ∪: [4, 5]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_metrics%wgtfac_e` | 2 | [4, 5] |
+
+### Strict bundle 14 (1 arrays) — util=100%
+
+- Nests ∩: [1, 2]
+- Nests ∪: [1, 2]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_metrics%wgtfacq_e` | 2 | [1, 2] |
+
+### Strict bundle 15 (1 arrays) — util=100%
+
+- Nests ∩: [1, 2, 3, 4, 6]
+- Nests ∪: [1, 2, 3, 4, 6]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_prog%vn` | 5 | [1, 2, 3, 4, 6] |
+
+### Strict bundle 16 (1 arrays) — util=100%
+
+- Nests ∩: [7, 12, 15]
+- Nests ∪: [7, 12, 15]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `p_prog%w` | 3 | [7, 12, 15] |
+
+### Strict bundle 17 (1 arrays) — util=100%
+
+- Nests ∩: [9, 17]
+- Nests ∪: [9, 17]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `z_ekinh` | 2 | [9, 17] |
+
+### Strict bundle 18 (1 arrays) — util=100%
+
+- Nests ∩: [1, 2, 4, 9, 17]
+- Nests ∪: [1, 2, 4, 9, 17]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `z_kin_hor_e` | 5 | [1, 2, 4, 9, 17] |
+
+### Strict bundle 19 (1 arrays) — util=100%
+
+- Nests ∩: [7, 16]
+- Nests ∪: [7, 16]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `z_v_grad_w` | 2 | [7, 16] |
+
+### Strict bundle 20 (1 arrays) — util=100%
+
+- Nests ∩: [1, 2, 5, 7]
+- Nests ∪: [1, 2, 5, 7]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `z_vt_ie` | 4 | [1, 2, 5, 7] |
+
+### Strict bundle 21 (1 arrays) — util=100%
+
+- Nests ∩: [8, 12, 13, 14, 15]
+- Nests ∪: [8, 12, 13, 14, 15]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `z_w_con_c` | 5 | [8, 12, 13, 14, 15] |
+
+### Strict bundle 22 (1 arrays) — util=100%
+
+- Nests ∩: [14, 17]
+- Nests ∪: [14, 17]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `z_w_con_c_full` | 2 | [14, 17] |
+
+### Strict bundle 23 (1 arrays) — util=100%
+
+- Nests ∩: [10, 11]
+- Nests ∪: [10, 11]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `z_w_concorr_mc` | 2 | [10, 11] |
+
+### Strict bundle 24 (1 arrays) — util=100%
+
+- Nests ∩: [6, 10]
+- Nests ∪: [6, 10]
+
+| Array | #Nests | Nests |
+|-------|:------:|-------|
+| `z_w_concorr_me` | 2 | [6, 10] |
+
+### Strict bundles with size constraint
+
+13 bundles: sizes [8, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+
+| Bundle | Size | Util | Arrays |
+|-------:|-----:|-----:|--------|
+| 1 | 8 | 12% ⚠ | `p_diag%ddt_vn_apc_pc`, `p_int%c_lin_e`, `p_metrics%coeff_gradekin`, `p_metrics%ddqz_z_full_e`, `p_patch%edges%f_e`, `zeta`, `p_int%e_bln_c_s`, `z_ekinh` |
+| 2 | 4 | 100% | `p_patch%edges%inv_dual_edge_length`, `p_patch%edges%inv_primal_edge_length`, `p_patch%edges%tangent_orientation`, `z_w_v` |
+| 3 | 2 | 100% | `p_metrics%coeff1_dwdz`, `p_metrics%coeff2_dwdz` |
+| 4 | 2 | 100% | `p_metrics%ddxn_z_full`, `p_metrics%ddxt_z_full` |
+| 5 | 2 | 50% ⚠ | `p_diag%ddt_w_adv_pc`, `z_v_grad_w` |
+| 6 | 2 | 50% ⚠ | `p_diag%vn_ie`, `z_kin_hor_e` |
+| 7 | 2 | 50% ⚠ | `p_diag%vn_ie_ubc`, `p_metrics%wgtfacq_e` |
+| 8 | 2 | 50% ⚠ | `p_diag%vt`, `p_prog%vn` |
+| 9 | 2 | 50% ⚠ | `p_diag%w_concorr_c`, `p_metrics%wgtfac_c` |
+| 10 | 2 | 50% ⚠ | `p_int%rbf_vec_coeff_e`, `p_metrics%wgtfac_e` |
+| 11 | 2 | 50% ⚠ | `p_prog%w`, `z_w_con_c` |
+| 12 | 2 | 50% ⚠ | `z_vt_ie`, `z_w_con_c_full` |
+| 13 | 2 | 50% ⚠ | `z_w_concorr_mc`, `z_w_concorr_me` |
+
+### Utilization comparison
+
+| Method | Bundles | Min util | Avg util | Bundles with util<1 |
+|--------|--------:|---------:|---------:|--------------------:|
+| Jaccard §9 | 10 | 12% | 44% | 9 |
+| Strict | 24 | 100% | 100% | 0 |
+| Strict+sized | 13 | 12% | 59% | 10 |
+

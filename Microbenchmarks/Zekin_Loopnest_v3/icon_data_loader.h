@@ -2,24 +2,6 @@
 #define ICON_DATA_LOADER_H
 /*
  * icon_data_loader.h -- Standalone reader for ICON's serialised p_patch files.
- *
- * Reads the text-based serde format produced by the f2dace infrastructure and
- * extracts the edge-level arrays needed by the z_v_grad_w micro-benchmark.
- *
- * Key design decisions:
- *   - nproma is read from the global data file (authoritative source).
- *   - All arrays are flattened to their FULL blocked extent:
- *       edges:    nproma * nblks_e
- *       cells:    nproma * nblks_c
- *       vertices: nproma * nblks_v
- *   - Connectivity values (cell_idx, cell_blk, vertex_idx, vertex_blk) are
- *     Fortran 1-based.  We linearise with:
- *       flat_target = (blk_val - 1) * nproma + (idx_val - 1)
- *   - The serde array stride (size[0]) is used for reading the raw data;
- *     nproma is used for the output flat layout.  These are normally equal
- *     but the distinction is maintained for correctness.
- *   - Out-of-range or invalid references (e.g. boundary padding with
- *     idx<=0 or blk<=0) are clamped to 0.
  */
 
 #include <cassert>
@@ -33,7 +15,7 @@
 #include <vector>
 
 /* ------------------------------------------------------------------ */
-/*  Minimal serde helpers (mirrors the project's serde scheme)        */
+/*  Minimal serde helpers                                             */
 /* ------------------------------------------------------------------ */
 namespace icon_serde {
 
@@ -41,14 +23,12 @@ inline void scroll_space(std::istream &s) {
   while (!s.eof() && s.peek() != EOF && std::isspace(s.peek()))
     s.get();
 }
-
 inline std::string read_line(std::istream &s) {
   scroll_space(s);
   std::string line;
   std::getline(s, line);
   return line;
 }
-
 inline bool expect_line(std::istream &s, const char *tag) {
   std::string l = read_line(s);
   if (l.find(tag) == std::string::npos) {
@@ -57,494 +37,367 @@ inline bool expect_line(std::istream &s, const char *tag) {
   }
   return true;
 }
-
-inline int read_int(std::istream &s) {
-  scroll_space(s);
-  int v = 0;
-  s >> v;
-  return v;
-}
-
-inline double read_double(std::istream &s) {
-  scroll_space(s);
-  long double v = 0;
-  s >> v;
-  return static_cast<double>(v);
-}
-
-inline bool read_bool(std::istream &s) {
-  scroll_space(s);
-  char c = '0';
-  s >> c;
-  return c == '1';
-}
+inline int read_int(std::istream &s) { scroll_space(s); int v=0; s>>v; return v; }
+inline double read_double(std::istream &s) { scroll_space(s); long double v=0; s>>v; return (double)v; }
+inline bool read_bool(std::istream &s) { scroll_space(s); char c='0'; s>>c; return c=='1'; }
 
 struct ArrayMeta {
-  int rank = 0;
-  int size[4] = {};
-  int lbound[4] = {};
-  int volume() const {
-    int v = 1;
-    for (int i = 0; i < rank; i++)
-      v *= size[i];
-    return v;
-  }
+  int rank=0, size[4]={}, lbound[4]={};
+  int volume() const { int v=1; for(int i=0;i<rank;i++) v*=size[i]; return v; }
 };
-
 inline ArrayMeta read_meta(std::istream &s) {
   ArrayMeta m;
-  expect_line(s, "# rank");
-  m.rank = read_int(s);
-  assert(m.rank >= 1 && m.rank <= 4);
-  expect_line(s, "# size");
-  for (int i = 0; i < m.rank; i++)
-    m.size[i] = read_int(s);
-  expect_line(s, "# lbound");
-  for (int i = 0; i < m.rank; i++)
-    m.lbound[i] = read_int(s);
+  expect_line(s,"# rank"); m.rank=read_int(s);
+  assert(m.rank>=1 && m.rank<=4);
+  expect_line(s,"# size");   for(int i=0;i<m.rank;i++) m.size[i]=read_int(s);
+  expect_line(s,"# lbound"); for(int i=0;i<m.rank;i++) m.lbound[i]=read_int(s);
   return m;
 }
-
 inline void skip_entries(std::istream &s, int count) {
-  std::string tok;
-  for (int i = 0; i < count; i++) {
-    scroll_space(s);
-    s >> tok;
-  }
+  std::string tok; for(int i=0;i<count;i++){scroll_space(s);s>>tok;}
 }
 
-/* Read an "# alloc"-guarded array block.
-   If `out` is non-null, fills it; otherwise skips the data.
-   Returns meta (rank==0 if the array was not allocated). */
-template <typename T>
-ArrayMeta read_alloc_array(std::istream &s, std::vector<T> *out = nullptr) {
-  expect_line(s, "# alloc");
-  bool alloc = read_bool(s);
-  if (!alloc)
-    return {};
+/* Print array dimensions */
+inline void print_meta(const char *section, const char *name, const ArrayMeta &m, const char *dtype) {
+  fprintf(stderr, "[icon_sizes] %s/%-28s  %s  rank=%d  (", section, name, dtype, m.rank);
+  for (int i=0;i<m.rank;i++) fprintf(stderr, "%s%d", i?", ":"", m.size[i]);
+  long long bytes = (long long)m.volume() * (strcmp(dtype,"int")==0 ? 4 : 8);
+  fprintf(stderr, ")  elements=%d  %.1f MB\n", m.volume(), bytes/1e6);
+}
 
-  ArrayMeta m = read_meta(s);
-  expect_line(s, "# entries");
-  int vol = m.volume();
-  if (out) {
-    out->resize(vol);
-    for (int i = 0; i < vol; i++) {
-      scroll_space(s);
-      if constexpr (std::is_same_v<T, int>)
-        s >> (*out)[i];
-      else {
-        long double tmp;
-        s >> tmp;
-        (*out)[i] = static_cast<T>(tmp);
-      }
+template<typename T>
+ArrayMeta read_alloc_array(std::istream &s, std::vector<T> *out=nullptr) {
+  expect_line(s,"# alloc"); bool alloc=read_bool(s);
+  if(!alloc) return {};
+  ArrayMeta m=read_meta(s); expect_line(s,"# entries"); int vol=m.volume();
+  if(out){ out->resize(vol);
+    for(int i=0;i<vol;i++){scroll_space(s);
+      if constexpr(std::is_same_v<T,int>) s>>(*out)[i];
+      else{long double tmp;s>>tmp;(*out)[i]=(T)tmp;}
     }
-  } else {
-    skip_entries(s, vol);
-  }
+  } else skip_entries(s,vol);
+  return m;
+}
+template<typename T>
+ArrayMeta read_assoc_array(std::istream &s, std::vector<T> *out=nullptr) {
+  expect_line(s,"# assoc"); bool assoc=read_bool(s);
+  if(!assoc) return {};
+  expect_line(s,"# missing"); read_int(s);
+  ArrayMeta m=read_meta(s); expect_line(s,"# entries"); int vol=m.volume();
+  if(out){ out->resize(vol);
+    for(int i=0;i<vol;i++){scroll_space(s);
+      if constexpr(std::is_same_v<T,int>) s>>(*out)[i];
+      else{long double tmp;s>>tmp;(*out)[i]=(T)tmp;}
+    }
+  } else skip_entries(s,vol);
   return m;
 }
 
-/* Read an "# assoc / # missing"-guarded pointer array block. */
-template <typename T>
-ArrayMeta read_assoc_array(std::istream &s, std::vector<T> *out = nullptr) {
-  expect_line(s, "# assoc");
-  bool assoc = read_bool(s);
-  if (!assoc)
-    return {};
-
-  expect_line(s, "# missing");
-  read_int(s); /* always 1 */
-
-  ArrayMeta m = read_meta(s);
-  expect_line(s, "# entries");
-  int vol = m.volume();
-  if (out) {
-    out->resize(vol);
-    for (int i = 0; i < vol; i++) {
-      scroll_space(s);
-      if constexpr (std::is_same_v<T, int>)
-        s >> (*out)[i];
-      else {
-        long double tmp;
-        s >> tmp;
-        (*out)[i] = static_cast<T>(tmp);
-      }
-    }
-  } else {
-    skip_entries(s, vol);
-  }
-  return m;
-}
-
-/* ---- skip helpers for compound types we don't need ---- */
-
-inline void skip_decomp_info(std::istream &s) {
-  expect_line(s, "# owner_mask");
-  read_alloc_array<int>(s);
-}
-
+inline void skip_decomp_info(std::istream &s) { expect_line(s,"# owner_mask"); read_alloc_array<int>(s); }
 inline void skip_grid_cells(std::istream &s) {
-  expect_line(s, "# neighbor_idx");
-  read_alloc_array<int>(s);
-  expect_line(s, "# neighbor_blk");
-  read_alloc_array<int>(s);
-  expect_line(s, "# edge_idx");
-  read_alloc_array<int>(s);
-  expect_line(s, "# edge_blk");
-  read_alloc_array<int>(s);
-  expect_line(s, "# area");
-  read_assoc_array<double>(s);
-  expect_line(s, "# start_index");
-  read_alloc_array<int>(s);
-  expect_line(s, "# end_index");
-  read_alloc_array<int>(s);
-  expect_line(s, "# start_block");
-  read_alloc_array<int>(s);
-  expect_line(s, "# end_block");
-  read_alloc_array<int>(s);
-  expect_line(s, "# decomp_info");
-  skip_decomp_info(s);
+  expect_line(s,"# neighbor_idx"); read_alloc_array<int>(s);
+  expect_line(s,"# neighbor_blk"); read_alloc_array<int>(s);
+  expect_line(s,"# edge_idx");     read_alloc_array<int>(s);
+  expect_line(s,"# edge_blk");     read_alloc_array<int>(s);
+  expect_line(s,"# area");         read_assoc_array<double>(s);
+  expect_line(s,"# start_index");  read_alloc_array<int>(s);
+  expect_line(s,"# end_index");    read_alloc_array<int>(s);
+  expect_line(s,"# start_block");  read_alloc_array<int>(s);
+  expect_line(s,"# end_block");    read_alloc_array<int>(s);
+  expect_line(s,"# decomp_info");  skip_decomp_info(s);
 }
-
 inline void skip_grid_vertices(std::istream &s) {
-  expect_line(s, "# cell_idx");
-  read_alloc_array<int>(s);
-  expect_line(s, "# cell_blk");
-  read_alloc_array<int>(s);
-  expect_line(s, "# edge_idx");
-  read_alloc_array<int>(s);
-  expect_line(s, "# edge_blk");
-  read_alloc_array<int>(s);
-  expect_line(s, "# start_index");
-  read_alloc_array<int>(s);
-  expect_line(s, "# end_index");
-  read_alloc_array<int>(s);
-  expect_line(s, "# start_block");
-  read_alloc_array<int>(s);
-  expect_line(s, "# end_block");
-  read_alloc_array<int>(s);
+  expect_line(s,"# cell_idx");    read_alloc_array<int>(s);
+  expect_line(s,"# cell_blk");    read_alloc_array<int>(s);
+  expect_line(s,"# edge_idx");    read_alloc_array<int>(s);
+  expect_line(s,"# edge_blk");    read_alloc_array<int>(s);
+  expect_line(s,"# start_index"); read_alloc_array<int>(s);
+  expect_line(s,"# end_index");   read_alloc_array<int>(s);
+  expect_line(s,"# start_block"); read_alloc_array<int>(s);
+  expect_line(s,"# end_block");   read_alloc_array<int>(s);
 }
 
 } // namespace icon_serde
 
 /* ------------------------------------------------------------------ */
-/*  Public data structure returned by the loader                      */
-/* ------------------------------------------------------------------ */
 struct IconEdgeData {
-  int nproma = 0;
-  int nblks_c = 0;
-  int nblks_e = 0;
-  int nblks_v = 0;
-  int n_edges = 0;       /* nproma * nblks_e  (full blocked extent) */
-  int n_cells = 0;       /* nproma * nblks_c */
-  int n_verts = 0;       /* nproma * nblks_v */
-  int n_edges_valid = 0; /* actual valid edges (from end_block/end_index) */
-
-  /* Flat connectivity: cell_idx[je*2 + n], n=0,1 -> flat 0-based cell id
-   *                    (0 <= cell_id < n_cells)
-   *                    vert_idx[je*2 + n]        -> flat 0-based vert id
-   *                    (0 <= vert_id < n_verts)
-   * Length: n_edges * 2 each. */
-  std::vector<int> cell_idx;
-  std::vector<int> vert_idx;
-
-  /* Flat 1-D edge geometry (length = n_edges) */
-  std::vector<double> inv_dual;
-  std::vector<double> inv_primal;
-  std::vector<double> tangent_o;
-
+  int nproma=0, nblks_c=0, nblks_e=0, nblks_v=0;
+  int n_edges=0, n_cells=0, n_verts=0, n_edges_valid=0;
+  std::vector<int> cell_idx, vert_idx;
+  std::vector<int> start_idx, end_idx, start_blk, end_blk;
+  std::vector<double> inv_dual, inv_primal, tangent_o;
   void free_all() {
-    cell_idx.clear();    cell_idx.shrink_to_fit();
-    vert_idx.clear();    vert_idx.shrink_to_fit();
-    inv_dual.clear();    inv_dual.shrink_to_fit();
-    inv_primal.clear();  inv_primal.shrink_to_fit();
-    tangent_o.clear();   tangent_o.shrink_to_fit();
+    cell_idx.clear(); cell_idx.shrink_to_fit();
+    vert_idx.clear(); vert_idx.shrink_to_fit();
+    start_idx.clear(); start_idx.shrink_to_fit();
+    end_idx.clear(); end_idx.shrink_to_fit();
+    start_blk.clear(); start_blk.shrink_to_fit();
+    end_blk.clear(); end_blk.shrink_to_fit();
+    inv_dual.clear(); inv_dual.shrink_to_fit();
+    inv_primal.clear(); inv_primal.shrink_to_fit();
+    tangent_o.clear(); tangent_o.shrink_to_fit();
   }
 };
 
 /* ------------------------------------------------------------------ */
-/*  Linearisation helpers                                             */
-/* ------------------------------------------------------------------ */
-
-/*
- * Linearise a blocked (s0, s1, 2) connectivity array into flat [n_edges * 2].
- *
- * s0, s1 are the serde array dimensions (s0 = allocated first dim, s1 = nblks).
- * nproma is the real ICON nproma (used for both output stride and target
- * linearisation).
- *
- * Stored values (idx_val, blk_val) are Fortran 1-based references into
- * the *target* entity grid (cells or vertices).  The flat 0-based target
- * index is:
- *   target_flat = (blk_val - 1) * nproma + (idx_val - 1)
- *
- * Invalid references (boundary padding: idx<=0 or blk<=0) -> clamped to 0.
- */
 static void linearise_connectivity(
-    const std::vector<int> &raw_idx, const icon_serde::ArrayMeta &meta_idx,
-    const std::vector<int> &raw_blk, int nproma,
-    int target_max, /* n_cells or n_verts */
-    int n_edges,    /* nproma * nblks_e -- full extent */
-    std::vector<int> &out) {
-  int s0 = meta_idx.size[0]; /* serde first dim (== nproma normally)  */
-  int s1 = meta_idx.size[1]; /* nblks_e                               */
-
-  out.assign(n_edges * 2, 0);
-
-  for (int n = 0; n < 2; n++) {
-    for (int jb = 0; jb < s1; jb++) {
-      for (int jc = 0; jc < nproma; jc++) {
-        int edge_linear = jb * nproma + jc;
-        if (edge_linear >= n_edges)
-          continue;
-
-        int serde_flat = jc + jb * s0 + n * s0 * s1;
-        int idx_val = raw_idx[serde_flat]; /* Fortran 1-based */
-        int blk_val = raw_blk[serde_flat]; /* Fortran 1-based */
-
-        int target_flat = (blk_val - 1) * nproma + (idx_val - 1);
-
-        if (idx_val <= 0 || blk_val <= 0 || target_flat < 0 ||
-            target_flat >= target_max)
-          target_flat = 0;
-
-        out[edge_linear * 2 + n] = target_flat;
-      }
-    }
+    const std::vector<int>&raw_idx, const icon_serde::ArrayMeta&meta_idx,
+    const std::vector<int>&raw_blk, int nproma,
+    int target_max, int n_edges, std::vector<int>&out) {
+  int s0=meta_idx.size[0], s1=meta_idx.size[1];
+  out.assign(n_edges*2, 0);
+  for(int n=0;n<2;n++) for(int jb=0;jb<s1;jb++) for(int jc=0;jc<nproma;jc++){
+    int el=jb*nproma+jc; if(el>=n_edges) continue;
+    int sf=jc+jb*s0+n*s0*s1;
+    int iv=raw_idx[sf], bv=raw_blk[sf];
+    int tf=(bv-1)*nproma+(iv-1);
+    if(iv<=0||bv<=0||tf<0||tf>=target_max) tf=0;
+    out[el*2+n]=tf;
   }
 }
-
-/*
- * Linearise a 2-D blocked (s0, nblks) double array into flat [nproma * nblks].
- *
- * s0 is the serde first dimension; nproma is used for the output stride.
- */
-static void linearise_2d_double(const std::vector<double> &raw,
-                                int s0_serde, int nproma, int nblks,
-                                std::vector<double> &out) {
-  int n_flat = nproma * nblks;
-  out.assign(n_flat, 0.0);
-  for (int jb = 0; jb < nblks; jb++) {
-    for (int jc = 0; jc < nproma; jc++) {
-      int serde_idx = jc + jb * s0_serde;
-      int flat_idx  = jb * nproma + jc;
-      out[flat_idx] = raw[serde_idx];
-    }
-  }
+static void linearise_2d_double(const std::vector<double>&raw,
+    int s0_serde, int nproma, int nblks, std::vector<double>&out) {
+  out.assign(nproma*nblks, 0.0);
+  for(int jb=0;jb<nblks;jb++) for(int jc=0;jc<nproma;jc++)
+    out[jb*nproma+jc]=raw[jc+jb*s0_serde];
 }
 
-/* ------------------------------------------------------------------ */
-/*  Read nproma from the global data file                             */
-/*                                                                    */
-/*  The global data serde format (from deserialize_global_data):      */
-/*    # nflatlev      array (rank/size/lbound/entries, NO alloc guard) */
-/*    # i_am_accel_node   scalar bool                                 */
-/*    # lextra_diffu      scalar bool                                 */
-/*    # nproma            scalar int   <-- what we want               */
-/*    ...                                                             */
 /* ------------------------------------------------------------------ */
 inline int icon_read_nproma(const char *global_path) {
   using namespace icon_serde;
-
   std::ifstream f(global_path);
-  if (!f.is_open()) {
-    fprintf(stderr, "[icon_data_loader] cannot open global data '%s'\n",
-            global_path);
-    return -1;
-  }
-
-  /* 1. Skip nflatlev array (no # alloc guard -- bare array) */
-  expect_line(f, "# nflatlev");
-  {
-    ArrayMeta m = read_meta(f);
-    expect_line(f, "# entries");
-    skip_entries(f, m.volume());
-  }
-
-  /* 2. Skip i_am_accel_node (scalar bool) */
-  expect_line(f, "# i_am_accel_node");
-  read_int(f);
-
-  /* 3. Skip lextra_diffu (scalar bool) */
-  expect_line(f, "# lextra_diffu");
-  read_int(f);
-
-  /* 4. Read nproma */
-  expect_line(f, "# nproma");
-  int nproma = read_int(f);
-
-  fprintf(stderr, "[icon_data_loader] global nproma = %d\n", nproma);
+  if(!f.is_open()){fprintf(stderr,"[icon_data_loader] cannot open '%s'\n",global_path);return -1;}
+  expect_line(f,"# nflatlev");
+  {ArrayMeta m=read_meta(f);expect_line(f,"# entries");skip_entries(f,m.volume());}
+  expect_line(f,"# i_am_accel_node"); read_int(f);
+  expect_line(f,"# lextra_diffu");    read_int(f);
+  expect_line(f,"# nproma");
+  int nproma=read_int(f);
+  fprintf(stderr,"[icon_data_loader] global nproma = %d\n",nproma);
   return nproma;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Main loader                                                       */
-/*                                                                    */
-/*  nproma must be provided (read it from global data first).         */
-/* ------------------------------------------------------------------ */
 inline bool icon_load_patch(const char *path, int nproma, IconEdgeData &ed) {
   using namespace icon_serde;
-
-  if (nproma <= 0) {
-    fprintf(stderr, "[icon_data_loader] invalid nproma=%d\n", nproma);
-    return false;
-  }
-
+  if(nproma<=0){fprintf(stderr,"[icon_data_loader] invalid nproma=%d\n",nproma);return false;}
   std::ifstream f(path);
-  if (!f.is_open()) {
-    fprintf(stderr, "[icon_data_loader] cannot open '%s'\n", path);
-    return false;
-  }
-  fprintf(stderr, "[icon_data_loader] reading %s  (nproma=%d)\n",
-          path, nproma);
+  if(!f.is_open()){fprintf(stderr,"[icon_data_loader] cannot open '%s'\n",path);return false;}
+  fprintf(stderr,"[icon_data_loader] reading %s  (nproma=%d)\n",path,nproma);
+  ed.nproma=nproma;
+  expect_line(f,"# nblks_c"); ed.nblks_c=read_int(f);
+  expect_line(f,"# nblks_e"); ed.nblks_e=read_int(f);
+  expect_line(f,"# nblks_v"); ed.nblks_v=read_int(f);
+  ed.n_edges=nproma*ed.nblks_e; ed.n_cells=nproma*ed.nblks_c; ed.n_verts=nproma*ed.nblks_v;
 
-  ed.nproma = nproma;
+  fprintf(stderr,"[icon_sizes] Grid topology:\n");
+  fprintf(stderr,"[icon_sizes]   nproma=%d  nblks_c=%d  nblks_e=%d  nblks_v=%d\n",
+          nproma, ed.nblks_c, ed.nblks_e, ed.nblks_v);
+  fprintf(stderr,"[icon_sizes]   n_edges = nproma*nblks_e = %d\n", ed.n_edges);
+  fprintf(stderr,"[icon_sizes]   n_cells = nproma*nblks_c = %d\n", ed.n_cells);
+  fprintf(stderr,"[icon_sizes]   n_verts = nproma*nblks_v = %d\n", ed.n_verts);
 
-  /* ---- top-level scalars ---- */
-  expect_line(f, "# nblks_c");
-  ed.nblks_c = read_int(f);
-  expect_line(f, "# nblks_e");
-  ed.nblks_e = read_int(f);
-  expect_line(f, "# nblks_v");
-  ed.nblks_v = read_int(f);
+  expect_line(f,"# cells"); skip_grid_cells(f);
+  expect_line(f,"# edges");
 
-  /* ---- derived flat sizes ---- */
-  ed.n_edges = nproma * ed.nblks_e;
-  ed.n_cells = nproma * ed.nblks_c;
-  ed.n_verts = nproma * ed.nblks_v;
+  std::vector<int> rc_idx,rc_blk,rv_idx,rv_blk;
+  std::vector<double> r_invp,r_invd,r_tang;
+  ArrayMeta m_ci,m_cb,m_vi,m_vb,m_tg,m_qi,m_qb,m_ip,m_id,m_ae,m_fe,m_fn,m_ft;
+  ArrayMeta m_si,m_ei,m_sb,m_eb;
 
-  /* ---- skip cells ---- */
-  expect_line(f, "# cells");
-  skip_grid_cells(f);
+  fprintf(stderr,"\n[icon_sizes] Edge arrays (serde dimensions):\n");
 
-  /* ---- read edges ---- */
-  expect_line(f, "# edges");
+  expect_line(f,"# cell_idx");               m_ci=read_alloc_array<int>(f,&rc_idx);
+  print_meta("edges","cell_idx",m_ci,"int");
+  expect_line(f,"# cell_blk");               m_cb=read_alloc_array<int>(f,&rc_blk);
+  print_meta("edges","cell_blk",m_cb,"int");
+  expect_line(f,"# vertex_idx");             m_vi=read_alloc_array<int>(f,&rv_idx);
+  print_meta("edges","vertex_idx",m_vi,"int");
+  expect_line(f,"# vertex_blk");             m_vb=read_alloc_array<int>(f,&rv_blk);
+  print_meta("edges","vertex_blk",m_vb,"int");
+  expect_line(f,"# tangent_orientation");    m_tg=read_alloc_array<double>(f,&r_tang);
+  print_meta("edges","tangent_orientation",m_tg,"dbl");
+  expect_line(f,"# quad_idx");               m_qi=read_alloc_array<int>(f);
+  print_meta("edges","quad_idx",m_qi,"int");
+  expect_line(f,"# quad_blk");               m_qb=read_alloc_array<int>(f);
+  print_meta("edges","quad_blk",m_qb,"int");
+  expect_line(f,"# inv_primal_edge_length"); m_ip=read_alloc_array<double>(f,&r_invp);
+  print_meta("edges","inv_primal_edge_length",m_ip,"dbl");
+  expect_line(f,"# inv_dual_edge_length");   m_id=read_alloc_array<double>(f,&r_invd);
+  print_meta("edges","inv_dual_edge_length",m_id,"dbl");
+  expect_line(f,"# area_edge");              m_ae=read_alloc_array<double>(f);
+  print_meta("edges","area_edge",m_ae,"dbl");
+  expect_line(f,"# f_e");                    m_fe=read_alloc_array<double>(f);
+  print_meta("edges","f_e",m_fe,"dbl");
+  expect_line(f,"# fn_e");                   m_fn=read_alloc_array<double>(f);
+  print_meta("edges","fn_e",m_fn,"dbl");
+  expect_line(f,"# ft_e");                   m_ft=read_alloc_array<double>(f);
+  print_meta("edges","ft_e",m_ft,"dbl");
+  expect_line(f,"# start_index");            m_si=read_alloc_array<int>(f,&ed.start_idx);
+  print_meta("edges","start_index",m_si,"int");
+  expect_line(f,"# end_index");              m_ei=read_alloc_array<int>(f,&ed.end_idx);
+  print_meta("edges","end_index",m_ei,"int");
+  expect_line(f,"# start_block");            m_sb=read_alloc_array<int>(f,&ed.start_blk);
+  print_meta("edges","start_block",m_sb,"int");
+  expect_line(f,"# end_block");              m_eb=read_alloc_array<int>(f,&ed.end_blk);
+  print_meta("edges","end_block",m_eb,"int");
 
-  std::vector<int> raw_cell_idx, raw_cell_blk;
-  std::vector<int> raw_vert_idx, raw_vert_blk;
-  std::vector<double> raw_inv_primal, raw_inv_dual, raw_tangent;
-  std::vector<int> raw_end_index, raw_end_block;
+  /* linearised / collapsed dimensions */
+  fprintf(stderr,"\n[icon_sizes] Linearised arrays used in stencil:\n");
+  fprintf(stderr,"[icon_sizes]   cell_idx     [n_edges*2]     = [%d]       (%d -> [0,%d))\n",
+          ed.n_edges*2, ed.n_edges, ed.n_cells);
+  fprintf(stderr,"[icon_sizes]   vert_idx     [n_edges*2]     = [%d]       (%d -> [0,%d))\n",
+          ed.n_edges*2, ed.n_edges, ed.n_verts);
+  fprintf(stderr,"[icon_sizes]   inv_dual     [n_edges]       = [%d]\n", ed.n_edges);
+  fprintf(stderr,"[icon_sizes]   inv_primal   [n_edges]       = [%d]\n", ed.n_edges);
+  fprintf(stderr,"[icon_sizes]   tangent_o    [n_edges]       = [%d]\n", ed.n_edges);
+  fprintf(stderr,"[icon_sizes]   vn_ie        [n_edges*nlev]  (runtime, per-level)\n");
+  fprintf(stderr,"[icon_sizes]   w            [n_cells*nlev]  (indirect target, n_cells=%d)\n", ed.n_cells);
+  fprintf(stderr,"[icon_sizes]   z_w_v        [n_verts*nlev]  (indirect target, n_verts=%d)\n", ed.n_verts);
+  fprintf(stderr,"[icon_sizes]   out          [n_edges*nlev]  (output)\n");
 
-  ArrayMeta m_cidx, m_cblk, m_vidx, m_vblk;
-  ArrayMeta m_tang, m_invp, m_invd;
+  {int s0=m_ci.size[0]; if(s0!=nproma) fprintf(stderr,"[icon_data_loader] WARNING: serde size[0]=%d != nproma=%d\n",s0,nproma);}
+  {int mx=0; for(int i=0;i<(int)ed.end_blk.size();i++){
+    if(ed.end_blk[i]<=0||ed.end_idx[i]<=0) continue;
+    int fl=(ed.end_blk[i]-1)*nproma+ed.end_idx[i]; if(fl>mx) mx=fl;}
+    ed.n_edges_valid=mx; if(ed.n_edges_valid<=0) ed.n_edges_valid=ed.n_edges;
+    if(ed.n_edges_valid>ed.n_edges) ed.n_edges_valid=ed.n_edges;}
 
-  /* 1 */ expect_line(f, "# cell_idx");
-  m_cidx = read_alloc_array<int>(f, &raw_cell_idx);
-  /* 2 */ expect_line(f, "# cell_blk");
-  m_cblk = read_alloc_array<int>(f, &raw_cell_blk);
-  /* 3 */ expect_line(f, "# vertex_idx");
-  m_vidx = read_alloc_array<int>(f, &raw_vert_idx);
-  /* 4 */ expect_line(f, "# vertex_blk");
-  m_vblk = read_alloc_array<int>(f, &raw_vert_blk);
-  /* 5 */ expect_line(f, "# tangent_orientation");
-  m_tang = read_alloc_array<double>(f, &raw_tangent);
-  /* 6 */ expect_line(f, "# quad_idx");
-  read_alloc_array<int>(f); /* skip */
-  /* 7 */ expect_line(f, "# quad_blk");
-  read_alloc_array<int>(f); /* skip */
-  /* 8 */ expect_line(f, "# inv_primal_edge_length");
-  m_invp = read_alloc_array<double>(f, &raw_inv_primal);
-  /* 9 */ expect_line(f, "# inv_dual_edge_length");
-  m_invd = read_alloc_array<double>(f, &raw_inv_dual);
-  /*10 */ expect_line(f, "# area_edge");
-  read_alloc_array<double>(f); /* skip */
-  /*11 */ expect_line(f, "# f_e");
-  read_alloc_array<double>(f); /* skip */
-  /*12 */ expect_line(f, "# fn_e");
-  read_alloc_array<double>(f); /* skip */
-  /*13 */ expect_line(f, "# ft_e");
-  read_alloc_array<double>(f); /* skip */
-  /*14 */ expect_line(f, "# start_index");
-  read_alloc_array<int>(f); /* skip */
-  /*15 */ expect_line(f, "# end_index");
-  read_alloc_array<int>(f, &raw_end_index);
-  /*16 */ expect_line(f, "# start_block");
-  read_alloc_array<int>(f); /* skip */
-  /*17 */ expect_line(f, "# end_block");
-  read_alloc_array<int>(f, &raw_end_block);
+  fprintf(stderr,"\n[icon_sizes] n_edges_valid=%d (%.1f%% of n_edges=%d)\n",
+          ed.n_edges_valid, 100.0*ed.n_edges_valid/ed.n_edges, ed.n_edges);
 
-  /* ---- sanity-check serde dims vs nproma ---- */
-  {
-    int s0 = m_cidx.size[0];
-    if (s0 != nproma) {
-      fprintf(stderr,
-              "[icon_data_loader] WARNING: serde size[0]=%d != nproma=%d\n",
-              s0, nproma);
-    }
-    int s1 = m_cidx.size[1];
-    if (s1 != ed.nblks_e) {
-      fprintf(stderr,
-              "[icon_data_loader] WARNING: serde size[1]=%d != nblks_e=%d\n",
-              s1, ed.nblks_e);
-    }
-  }
-
-  /* ---- compute n_edges_valid (informational) ---- */
-  {
-    int max_flat = 0;
-    int n_entries = (int)raw_end_block.size();
-    for (int i = 0; i < n_entries; i++) {
-      if (raw_end_block[i] <= 0 || raw_end_index[i] <= 0)
-        continue;
-      int flat = (raw_end_block[i] - 1) * nproma + raw_end_index[i];
-      if (flat > max_flat)
-        max_flat = flat;
-    }
-    ed.n_edges_valid = max_flat;
-    if (ed.n_edges_valid <= 0)
-      ed.n_edges_valid = ed.n_edges;
-    if (ed.n_edges_valid > ed.n_edges)
-      ed.n_edges_valid = ed.n_edges;
+  fprintf(stderr,"\n[icon_sizes] Edge range table (%d levels):\n", (int)ed.end_idx.size());
+  fprintf(stderr,"[icon_sizes]   %4s  %14s  %14s  %10s  %8s\n",
+          "lvl", "start(blk,idx)", "end(blk,idx)", "linear", "n_edges");
+  for (int i=0; i<(int)ed.end_idx.size(); i++) {
+    int s_lin = (ed.start_blk[i]>0 && ed.start_idx[i]>0)
+              ? (ed.start_blk[i]-1)*nproma + (ed.start_idx[i]-1) : -1;
+    int e_lin = (ed.end_blk[i]>0 && ed.end_idx[i]>0)
+              ? (ed.end_blk[i]-1)*nproma + (ed.end_idx[i]-1) : -1;
+    int count = (s_lin>=0 && e_lin>=0) ? e_lin-s_lin+1 : 0;
+    fprintf(stderr,"[icon_sizes]   %4d  (%4d,%6d)  (%4d,%6d)  [%6d,%6d]  %8d\n",
+            i, ed.start_blk[i], ed.start_idx[i], ed.end_blk[i], ed.end_idx[i],
+            s_lin, e_lin, count);
   }
 
-  fprintf(stderr,
-          "[icon_data_loader] nproma=%d  nblks_e=%d  nblks_c=%d  nblks_v=%d\n"
-          "                   n_edges=%d (valid=%d)  n_cells=%d  n_verts=%d\n",
-          ed.nproma, ed.nblks_e, ed.nblks_c, ed.nblks_v,
-          ed.n_edges, ed.n_edges_valid, ed.n_cells, ed.n_verts);
+  linearise_connectivity(rc_idx,m_ci,rc_blk,nproma,ed.n_cells,ed.n_edges,ed.cell_idx);
+  linearise_connectivity(rv_idx,m_vi,rv_blk,nproma,ed.n_verts,ed.n_edges,ed.vert_idx);
+  linearise_2d_double(r_invd,m_id.size[0],nproma,ed.nblks_e,ed.inv_dual);
+  linearise_2d_double(r_invp,m_ip.size[0],nproma,ed.nblks_e,ed.inv_primal);
+  linearise_2d_double(r_tang,m_tg.size[0],nproma,ed.nblks_e,ed.tangent_o);
 
-  /* ---- linearise connectivity (full nproma * nblks_e extent) ----
-   *
-   * cell_idx targets cells -> target_max = n_cells = nproma * nblks_c
-   * vert_idx targets verts -> target_max = n_verts = nproma * nblks_v
-   */
-  linearise_connectivity(raw_cell_idx, m_cidx, raw_cell_blk, nproma,
-                         ed.n_cells, ed.n_edges, ed.cell_idx);
-
-  linearise_connectivity(raw_vert_idx, m_vidx, raw_vert_blk, nproma,
-                         ed.n_verts, ed.n_edges, ed.vert_idx);
-
-  /* ---- linearise 1-D geometry (full nproma * nblks_e) ---- */
-  linearise_2d_double(raw_inv_dual,   m_invd.size[0], nproma, ed.nblks_e, ed.inv_dual);
-  linearise_2d_double(raw_inv_primal, m_invp.size[0], nproma, ed.nblks_e, ed.inv_primal);
-  linearise_2d_double(raw_tangent,    m_tang.size[0], nproma, ed.nblks_e, ed.tangent_o);
-
-  fprintf(stderr,
-          "[icon_data_loader] done.  Sample cell_idx[0]={%d,%d}  "
-          "vert_idx[0]={%d,%d}\n",
-          ed.cell_idx[0], ed.cell_idx[1], ed.vert_idx[0], ed.vert_idx[1]);
-
+  fprintf(stderr,"[icon_data_loader] done.  Sample cell_idx[0]={%d,%d}  vert_idx[0]={%d,%d}\n",
+    ed.cell_idx[0],ed.cell_idx[1],ed.vert_idx[0],ed.vert_idx[1]);
   return true;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Convenience: build paths from ICON_DATA_PATH env + timestep       */
+/*  Indirection locality metrics                                      */
+/*                                                                     */
+/*  Key metrics for cache performance:                                 */
+/*    consecutive: |idx[je+1] - idx[je]|  → cache reuse between edges  */
+/*    pair:        |ci0 - ci1|            → reuse within one edge      */
+/*    unique:      # distinct idx values  → indirect working set       */
+/* ------------------------------------------------------------------ */
+inline void print_idx_locality(const char *label, const char *idx_name,
+                               const int *logical, int N, int idx_max) {
+  static constexpr int BUCKETS[] = {1,2,4,8,16,32,64,128,256,1024,4096,16384,65536};
+  static constexpr int NB = sizeof(BUCKETS)/sizeof(BUCKETS[0]);
+
+  /* --- consecutive distance: |idx[(je+1)*2+n] - idx[je*2+n]| --- */
+  double consec_sum = 0;
+  long long consec_same_cl = 0, consec_within_page = 0;
+  int consec_max = 0;
+  long long consec_hist[NB+1] = {};
+  for (int je = 0; je < N-1; je++) {
+    for (int n = 0; n < 2; n++) {
+      int d = std::abs(logical[(je+1)*2+n] - logical[je*2+n]);
+      consec_sum += d;
+      if (d < 8) consec_same_cl++;
+      if (d < 512) consec_within_page++;
+      if (d > consec_max) consec_max = d;
+      int b = NB;
+      for (int i = 0; i < NB; i++) { if (d < BUCKETS[i]) { b = i; break; } }
+      consec_hist[b]++;
+    }
+  }
+  long long ctotal = (long long)(N-1) * 2;
+
+  /* --- pair distance: |ci0 - ci1| for same edge --- */
+  double pair_sum = 0;
+  long long pair_same_cl = 0;
+  int pair_max = 0;
+  for (int je = 0; je < N; je++) {
+    int d = std::abs(logical[je*2+0] - logical[je*2+1]);
+    pair_sum += d;
+    if (d < 8) pair_same_cl++;
+    if (d > pair_max) pair_max = d;
+  }
+
+  /* --- unique count (working set) via bitset --- */
+  int unique = 0;
+  {
+    std::vector<bool> seen(idx_max, false);
+    for (int je = 0; je < N; je++)
+      for (int n = 0; n < 2; n++) {
+        int idx = logical[je*2+n];
+        if (idx >= 0 && idx < idx_max && !seen[idx]) { seen[idx] = true; unique++; }
+      }
+  }
+
+  fprintf(stderr, "[locality] %s %s (N=%d, idx_max=%d, unique=%d = %.1f%%):\n",
+          label, idx_name, N, idx_max, unique, 100.0*unique/idx_max);
+  fprintf(stderr, "[locality]   consecutive |idx[je+1]-idx[je]|: avg=%5.1f  max=%d  same_cl(<8)=%5.1f%%  within_page(<512)=%5.1f%%\n",
+          consec_sum/ctotal, consec_max, 100.0*consec_same_cl/ctotal, 100.0*consec_within_page/ctotal);
+  fprintf(stderr, "[locality]   pair |ci0-ci1|:                   avg=%5.1f  max=%d  same_cl(<8)=%5.1f%%\n",
+          pair_sum/N, pair_max, 100.0*pair_same_cl/N);
+  fprintf(stderr, "[locality]   consecutive histogram:\n");
+  fprintf(stderr, "[locality]     ");
+  long long cum = 0;
+  for (int i = 0; i < NB; i++) {
+    cum += consec_hist[i];
+    fprintf(stderr, "<%d:%.0f%% ", BUCKETS[i], 100.0*cum/ctotal);
+  }
+  fprintf(stderr, "\n");
+}
+
+inline void icon_print_locality_metrics(const IconEdgeData &ed) {
+  fprintf(stderr, "\n");
+  print_idx_locality("exact", "cell_idx", ed.cell_idx.data(), ed.n_edges, ed.n_cells);
+  print_idx_locality("exact", "vert_idx", ed.vert_idx.data(), ed.n_edges, ed.n_verts);
+  fprintf(stderr, "\n");
+}
+
+inline void print_synthetic_locality(const char *dist_label,
+                                     const int *cell_logical,
+                                     const int *vert_logical,
+                                     int N, int cell_max, int vert_max) {
+  print_idx_locality(dist_label, "cell_idx", cell_logical, N, cell_max);
+  if (vert_logical)
+    print_idx_locality(dist_label, "vert_idx", vert_logical, N, vert_max);
+}
+
 /* ------------------------------------------------------------------ */
 inline std::string icon_data_dir() {
-  const char *env = std::getenv("ICON_DATA_PATH");
-  std::string dir =
-      env ? env : "/home/primrose/Work/icon-artifacts/velocity/data_r02b05";
-  while (!dir.empty() && dir.back() == '/')
-    dir.pop_back();
+  const char*env=std::getenv("ICON_DATA_PATH");
+  std::string dir=env?env:"/home/primrose/Work/icon-artifacts/velocity/data_r02b05";
+  while(!dir.empty()&&dir.back()=='/') dir.pop_back();
   return dir;
 }
+inline std::string icon_patch_path(int ts=9)  {return icon_data_dir()+"/p_patch."+std::to_string(ts)+".data";}
+inline std::string icon_global_path(int ts=9) {return icon_data_dir()+"/global_data.t0."+std::to_string(ts)+".data";}
 
-inline std::string icon_patch_path(int timestep = 9) {
-  return icon_data_dir() + "/p_patch." + std::to_string(timestep) + ".data";
-}
+inline int icon_pad_nlev(int nlev, int align=32) { return nlev; }
 
-inline std::string icon_global_path(int timestep = 9) {
-  return icon_data_dir() + "/global_data.t0." + std::to_string(timestep) + ".data";
-}
+/*
+ * Variant mapping:
+ *   V1 = je-first, basic IN    (kernel V=1)
+ *   V2 = je-first, optimised IN (kernel V=2)
+ *   V3 = jk-first, basic IN    (kernel V=3)
+ *   V4 = jk-first, optimised IN (kernel V=4)
+ *   V5 = jk-first, optimised IN, padded nlev (kernel V=4, nlev=pad(nlev_end))
+ *   V6 = flat 1D, jk-first, padded nlev      (kernel V=4 layout)
+ *   V7 = flat 1D with TX, jk-first, unpadded  (kernel V=4 layout)
+ */
+inline int kern_v(int V) { return (V >= 5) ? 4 : V; }
 
 #endif /* ICON_DATA_LOADER_H */
