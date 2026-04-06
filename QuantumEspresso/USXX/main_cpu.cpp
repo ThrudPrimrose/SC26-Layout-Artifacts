@@ -99,8 +99,9 @@ static constexpr int NTYP_MAX    = 3;
 static constexpr int MILL_DIM1   = 3;
 static constexpr int MILL_DIM2   = 156121;
 static constexpr int NL_SIZE     = 55191;
-static constexpr int IJTOH_N1    = 19;
-static constexpr int IJTOH_N2    = 19;
+// Defined elsewhere
+//static constexpr int IJTOH_N1    = 19;
+//static constexpr int IJTOH_N2    = 19;
 static constexpr int IJTOH_N3    = 3;
 
 static constexpr int NUM_ITERS   = 100;

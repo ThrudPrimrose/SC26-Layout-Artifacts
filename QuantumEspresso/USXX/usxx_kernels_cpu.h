@@ -47,7 +47,6 @@ static constexpr double TPI = 2.0 * PI;
 // CPU kernel declarations
 // ============================================================
 // Templated see impl.h
-
 // Utility
 inline void aos_to_soa(const Complex_DP* aos, double* re, double* im, int n) {
     for (int i = 0; i < n; i++) { re[i] = aos[i].x; im[i] = aos[i].y; }
