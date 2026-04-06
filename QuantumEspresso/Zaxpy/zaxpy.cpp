@@ -233,30 +233,66 @@ static NUMAPartition buildNUMAPartition(const int *ymap, int nx, int ny)
     return p;
 }
 
-// AoS partitioned: iterate in NUMA-partitioned order,
-// x reads via perm (mostly ascending), y writes are NUMA-local.
+// AoS partitioned: explicit NUMA-domain-aware scheduling.
+// Threads on domain d only process indices in [domain_start[d], domain_start[d+1]).
 static void kern_aos_partitioned(int nx, const int *perm, const int *ymap_part,
+                                 const int *domain_start,
                                  const double *x, double *y)
 {
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < nx; i++) {
-        int xi = perm[i];          // original x index — ascending within each domain
-        int yi = ymap_part[i];     // y target — NUMA-local to this thread's domain
-        y[2*yi]   += x[2*xi];
-        y[2*yi+1] += x[2*xi+1];
+    constexpr int ND = NUMA_NODES;
+    int nthreads = omp_get_max_threads();
+    int tpd = nthreads / ND;
+
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        int d   = std::min(tid / tpd, ND - 1);
+        int local_tid = tid - d * tpd;
+        int local_nth = (d == ND - 1) ? (nthreads - d * tpd) : tpd;
+
+        int d_start = domain_start[d];
+        int d_count = domain_start[d + 1] - d_start;
+
+        int my_start = d_start + (int)((long long)d_count * local_tid / local_nth);
+        int my_end   = d_start + (int)((long long)d_count * (local_tid + 1) / local_nth);
+
+        for (int i = my_start; i < my_end; i++) {
+            int xi = perm[i];
+            int yi = ymap_part[i];
+            y[2*yi]   += x[2*xi];
+            y[2*yi+1] += x[2*xi+1];
+        }
     }
 }
 
 static void kern_soa_partitioned(int nx, const int *perm, const int *ymap_part,
+                                 const int *domain_start,
                                  const double *xr, const double *xi,
                                  double *yr, double *yi)
 {
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < nx; i++) {
-        int x_ = perm[i];
-        int y_ = ymap_part[i];
-        yr[y_] += xr[x_];
-        yi[y_] += xi[x_];
+    constexpr int ND = NUMA_NODES;
+    int nthreads = omp_get_max_threads();
+    int tpd = nthreads / ND;
+
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        int d   = std::min(tid / tpd, ND - 1);
+        int local_tid = tid - d * tpd;
+        int local_nth = (d == ND - 1) ? (nthreads - d * tpd) : tpd;
+
+        int d_start = domain_start[d];
+        int d_count = domain_start[d + 1] - d_start;
+
+        int my_start = d_start + (int)((long long)d_count * local_tid / local_nth);
+        int my_end   = d_start + (int)((long long)d_count * (local_tid + 1) / local_nth);
+
+        for (int i = my_start; i < my_end; i++) {
+            int x_ = perm[i];
+            int y_ = ymap_part[i];
+            yr[y_] += xr[x_];
+            yi[y_] += xi[x_];
+        }
     }
 }
 
@@ -434,10 +470,15 @@ void profile_config(
         first_touch_copy(perm_numa,      part.perm.data(),      (size_t)nx);
         first_touch_copy(ymap_part_numa, part.ymap_part.data(), (size_t)nx);
 
+        // domain_start: small array (ND+1 ints), just copy
+        int *dstart = numa_alloc_unfaulted<int>(NUMA_NODES + 1);
+        for (int d = 0; d <= NUMA_NODES; d++)
+            dstart[d] = part.domain_start[d];
+
         // AoS partitioned
         run("aos_partitioned",
             [&]{ memcpy(y_aos, y_aos_init, 2*ny*sizeof(double)); },
-            [&]{ kern_aos_partitioned(nx, perm_numa, ymap_part_numa, x_aos, y_aos); },
+            [&]{ kern_aos_partitioned(nx, perm_numa, ymap_part_numa, dstart, x_aos, y_aos); },
             [&]{ return verify_aos(ny, y_aos, ref_aos); }
         );
 
@@ -447,12 +488,13 @@ void profile_config(
                 memcpy(yr, yr_init, ny*sizeof(double));
                 memcpy(yi, yi_init, ny*sizeof(double));
             },
-            [&]{ kern_soa_partitioned(nx, perm_numa, ymap_part_numa, xr, xi, yr, yi); },
+            [&]{ kern_soa_partitioned(nx, perm_numa, ymap_part_numa, dstart, xr, xi, yr, yi); },
             [&]{ return verify_soa(ny, yr, yi, ref_re, ref_im); }
         );
 
         numa_dealloc(perm_numa, nx);
         numa_dealloc(ymap_part_numa, nx);
+        numa_dealloc(dstart, NUMA_NODES + 1);
     }
 
     // Cleanup
