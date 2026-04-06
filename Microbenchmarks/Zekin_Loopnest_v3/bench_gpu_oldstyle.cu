@@ -135,8 +135,8 @@ __global__ void gpu_kernel_je_first(
                     (w[IC<V>(ci0_a[tx], jk, N_c, nlev)] -
                      w[IC<V>(ci1_a[tx], jk, N_c, nlev)])
               + z_vt_ie[c2d] * ip_a[tx] * tg_a[tx] *
-                    (z_w_v[IC<V>(vi0_a[tx], jk, N_v, nlev)] -
-                     z_w_v[IC<V>(vi1_a[tx], jk, N_v, nlev)]);
+                    (z_w_v[IC<V>(vi0_a[tx], jk, N_c, nlev)] -
+                     z_w_v[IC<V>(vi1_a[tx], jk, N_c, nlev)]);
         }
     }
 }
@@ -190,8 +190,8 @@ __global__ void gpu_kernel_jk_first(
                     (w[IC<V>(ci0_a[ty], jk, N_c, nlev)] -
                      w[IC<V>(ci1_a[ty], jk, N_c, nlev)])
               + z_vt_ie[c2d] * ip_a[ty] * tg_a[ty] *
-                    (z_w_v[IC<V>(vi0_a[ty], jk, N_v, nlev)] -
-                     z_w_v[IC<V>(vi1_a[ty], jk, N_v, nlev)]);
+                    (z_w_v[IC<V>(vi0_a[ty], jk, N_c, nlev)] -
+                     z_w_v[IC<V>(vi1_a[ty], jk, N_c, nlev)]);
         }
     }
 }
@@ -434,7 +434,8 @@ int main(int argc, char* argv[]) {
     assert(have_exact);
     if (have_exact) icon_print_locality_metrics(ied);
 
-    const int N_e = ied.n_edges_valid, N_c = ied.n_cells, N_v = ied.n_verts;
+    //const int N_e = ied.n_edges_valid, N_c = ied.n_cells, N_v = ied.n_verts;
+    const int N_e=81920, N_c=81920, N_v=81920;
     printf("Dimensions: N_e=%d N_c=%d N_v=%d\n", N_e, N_c, N_v);
 
     std::mt19937 rng(42);

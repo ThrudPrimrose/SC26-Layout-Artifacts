@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=zekin_b
+#SBATCH --job-name=zekin_bold
 #SBATCH --nodes=1
 #SBATCH --partition=mi300
 #SBATCH --time=08:00:00
-#SBATCH --output=zekin_b_%j.out
-#SBATCH --error=zekin_b_%j.err
+#SBATCH --output=zekin_bold_%j.out
+#SBATCH --error=zekin_bold_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
 
@@ -86,7 +86,7 @@ hipcc -O3 -std=c++17 \
     -fgpu-flush-denormals-to-zero \
     -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
     -ffast-math --offload-arch=$ARCH -fopenmp \
-    -o bench_gpu_oldstyle bench_gpu_oldtyle_hip.cpp
+    -o bench_gpu_oldstyle bench_gpu_oldstyle_hip.cpp
 
 
 ./bench_gpu_oldstyle

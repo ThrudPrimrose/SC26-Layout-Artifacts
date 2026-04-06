@@ -15,6 +15,7 @@ export OMP_NUM_THREADS=96
 export OMP_PLACES="{0}:24:1,{24}:24:1,{48}:24:1,{72}:24:1"
 export OMP_PROC_BIND=close
 
+spack load gcc/ktd4slj
 
 export OMP_DISPLAY_ENV=TRUE
 
