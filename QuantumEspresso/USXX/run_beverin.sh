@@ -46,13 +46,19 @@ hipcc -O3 -std=c++17 \
     -march=native \
     -mtune=native \
     -ffast-math \
+    -fno-math-errno \
+    -ffinite-math-only \
+    -fno-trapping-math \
+    -freciprocal-math \
+    -ffp-contract=fast \
     -munsafe-fp-atomics \
     -mllvm -amdgpu-early-inline-all=true \
     -mllvm -amdgpu-function-calls=false \
     -fgpu-flush-denormals-to-zero \
+    -funroll-loops \
     -D__HIP_PLATFORM_AMD__=1 -DHIP_PLATFORM_AMD=1 \
     -fgpu-rdc \
     -o addusxx_gpu_beverin \
-    main_hip.cpp 
+    main_hip.cpp
 
 ./addusxx_gpu_beverin

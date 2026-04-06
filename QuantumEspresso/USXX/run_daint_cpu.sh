@@ -40,6 +40,7 @@ g++ -O3 -std=c++17 \
     -ffast-math \
     -fno-vect-cost-model \
     -ftree-vectorize \
+    -ffast-math -fno-math-errno -fno-trapping-math -ffinite-math-only \
     -o addusxx_cpu_daint \
     main_cpu.cpp \
     -lgomp

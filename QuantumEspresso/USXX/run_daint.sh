@@ -40,6 +40,8 @@ nvcc -O3 -std=c++17 \
     -arch=native \
     -Xcompiler -fopenmp \
     -Xcompiler -march=native \
+    -Xcompiler "-ffast-math -fno-math-errno -fno-trapping-math -ffinite-math-only" \
+    --use_fast_math \
     -o addusxx_gpu_daint \
     main.cu 
     

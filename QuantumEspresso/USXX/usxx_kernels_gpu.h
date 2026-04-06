@@ -1,11 +1,6 @@
 #pragma once
 #include "types.h"
 
-
-static constexpr int QGM_R  = 55191;
-static constexpr int QGMT_R = 397;
-static constexpr int IJ_N1  = 19, IJ_N2 = 19;
-
 // ============================================================
 // Indexing helpers (unchanged)
 // ============================================================
@@ -26,21 +21,9 @@ static constexpr int IJ_N1  = 19, IJ_N2 = 19;
 #define SOA_MULCONJ_IM(ar,ai,br,bi) ((ai)*(br)-(ar)*(bi))
 
 // ============================================================
-// Coarsen loop helper: COARSEN is compile-time, UNROLL_C
-// selects whether #pragma unroll is applied.
-// Body F must NOT use 'return' — use if(gi<ngms) guard.
+// No device lambdas — kernels use if constexpr with duplicated
+// loop header to apply #pragma unroll conditionally.
 // ============================================================
-namespace detail {
-template<int N, bool U, typename F>
-__device__ __forceinline__ void coarsen_for(F f) {
-    if constexpr (U) {
-        #pragma unroll
-        for (int c = 0; c < N; c++) f(c);
-    } else {
-        for (int c = 0; c < N; c++) f(c);
-    }
-}
-} // namespace detail
 
 // ============================================================
 // Dispatch macro: runtime (coarsen, unroll) → template instantiation
