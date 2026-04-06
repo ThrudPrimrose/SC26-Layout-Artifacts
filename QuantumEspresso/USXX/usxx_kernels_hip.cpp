@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 #include "usxx_kernels.h"
 #include <cstdio>
 #include <cmath>
@@ -174,7 +175,7 @@ void addusxx_g_gpu(
     int tblock_size, int coarsen)
 {
     Complex_DP* d_eigqts;
-    cudaMalloc(&d_eigqts, nat * sizeof(Complex_DP));
+    hipMalloc(&d_eigqts, nat * sizeof(Complex_DP));
     kernel_eigqts<<<(nat + 255) / 256, 256>>>(d_eigqts, d_xkq, d_xk, d_tau, nat);
 
     int n_logical = (ngms + coarsen - 1) / coarsen;
@@ -191,7 +192,7 @@ void addusxx_g_gpu(
             d_mill, d_dfftt__nl, d_eigqts,
             coarsen);
     }
-    cudaFree(d_eigqts);
+    hipFree(d_eigqts);
 }
 
 // ============================================================
@@ -292,9 +293,9 @@ void addusxx_g_gpu_optimized(
     int tblock_size, int coarsen)
 {
     Complex_DP* d_eigqts;
-    cudaMalloc(&d_eigqts, nat * sizeof(Complex_DP));
+    hipMalloc(&d_eigqts, nat * sizeof(Complex_DP));
     Complex_DP* d_aux2_array;
-    cudaMalloc(&d_aux2_array, (size_t)nat * ngms * sizeof(Complex_DP));
+    hipMalloc(&d_aux2_array, (size_t)nat * ngms * sizeof(Complex_DP));
 
     kernel_eigqts<<<(nat + 255) / 256, 256>>>(d_eigqts, d_xkq, d_xk, d_tau, nat);
 
@@ -303,7 +304,7 @@ void addusxx_g_gpu_optimized(
 
     for (int nt = 0; nt < ntyp; nt++) {
         if (h_upf_tvanp[nt] != 1) continue;
-        cudaMemset(d_aux2_array, 0, (size_t)nat * ngms * sizeof(Complex_DP));
+        hipMemset(d_aux2_array, 0, (size_t)nat * ngms * sizeof(Complex_DP));
 
         kernel_addusxx_optimized_compute<<<blocks, tblock_size>>>(
             d_aux2_array, d_becphi_c, d_becpsi_c,
@@ -319,6 +320,6 @@ void addusxx_g_gpu_optimized(
             d_dfftt__nl_sorted, d_dfftt__nl_ix, coarsen);
     }
 
-    cudaFree(d_aux2_array);
-    cudaFree(d_eigqts);
+    hipFree(d_aux2_array);
+    hipFree(d_eigqts);
 }

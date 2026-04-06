@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 #include "usxx_kernels.h"
 #include <cstdio>
 #include <cmath>
@@ -145,8 +146,8 @@ void addusxx_g_gpu_soa(
     int tblock_size, int coarsen)
 {
     double *d_eigqts_re, *d_eigqts_im;
-    cudaMalloc(&d_eigqts_re, nat * sizeof(double));
-    cudaMalloc(&d_eigqts_im, nat * sizeof(double));
+    hipMalloc(&d_eigqts_re, nat * sizeof(double));
+    hipMalloc(&d_eigqts_im, nat * sizeof(double));
     kernel_eigqts_soa<<<(nat + 255) / 256, 256>>>(
         d_eigqts_re, d_eigqts_im, d_xkq, d_xk, d_tau, nat);
 
@@ -170,8 +171,8 @@ void addusxx_g_gpu_soa(
             d_eigqts_re, d_eigqts_im,
             coarsen);
     }
-    cudaFree(d_eigqts_re);
-    cudaFree(d_eigqts_im);
+    hipFree(d_eigqts_re);
+    hipFree(d_eigqts_im);
 }
 
 // ============================================================
@@ -287,12 +288,12 @@ void addusxx_g_gpu_optimized_soa(
     int tblock_size, int coarsen)
 {
     double *d_eigqts_re, *d_eigqts_im;
-    cudaMalloc(&d_eigqts_re, nat * sizeof(double));
-    cudaMalloc(&d_eigqts_im, nat * sizeof(double));
+    hipMalloc(&d_eigqts_re, nat * sizeof(double));
+    hipMalloc(&d_eigqts_im, nat * sizeof(double));
     double *d_aux2_re, *d_aux2_im;
     size_t aux2_bytes = (size_t)nat * ngms * sizeof(double);
-    cudaMalloc(&d_aux2_re, aux2_bytes);
-    cudaMalloc(&d_aux2_im, aux2_bytes);
+    hipMalloc(&d_aux2_re, aux2_bytes);
+    hipMalloc(&d_aux2_im, aux2_bytes);
 
     kernel_eigqts_soa<<<(nat + 255) / 256, 256>>>(
         d_eigqts_re, d_eigqts_im, d_xkq, d_xk, d_tau, nat);
@@ -302,8 +303,8 @@ void addusxx_g_gpu_optimized_soa(
 
     for (int nt = 0; nt < ntyp; nt++) {
         if (h_upf_tvanp[nt] != 1) continue;
-        cudaMemset(d_aux2_re, 0, aux2_bytes);
-        cudaMemset(d_aux2_im, 0, aux2_bytes);
+        hipMemset(d_aux2_re, 0, aux2_bytes);
+        hipMemset(d_aux2_im, 0, aux2_bytes);
 
         kernel_addusxx_opt_soa_compute<<<blocks, tblock_size>>>(
             d_aux2_re, d_aux2_im,
@@ -328,8 +329,8 @@ void addusxx_g_gpu_optimized_soa(
             coarsen);
     }
 
-    cudaFree(d_aux2_re);
-    cudaFree(d_aux2_im);
-    cudaFree(d_eigqts_re);
-    cudaFree(d_eigqts_im);
+    hipFree(d_aux2_re);
+    hipFree(d_aux2_im);
+    hipFree(d_eigqts_re);
+    hipFree(d_eigqts_im);
 }
