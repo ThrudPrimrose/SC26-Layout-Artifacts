@@ -3,23 +3,25 @@
 #include <cmath>
 
 // ============================================================
-// Platform detection and includes
+// Platform detection, runtime includes, API compat
 // ============================================================
+#if defined(__CUDACC__) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+    #include "gpu_runtime.h"
+#endif
+
 #if defined(__CUDACC__)
-    // NVIDIA CUDA
-    #include <cuda_runtime.h>
     #include <cuComplex.h>
     using Complex_DP = cuDoubleComplex;
-    #define GPU_HOST_DEVICE __host__ __device__
 #elif defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
-    // AMD HIP
-    #include <hip/hip_runtime.h>
     #include <hip/hip_complex.h>
     using Complex_DP = hipDoubleComplex;
+#else
+    struct Complex_DP { double x, y; };
+#endif
+
+#if defined(__CUDACC__) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
     #define GPU_HOST_DEVICE __host__ __device__
 #else
-    // Plain host compiler (e.g. g++ compiling a .cpp that includes this)
-    struct Complex_DP { double x, y; };
     #define GPU_HOST_DEVICE
 #endif
 
@@ -27,14 +29,11 @@ using DP = double;
 using HostComplex = std::complex<double>;
 
 // ============================================================
-// Complex helpers — use .x/.y fields directly so we don't
-// depend on cuCmul/hipCmul which vary across SDK versions.
-// Both cuDoubleComplex and hipDoubleComplex are { double x, y; }.
+// Complex helpers — uses .x/.y fields directly.
+// Works on CUDA, HIP, and plain host.
 // ============================================================
 GPU_HOST_DEVICE inline Complex_DP make_cmplx(double r, double i) {
-    Complex_DP c;
-    c.x = r; c.y = i;
-    return c;
+    Complex_DP c; c.x = r; c.y = i; return c;
 }
 
 GPU_HOST_DEVICE inline double creal_val(Complex_DP a) { return a.x; }
@@ -48,24 +47,15 @@ GPU_HOST_DEVICE inline Complex_DP cmul(Complex_DP a, Complex_DP b) {
 }
 
 GPU_HOST_DEVICE inline Complex_DP cadd(Complex_DP a, Complex_DP b) {
-    Complex_DP c;
-    c.x = a.x + b.x;
-    c.y = a.y + b.y;
-    return c;
+    Complex_DP c; c.x = a.x + b.x; c.y = a.y + b.y; return c;
 }
 
 GPU_HOST_DEVICE inline Complex_DP csub(Complex_DP a, Complex_DP b) {
-    Complex_DP c;
-    c.x = a.x - b.x;
-    c.y = a.y - b.y;
-    return c;
+    Complex_DP c; c.x = a.x - b.x; c.y = a.y - b.y; return c;
 }
 
 GPU_HOST_DEVICE inline Complex_DP cconj(Complex_DP a) {
-    Complex_DP c;
-    c.x = a.x;
-    c.y = -a.y;
-    return c;
+    Complex_DP c; c.x = a.x; c.y = -a.y; return c;
 }
 
 GPU_HOST_DEVICE inline double cabs_val(Complex_DP a) {
