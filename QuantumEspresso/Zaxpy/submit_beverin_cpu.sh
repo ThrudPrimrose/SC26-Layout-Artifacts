@@ -69,8 +69,28 @@ export LD_LIBRARY_PATH=$SCRATCH/lib:$SCRATCH/lib64:$LD_LIBRARY_PATH
 export PATH=$SCRATCH/bin:$PATH
 export BEVERIN=1
 
+spack load gcc/ktd4slj
+export GCCHOME=$(spack location -i gcc/ktd4slj)
+export C_INCLUDE_PATH=$GCCHOME/include:$C_INCLUDE_PATH
+export CPLUS_INCLUDE_PATH=$GCCHOME/include:$CPLUS_INCLUDE_PATH
+export LIBRARY_PATH=$GCCHOME/lib:$SCRATCH/lib64:$LIBRARY_PATH
+export LD_LIBRARY_PATH=$GCCHOME/lib:$GCCHOME/lib64:$LD_LIBRARY_PATH
+export PATH=$GCCHOME/bin:$PATH
+
 export HPTT_ROOT=$SCRATCH
 
 echo $(lscpu)
 
-python run_cpu_zaxpy.py --compile
+
+ARCH=${HIP_ARCH:-gfx942}
+echo "Building for $ARCH"
+g++ -O3 -std=c++17 \
+    -march=native \
+    -fopenmp \
+    -ffast-math \
+    -mtune=native \
+    -fno-vect-cost-model \
+    -ftree-vectorize \
+    -o zaxpy_cpu zaxpy.cpp -lgomp -lnuma 
+
+./zaxpy_cpu
