@@ -46,7 +46,7 @@ g++ -O3 -std=c++17 \
     -fno-vect-cost-model \
     -ftree-vectorize \
     -o addusxx_cpu_beverin \
-    main_cpu.cpp usxx_kernels_cpu.cpp \
+    main_cpu.cpp \
     -lgomp -lnuma
 
 ./addusxx_cpu_beverin
