@@ -1,0 +1,81 @@
+Running on nid002924
+Threads: 96
+Building CPU-only
+Loading data...
+Threads: 96 
+
+=== nthreads=96 ===
+
+--- blocksize=1 ---
+  baseline_aos PASSED
+  eigts_t_aos PASSED
+  sorted_aos PASSED
+  baseline_soa PASSED
+  eigts_t_soa PASSED
+  sorted_soa PASSED
+
+--- blocksize=2 ---
+  baseline_aos PASSED
+  eigts_t_aos PASSED
+  sorted_aos PASSED
+  baseline_soa PASSED
+  eigts_t_soa PASSED
+  sorted_soa PASSED
+
+--- blocksize=4 ---
+  baseline_aos PASSED
+  eigts_t_aos PASSED
+  sorted_aos PASSED
+  baseline_soa PASSED
+  eigts_t_soa PASSED
+  sorted_soa PASSED
+
+--- blocksize=8 ---
+  baseline_aos PASSED
+  eigts_t_aos PASSED
+  sorted_aos PASSED
+  baseline_soa PASSED
+  eigts_t_soa PASSED
+  sorted_soa PASSED
+
+--- blocksize=16 ---
+  baseline_aos PASSED
+  eigts_t_aos PASSED
+  sorted_aos PASSED
+  baseline_soa PASSED
+  eigts_t_soa PASSED
+  sorted_soa PASSED
+
+--- blocksize=32 ---
+  baseline_aos PASSED
+  eigts_t_aos PASSED
+  sorted_aos PASSED
+  baseline_soa PASSED
+  eigts_t_soa PASSED
+  sorted_soa PASSED
+
+--- blocksize=64 ---
+  baseline_aos PASSED
+  eigts_t_aos PASSED
+  sorted_aos PASSED
+  baseline_soa PASSED
+  eigts_t_soa PASSED
+  sorted_soa PASSED
+
+--- blocksize=128 ---
+  baseline_aos PASSED
+  eigts_t_aos PASSED
+  sorted_aos PASSED
+  baseline_soa PASSED
+  eigts_t_soa PASSED
+  sorted_soa PASSED
+
+--- blocksize=256 ---
+  baseline_aos PASSED
+  eigts_t_aos PASSED
+  sorted_aos PASSED
+  baseline_soa PASSED
+  eigts_t_soa PASSED
+  sorted_soa PASSED
+
+Done. CSV: addusxx_cpu_sweep.csv
