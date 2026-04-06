@@ -31,6 +31,29 @@ Usage:
         --cpu-nv-small-csv  zaxpy_sweep_small_cpu.csv   \
         --cpu-nv-1gb-csv    zaxpy_sweep_1gb_cpu.csv
 """
+#!/usr/bin/env python3
+"""
+plot_zaxpy_sweep.py
+Violin bandwidth plots for indirect zaxpy benchmark.
+
+Two PNGs: one for "small" (nat20 original sizes), one for "1gb" (tiled).
+Columns: AMD (left), NVIDIA (right)
+Rows:    GPU only (1 row) or CPU + GPU (2×2) when --cpu-*-csv given.
+
+X-axis groups: Uniform, Normal, QE
+Colours = 4 kernel variants:
+    aos_scatter (orange), aos_sorted (blue),
+    soa_scatter (red),    soa_sorted (green)
+
+Y-axis: effective bandwidth [TB/s], with % of STREAM peak annotated.
+
+Usage:
+    python plot_zaxpy_sweep.py \
+        --gpu-amd-small-csv amd/zaxpy_sweep_small.csv \
+        --gpu-amd-1gb-csv   amd/zaxpy_sweep_1gb.csv   \
+        --gpu-nv-small-csv  nv/zaxpy_sweep_small.csv   \
+        --gpu-nv-1gb-csv    nv/zaxpy_sweep_1gb.csv
+"""
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -40,23 +63,31 @@ import pandas as pd, numpy as np, argparse, sys, re
 
 # ── Colour / label scheme ────────────────────────────────────────────────────
 VCOL = {
-    "aos_scatter": "#e67e22",
-    "aos_sorted":  "#2980b9",
-    "soa_scatter": "#c0392b",
-    "soa_sorted":  "#27ae60",
+    "aos_scatter":      "#e67e22",
+    "aos_sorted":       "#2980b9",
+    "soa_scatter":      "#c0392b",
+    "soa_sorted":       "#27ae60",
+    "aos_partitioned":  "#8e44ad",   # purple
+    "soa_partitioned":  "#16a085",   # teal
 }
 VLAB = {
-    "aos_scatter": "AoS  Scatter (original)",
-    "aos_sorted":  "AoS  Sorted",
-    "soa_scatter": "SoA  Scatter",
-    "soa_sorted":  "SoA  Sorted",
+    "aos_scatter":      "AoS  Scatter (original)",
+    "aos_sorted":       "AoS  Sorted",
+    "soa_scatter":      "SoA  Scatter",
+    "soa_sorted":       "SoA  Sorted",
+    "aos_partitioned":  "AoS  NUMA-partitioned",
+    "soa_partitioned":  "SoA  NUMA-partitioned",
 }
-VARIANT_ORDER = ["aos_scatter", "aos_sorted", "soa_scatter", "soa_sorted"]
+VARIANT_ORDER = ["aos_scatter", "aos_sorted", "soa_scatter", "soa_sorted",
+                 "aos_partitioned", "soa_partitioned"]
 
 # Bytes per element
+# partitioned: same as scatter (read x[perm[i]] + read ymap_part[i] + read/write y)
+# perm adds 4B but ymap_part replaces ymap, so same 52B
 BYTES_PER_ELEM = {
     "aos_scatter": 52, "aos_sorted": 56,
     "soa_scatter": 52, "soa_sorted": 56,
+    "aos_partitioned": 56, "soa_partitioned": 56,  # perm (4B) + ymap_part (4B) + x(16B) + y read(16B) + y write(16B)
 }
 
 # Distribution keys and how to match experiment names in the CSV
@@ -311,10 +342,10 @@ def main():
         handles = [Patch(facecolor=VCOL[v], edgecolor="black", label=VLAB[v])
                    for v in VARIANT_ORDER]
         fig.legend(handles=handles, loc='lower center',
-                   bbox_to_anchor=(0.5, -0.008), ncol=len(VARIANT_ORDER),
+                   bbox_to_anchor=(0.5, -0.008), ncol=3,
                    framealpha=0.9, columnspacing=1.0)
 
-        fig.tight_layout(rect=[0, 0.04, 1, 0.93])
+        fig.tight_layout(rect=[0, 0.07, 1, 0.93])
         sfx = "_w_stream_peak" if args.add_peak else ""
         stem = f"zaxpy_violins_{scale_name}{sfx}"
         fig.savefig(f"{stem}.png", dpi=180, bbox_inches='tight')

@@ -77,7 +77,7 @@ static void first_touch_copy(T *dst, const T *src, size_t count)
  * Flush caches: write a large buffer to evict resident data.
  * Uses same 256 MiB approach as the GPU version.
  */
-static constexpr size_t FLUSH_ELEMS = 256ULL * 1024 * 1024 * 8 / sizeof(double);
+static constexpr size_t FLUSH_ELEMS = 256ULL * 1024 * 1024 / sizeof(double);
 static double *g_flush = nullptr;
 
 static void init_flush()
@@ -174,6 +174,87 @@ static void kern_soa_sorted(int nx, const int *ymap_s, const int *xmap,
     for (int i = 0; i < nx; i++) {
         int y_ = ymap_s[i];
         int x_ = xmap[i];
+        yr[y_] += xr[x_];
+        yi[y_] += xi[x_];
+    }
+}
+
+/* ================================================================ */
+/*  NUMA-partitioned variant                                         */
+/*                                                                   */
+/*  Partition iteration indices by which NUMA domain owns the target */
+/*  y element, preserving original order within each partition.      */
+/*                                                                   */
+/*  Result: domain 0's indices first, then domain 1's, etc.         */
+/*  With OMP_PROC_BIND=close + schedule(static), threads on domain  */
+/*  d process domain d's chunk → y writes are NUMA-local.           */
+/*  Within each partition, x indices are in original ascending       */
+/*  order → HW prefetcher can track the access stream.              */
+/* ================================================================ */
+
+struct NUMAPartition {
+    std::vector<int> perm;        // perm[i] = original index to process at position i
+    std::vector<int> ymap_part;   // ymap[perm[i]]  — target y index in partitioned order
+    std::vector<int> domain_start; // domain_start[d] = first position for domain d
+};
+
+/**
+ * Build NUMA-partitioned index order from an original y_index_map.
+ * y is split into NUMA_NODES equal blocks; domain d owns [d*chunk, (d+1)*chunk).
+ */
+static NUMAPartition buildNUMAPartition(const int *ymap, int nx, int ny)
+{
+    constexpr int ND = NUMA_NODES;
+    int chunk = (ny + ND - 1) / ND;
+
+    // Bucket indices by target domain
+    std::vector<std::vector<int>> buckets(ND);
+    for (int i = 0; i < nx; i++) {
+        int d = std::min(ymap[i] / chunk, ND - 1);
+        buckets[d].push_back(i);
+    }
+
+    NUMAPartition p;
+    p.perm.reserve(nx);
+    p.ymap_part.reserve(nx);
+    p.domain_start.resize(ND + 1);
+
+    int pos = 0;
+    for (int d = 0; d < ND; d++) {
+        p.domain_start[d] = pos;
+        for (int orig_i : buckets[d]) {
+            p.perm.push_back(orig_i);
+            p.ymap_part.push_back(ymap[orig_i]);
+            pos++;
+        }
+    }
+    p.domain_start[ND] = pos;
+
+    return p;
+}
+
+// AoS partitioned: iterate in NUMA-partitioned order,
+// x reads via perm (mostly ascending), y writes are NUMA-local.
+static void kern_aos_partitioned(int nx, const int *perm, const int *ymap_part,
+                                 const double *x, double *y)
+{
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < nx; i++) {
+        int xi = perm[i];          // original x index — ascending within each domain
+        int yi = ymap_part[i];     // y target — NUMA-local to this thread's domain
+        y[2*yi]   += x[2*xi];
+        y[2*yi+1] += x[2*xi+1];
+    }
+}
+
+static void kern_soa_partitioned(int nx, const int *perm, const int *ymap_part,
+                                 const double *xr, const double *xi,
+                                 double *yr, double *yi)
+{
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < nx; i++) {
+        int x_ = perm[i];
+        int y_ = ymap_part[i];
         yr[y_] += xr[x_];
         yi[y_] += xi[x_];
     }
@@ -342,6 +423,38 @@ void profile_config(
         [&]{ return verify_soa(ny, yr, yi, ref_re, ref_im); }
     );
 
+    // ── NUMA-partitioned variants ───────────────────────────────────────
+    // Build partition from original ymap
+    {
+        NUMAPartition part = buildNUMAPartition(h_ymap_orig, nx, ny);
+
+        // NUMA-aware allocation + first-touch for partition arrays
+        int *perm_numa      = numa_alloc_unfaulted<int>(nx);
+        int *ymap_part_numa = numa_alloc_unfaulted<int>(nx);
+        first_touch_copy(perm_numa,      part.perm.data(),      (size_t)nx);
+        first_touch_copy(ymap_part_numa, part.ymap_part.data(), (size_t)nx);
+
+        // AoS partitioned
+        run("aos_partitioned",
+            [&]{ memcpy(y_aos, y_aos_init, 2*ny*sizeof(double)); },
+            [&]{ kern_aos_partitioned(nx, perm_numa, ymap_part_numa, x_aos, y_aos); },
+            [&]{ return verify_aos(ny, y_aos, ref_aos); }
+        );
+
+        // SoA partitioned
+        run("soa_partitioned",
+            [&]{
+                memcpy(yr, yr_init, ny*sizeof(double));
+                memcpy(yi, yi_init, ny*sizeof(double));
+            },
+            [&]{ kern_soa_partitioned(nx, perm_numa, ymap_part_numa, xr, xi, yr, yi); },
+            [&]{ return verify_soa(ny, yr, yi, ref_re, ref_im); }
+        );
+
+        numa_dealloc(perm_numa, nx);
+        numa_dealloc(ymap_part_numa, nx);
+    }
+
     // Cleanup
     numa_dealloc(ymap, nx); numa_dealloc(ymap_s, nx); numa_dealloc(xmap, nx);
     numa_dealloc(y_aos_init, 2*ny); numa_dealloc(x_aos, 2*nx);
@@ -488,7 +601,7 @@ int main(int argc, char **argv)
     // ================================================================
     //  SMALL scale
     // ================================================================
-    FILE *csv = fopen("zaxpy_sweep_small_cpu.csv", "w");
+    FILE *csv = fopen("zaxpy_sweep_small.csv", "w");
     fprintf(csv, "%s", CSV_HDR);
 
     // QE
@@ -529,7 +642,7 @@ int main(int argc, char **argv)
     // ================================================================
     //  1 GB tiled
     // ================================================================
-    csv = fopen("zaxpy_sweep_1gb_cpu.csv", "w");
+    csv = fopen("zaxpy_sweep_1gb.csv", "w");
     fprintf(csv, "%s", CSV_HDR);
 
     // QE tiled
@@ -575,6 +688,6 @@ int main(int argc, char **argv)
 
     delete[] qe_base;
     if (g_flush) numa_dealloc(g_flush, FLUSH_ELEMS);
-    printf("\nDone.  CSVs: zaxpy_sweep_small_cpu.csv  zaxpy_sweep_1gb_cpu.csv\n");
+    printf("\nDone.  CSVs: zaxpy_sweep_small.csv  zaxpy_sweep_1gb.csv\n");
     return 0;
 }
