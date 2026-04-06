@@ -1,13 +1,19 @@
 // zaxpy_indirect_sweep.cu
-// Sweep threadblock sizes × coarsening factors for indirect zaxpy
+// Indirect zaxpy benchmark: y[map[i]] += x[i]
+//
+// All experiments use QE nat20 dimensions (nx=110273, ny=225001):
+//   - "small" : original nat20 sizes
+//   - "1gb"   : tiled K times with offsets so array footprint ≈ 1 GiB
+//
+// Three index-map distributions per scale:
+//   qe       — real Quantum ESPRESSO access pattern
+//   uniform  — uniformly random subset of [0, ny)
+//   normal   — normally distributed subset centred on ny/2
 //
 // Four kernel variants (2 layouts × 2 index orders):
-//   aos_scatter  — cuDoubleComplex (interleaved re/im), original random indices
-//   aos_sorted   — cuDoubleComplex, sorted y_index_map for write locality
-//   soa_scatter  — separate real[] / imag[] arrays, original random indices
-//   soa_sorted   — separate real[] / imag[] arrays, sorted y_index_map
+//   aos_scatter, aos_sorted, soa_scatter, soa_sorted
 //
-// Each individual repetition is logged to CSV.
+// Sweep: 7 thread-block sizes × 4 coarsening factors, 100 reps each.
 //
 // Compile:
 //   nvcc -O3 -std=c++17 zaxpy_indirect_sweep.cu -o zaxpy_indirect_sweep
@@ -43,23 +49,20 @@
     } while (0)
 
 /* ================================================================ */
-/*  Cache-flush helper (write a big buffer to evict L2)             */
+/*  Cache-flush helper                                               */
 /* ================================================================ */
 static double *d_flush = nullptr;
-static constexpr size_t FLUSH_SIZE = 256ULL * 1024 * 1024; // 256 MiB
+static constexpr size_t FLUSH_SIZE = 256ULL * 1024 * 1024;
 
 __global__ void flush_kernel(double *buf, size_t n)
 {
     size_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) buf[i] = 1.0;
 }
-
 static void init_flush()
 {
-    if (!d_flush)
-        CUDA_CHECK(cudaMalloc(&d_flush, FLUSH_SIZE));
+    if (!d_flush) CUDA_CHECK(cudaMalloc(&d_flush, FLUSH_SIZE));
 }
-
 static void flush_l2()
 {
     size_t n = FLUSH_SIZE / sizeof(double);
@@ -68,401 +71,335 @@ static void flush_l2()
 }
 
 /* ================================================================ */
-/*  AoS kernels (cuDoubleComplex — interleaved re,im)               */
+/*  AoS kernels (cuDoubleComplex)                                    */
 /* ================================================================ */
 
-template <int COARSEN>
+template <int C>
 __global__ void kern_aos_scatter(
-    int nx,
-    const int *__restrict__ y_index_map,
-    const cuDoubleComplex *__restrict__ x,
-    cuDoubleComplex *__restrict__ y)
+    int nx, const int *__restrict__ ymap,
+    const cuDoubleComplex *__restrict__ x, cuDoubleComplex *__restrict__ y)
 {
-    int base = (blockIdx.x * blockDim.x + threadIdx.x) * COARSEN;
+    int base = (blockIdx.x * blockDim.x + threadIdx.x) * C;
     #pragma unroll
-    for (int c = 0; c < COARSEN; c++)
-    {
-        int gid = base + c;
-        if (gid < nx)
-        {
-            int yi = y_index_map[gid];
-            y[yi] = cuCadd(x[gid], y[yi]);
-        }
+    for (int c = 0; c < C; c++) {
+        int g = base + c;
+        if (g < nx) { int yi = ymap[g]; y[yi] = cuCadd(x[g], y[yi]); }
     }
 }
 
-template <int COARSEN>
+template <int C>
 __global__ void kern_aos_sorted(
-    int nx,
-    const int *__restrict__ y_index_map_sorted,
-    const int *__restrict__ x_index_map,
-    const cuDoubleComplex *__restrict__ x,
-    cuDoubleComplex *__restrict__ y)
+    int nx, const int *__restrict__ ymap_s, const int *__restrict__ xmap,
+    const cuDoubleComplex *__restrict__ x, cuDoubleComplex *__restrict__ y)
 {
-    int base = (blockIdx.x * blockDim.x + threadIdx.x) * COARSEN;
+    int base = (blockIdx.x * blockDim.x + threadIdx.x) * C;
     #pragma unroll
-    for (int c = 0; c < COARSEN; c++)
-    {
-        int gid = base + c;
-        if (gid < nx)
-        {
-            int yi = y_index_map_sorted[gid];
-            y[yi] = cuCadd(x[x_index_map[gid]], y[yi]);
-        }
+    for (int c = 0; c < C; c++) {
+        int g = base + c;
+        if (g < nx) { int yi = ymap_s[g]; y[yi] = cuCadd(x[xmap[g]], y[yi]); }
     }
 }
 
 /* ================================================================ */
-/*  SoA kernels (separate double *re, double *im arrays)            */
+/*  SoA kernels (separate re / im)                                   */
 /* ================================================================ */
 
-template <int COARSEN>
+template <int C>
 __global__ void kern_soa_scatter(
-    int nx,
-    const int *__restrict__ y_index_map,
-    const double *__restrict__ x_re,
-    const double *__restrict__ x_im,
-    double *__restrict__ y_re,
-    double *__restrict__ y_im)
+    int nx, const int *__restrict__ ymap,
+    const double *__restrict__ xr, const double *__restrict__ xi,
+    double *__restrict__ yr, double *__restrict__ yi)
 {
-    int base = (blockIdx.x * blockDim.x + threadIdx.x) * COARSEN;
+    int base = (blockIdx.x * blockDim.x + threadIdx.x) * C;
     #pragma unroll
-    for (int c = 0; c < COARSEN; c++)
-    {
-        int gid = base + c;
-        if (gid < nx)
-        {
-            int yi = y_index_map[gid];
-            y_re[yi] += x_re[gid];
-            y_im[yi] += x_im[gid];
-        }
+    for (int c = 0; c < C; c++) {
+        int g = base + c;
+        if (g < nx) { int y_ = ymap[g]; yr[y_] += xr[g]; yi[y_] += xi[g]; }
     }
 }
 
-template <int COARSEN>
+template <int C>
 __global__ void kern_soa_sorted(
-    int nx,
-    const int *__restrict__ y_index_map_sorted,
-    const int *__restrict__ x_index_map,
-    const double *__restrict__ x_re,
-    const double *__restrict__ x_im,
-    double *__restrict__ y_re,
-    double *__restrict__ y_im)
+    int nx, const int *__restrict__ ymap_s, const int *__restrict__ xmap,
+    const double *__restrict__ xr, const double *__restrict__ xi,
+    double *__restrict__ yr, double *__restrict__ yi)
 {
-    int base = (blockIdx.x * blockDim.x + threadIdx.x) * COARSEN;
+    int base = (blockIdx.x * blockDim.x + threadIdx.x) * C;
     #pragma unroll
-    for (int c = 0; c < COARSEN; c++)
-    {
-        int gid = base + c;
-        if (gid < nx)
-        {
-            int yi = y_index_map_sorted[gid];
-            int xi = x_index_map[gid];
-            y_re[yi] += x_re[xi];
-            y_im[yi] += x_im[xi];
-        }
+    for (int c = 0; c < C; c++) {
+        int g = base + c;
+        if (g < nx) { int y_ = ymap_s[g]; int x_ = xmap[g];
+                       yr[y_] += xr[x_]; yi[y_] += xi[x_]; }
     }
 }
 
 /* ================================================================ */
 /*  Dispatch tables                                                  */
 /* ================================================================ */
+using aos_scat_t = void(*)(int, const int*, const cuDoubleComplex*, cuDoubleComplex*);
+using aos_sort_t = void(*)(int, const int*, const int*, const cuDoubleComplex*, cuDoubleComplex*);
+using soa_scat_t = void(*)(int, const int*, const double*, const double*, double*, double*);
+using soa_sort_t = void(*)(int, const int*, const int*, const double*, const double*, double*, double*);
 
-using aos_scatter_fn = void (*)(int, const int*, const cuDoubleComplex*, cuDoubleComplex*);
-using aos_sorted_fn  = void (*)(int, const int*, const int*, const cuDoubleComplex*, cuDoubleComplex*);
-using soa_scatter_fn = void (*)(int, const int*, const double*, const double*, double*, double*);
-using soa_sorted_fn  = void (*)(int, const int*, const int*, const double*, const double*, double*, double*);
-
-#define ENTRY(K, C) K<C>
-
-aos_scatter_fn aos_scatter_tbl[] = {nullptr, ENTRY(kern_aos_scatter,1), ENTRY(kern_aos_scatter,2), nullptr, ENTRY(kern_aos_scatter,4), nullptr,nullptr,nullptr, ENTRY(kern_aos_scatter,8)};
-aos_sorted_fn  aos_sorted_tbl[]  = {nullptr, ENTRY(kern_aos_sorted,1),  ENTRY(kern_aos_sorted,2),  nullptr, ENTRY(kern_aos_sorted,4),  nullptr,nullptr,nullptr, ENTRY(kern_aos_sorted,8)};
-soa_scatter_fn soa_scatter_tbl[] = {nullptr, ENTRY(kern_soa_scatter,1), ENTRY(kern_soa_scatter,2), nullptr, ENTRY(kern_soa_scatter,4), nullptr,nullptr,nullptr, ENTRY(kern_soa_scatter,8)};
-soa_sorted_fn  soa_sorted_tbl[]  = {nullptr, ENTRY(kern_soa_sorted,1),  ENTRY(kern_soa_sorted,2),  nullptr, ENTRY(kern_soa_sorted,4),  nullptr,nullptr,nullptr, ENTRY(kern_soa_sorted,8)};
+#define E(K,C) K<C>
+aos_scat_t aos_scat_tbl[] = {nullptr, E(kern_aos_scatter,1), E(kern_aos_scatter,2), nullptr, E(kern_aos_scatter,4), nullptr,nullptr,nullptr, E(kern_aos_scatter,8)};
+aos_sort_t aos_sort_tbl[] = {nullptr, E(kern_aos_sorted,1),  E(kern_aos_sorted,2),  nullptr, E(kern_aos_sorted,4),  nullptr,nullptr,nullptr, E(kern_aos_sorted,8)};
+soa_scat_t soa_scat_tbl[] = {nullptr, E(kern_soa_scatter,1), E(kern_soa_scatter,2), nullptr, E(kern_soa_scatter,4), nullptr,nullptr,nullptr, E(kern_soa_scatter,8)};
+soa_sort_t soa_sort_tbl[] = {nullptr, E(kern_soa_sorted,1),  E(kern_soa_sorted,2),  nullptr, E(kern_soa_sorted,4),  nullptr,nullptr,nullptr, E(kern_soa_sorted,8)};
 
 /* ================================================================ */
-/*  Verification helpers                                             */
+/*  Verification                                                     */
 /* ================================================================ */
-
-bool verify_aos(int n, cuDoubleComplex *gpu, cuDoubleComplex *ref, double tol = 1e-6)
-{
-    for (int i = 0; i < n; i++)
-    {
-        double diff = cuCabs(cuCsub(gpu[i], ref[i]));
-        double rel  = diff / (cuCabs(ref[i]) + 1e-10);
-        if (rel > tol) { printf("AoS mismatch at %d: rel=%e\n", i, rel); return false; }
+bool verify_aos(int n, cuDoubleComplex *g, cuDoubleComplex *r, double tol=1e-6) {
+    for (int i = 0; i < n; i++) {
+        double d = cuCabs(cuCsub(g[i], r[i]));
+        if (d / (cuCabs(r[i]) + 1e-10) > tol) { printf("AoS mismatch %d\n",i); return false; }
     }
     return true;
 }
-
-bool verify_soa(int n, double *gpu_re, double *gpu_im, double *ref_re, double *ref_im, double tol = 1e-6)
-{
-    for (int i = 0; i < n; i++)
-    {
-        double dr = gpu_re[i] - ref_re[i];
-        double di = gpu_im[i] - ref_im[i];
-        double diff = std::sqrt(dr * dr + di * di);
-        double mag  = std::sqrt(ref_re[i] * ref_re[i] + ref_im[i] * ref_im[i]) + 1e-10;
-        if (diff / mag > tol) { printf("SoA mismatch at %d: rel=%e\n", i, diff / mag); return false; }
+bool verify_soa(int n, double *gr, double *gi, double *rr, double *ri, double tol=1e-6) {
+    for (int i = 0; i < n; i++) {
+        double d = std::sqrt((gr[i]-rr[i])*(gr[i]-rr[i])+(gi[i]-ri[i])*(gi[i]-ri[i]));
+        double m = std::sqrt(rr[i]*rr[i]+ri[i]*ri[i]) + 1e-10;
+        if (d/m > tol) { printf("SoA mismatch %d\n",i); return false; }
     }
     return true;
 }
 
 /* ================================================================ */
-/*  Core profiling: single (tpb, coarsen) config, all 4 variants    */
+/*  Core profiling — one (tpb, coarsen), all 4 variants              */
 /* ================================================================ */
-
 void profile_config(
-    FILE *csv,
-    const char *experiment_name,
+    FILE *csv, const char *ename,
     int ny, int nx,
-    int *h_ymap,
-    int *h_ymap_sorted,
-    int *h_xmap,
-    int tpb, int coarsen,
-    int iters, int warmup,
-    unsigned int seed)
+    int *h_ymap, int *h_ymap_s, int *h_xmap,
+    int tpb, int coarsen, int iters, int warmup, unsigned seed)
 {
-    int elems_per_block = tpb * coarsen;
-    int num_blocks = (nx + elems_per_block - 1) / elems_per_block;
+    int epb = tpb * coarsen;
+    int nblk = (nx + epb - 1) / epb;
 
-    // ---- Host data ----
-    cuDoubleComplex *h_y_aos   = (cuDoubleComplex *)malloc(ny * sizeof(cuDoubleComplex));
-    cuDoubleComplex *h_x_aos   = (cuDoubleComplex *)malloc(nx * sizeof(cuDoubleComplex));
-    cuDoubleComplex *h_out_aos = (cuDoubleComplex *)malloc(ny * sizeof(cuDoubleComplex));
-    cuDoubleComplex *h_ref_aos = (cuDoubleComplex *)malloc(ny * sizeof(cuDoubleComplex));
+    cuDoubleComplex *h_ya, *h_xa, *h_oa, *h_ra;
+    double *h_yr, *h_yi, *h_xr, *h_xi, *h_or, *h_oi, *h_rr, *h_ri;
+    cuDoubleComplex *d_ya, *d_xa;
+    double *d_yr, *d_yi, *d_xr, *d_xi;
+    int *d_ym, *d_yms, *d_xm;
 
-    double *h_y_re  = (double *)malloc(ny * sizeof(double));
-    double *h_y_im  = (double *)malloc(ny * sizeof(double));
-    double *h_x_re  = (double *)malloc(nx * sizeof(double));
-    double *h_x_im  = (double *)malloc(nx * sizeof(double));
-    double *h_out_re = (double *)malloc(ny * sizeof(double));
-    double *h_out_im = (double *)malloc(ny * sizeof(double));
-    double *h_ref_re = (double *)malloc(ny * sizeof(double));
-    double *h_ref_im = (double *)malloc(ny * sizeof(double));
+    h_ya = (cuDoubleComplex*)malloc(ny*sizeof(cuDoubleComplex));
+    h_xa = (cuDoubleComplex*)malloc(nx*sizeof(cuDoubleComplex));
+    h_oa = (cuDoubleComplex*)malloc(ny*sizeof(cuDoubleComplex));
+    h_ra = (cuDoubleComplex*)malloc(ny*sizeof(cuDoubleComplex));
+    h_yr = (double*)malloc(ny*sizeof(double)); h_yi = (double*)malloc(ny*sizeof(double));
+    h_xr = (double*)malloc(nx*sizeof(double)); h_xi = (double*)malloc(nx*sizeof(double));
+    h_or = (double*)malloc(ny*sizeof(double)); h_oi = (double*)malloc(ny*sizeof(double));
+    h_rr = (double*)malloc(ny*sizeof(double)); h_ri = (double*)malloc(ny*sizeof(double));
 
-    // ---- Device data ----
-    cuDoubleComplex *d_y_aos, *d_x_aos;
-    double *d_y_re, *d_y_im, *d_x_re, *d_x_im;
-    int *d_ymap, *d_ymap_s, *d_xmap;
+    CUDA_CHECK(cudaMalloc(&d_ya,  ny*sizeof(cuDoubleComplex)));
+    CUDA_CHECK(cudaMalloc(&d_xa,  nx*sizeof(cuDoubleComplex)));
+    CUDA_CHECK(cudaMalloc(&d_yr,  ny*sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_yi,  ny*sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_xr,  nx*sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_xi,  nx*sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_ym,  nx*sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_yms, nx*sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_xm,  nx*sizeof(int)));
 
-    CUDA_CHECK(cudaMalloc(&d_y_aos, ny * sizeof(cuDoubleComplex)));
-    CUDA_CHECK(cudaMalloc(&d_x_aos, nx * sizeof(cuDoubleComplex)));
-    CUDA_CHECK(cudaMalloc(&d_y_re,  ny * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_y_im,  ny * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_x_re,  nx * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_x_im,  nx * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_ymap,   nx * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_ymap_s, nx * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_xmap,   nx * sizeof(int)));
-
-    // ---- Fill random data ----
     srand(seed);
-    for (int i = 0; i < ny; i++)
-    {
-        double re = (double)rand() / RAND_MAX;
-        double im = (double)rand() / RAND_MAX;
-        h_y_aos[i]   = make_cuDoubleComplex(re, im);
-        h_ref_aos[i] = h_y_aos[i];
-        h_y_re[i] = re;  h_y_im[i] = im;
-        h_ref_re[i] = re; h_ref_im[i] = im;
+    for (int i = 0; i < ny; i++) {
+        double re = (double)rand()/RAND_MAX, im = (double)rand()/RAND_MAX;
+        h_ya[i] = make_cuDoubleComplex(re,im); h_ra[i] = h_ya[i];
+        h_yr[i] = re; h_yi[i] = im; h_rr[i] = re; h_ri[i] = im;
     }
-    for (int i = 0; i < nx; i++)
-    {
-        double re = (double)rand() / RAND_MAX;
-        double im = (double)rand() / RAND_MAX;
-        h_x_aos[i] = make_cuDoubleComplex(re, im);
-        h_x_re[i] = re;  h_x_im[i] = im;
+    for (int i = 0; i < nx; i++) {
+        double re = (double)rand()/RAND_MAX, im = (double)rand()/RAND_MAX;
+        h_xa[i] = make_cuDoubleComplex(re,im);
+        h_xr[i] = re; h_xi[i] = im;
     }
-
-    // ---- CPU reference ----
-    for (int i = 0; i < nx; i++)
-    {
+    for (int i = 0; i < nx; i++) {
         int yi = h_ymap[i];
-        h_ref_aos[yi] = cuCadd(h_x_aos[i], h_ref_aos[yi]);
-        h_ref_re[yi] += h_x_re[i];
-        h_ref_im[yi] += h_x_im[i];
+        h_ra[yi] = cuCadd(h_xa[i], h_ra[yi]);
+        h_rr[yi] += h_xr[i]; h_ri[yi] += h_xi[i];
     }
 
-    // ---- Upload index maps ----
-    CUDA_CHECK(cudaMemcpy(d_ymap,   h_ymap,        nx * sizeof(int), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_ymap_s, h_ymap_sorted, nx * sizeof(int), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_xmap,   h_xmap,        nx * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_ym,  h_ymap,   nx*sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_yms, h_ymap_s, nx*sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_xm,  h_xmap,   nx*sizeof(int), cudaMemcpyHostToDevice));
 
     cudaEvent_t e0, e1;
-    CUDA_CHECK(cudaEventCreate(&e0));
-    CUDA_CHECK(cudaEventCreate(&e1));
+    CUDA_CHECK(cudaEventCreate(&e0)); CUDA_CHECK(cudaEventCreate(&e1));
     float ms;
 
-    auto run_variant = [&](const char *vname, auto launch_fn, auto verify_fn)
-    {
-        if (!verify_fn())
-        {
-            fprintf(stderr, "FAIL %s tpb=%d coarsen=%d\n", vname, tpb, coarsen);
-            return;
-        }
-        for (int w = 0; w < warmup; w++) { launch_fn(); CUDA_CHECK(cudaDeviceSynchronize()); }
-        for (int r = 0; r < iters; r++)
-        {
+    auto run = [&](const char *vname, auto launch, auto verify_fn) {
+        if (!verify_fn()) { fprintf(stderr,"FAIL %s %s tpb=%d cf=%d\n",vname,ename,tpb,coarsen); return; }
+        for (int w=0;w<warmup;w++){launch();CUDA_CHECK(cudaDeviceSynchronize());}
+        for (int r=0;r<iters;r++){
             flush_l2();
             CUDA_CHECK(cudaEventRecord(e0));
-            launch_fn();
+            launch();
             CUDA_CHECK(cudaEventRecord(e1));
             CUDA_CHECK(cudaEventSynchronize(e1));
-            CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1));
-            fprintf(csv, "%s,%s,%d,%d,%d,%d,%d,%.6f\n",
-                    vname, experiment_name, ny, nx, tpb, coarsen, r, (double)ms);
+            CUDA_CHECK(cudaEventElapsedTime(&ms,e0,e1));
+            fprintf(csv,"%s,%s,%d,%d,%d,%d,%d,%.6f\n",vname,ename,ny,nx,tpb,coarsen,r,(double)ms);
         }
     };
 
-    // =========== AoS scatter ===========
-    {
-        auto kfn = aos_scatter_tbl[coarsen];
-        CUDA_CHECK(cudaMemcpy(d_x_aos, h_x_aos, nx * sizeof(cuDoubleComplex), cudaMemcpyHostToDevice));
-        auto launch = [&]() { kfn<<<num_blocks, tpb>>>(nx, d_ymap, d_x_aos, d_y_aos); };
-        auto verify = [&]() -> bool {
-            CUDA_CHECK(cudaMemcpy(d_y_aos, h_y_aos, ny * sizeof(cuDoubleComplex), cudaMemcpyHostToDevice));
-            launch(); CUDA_CHECK(cudaDeviceSynchronize());
-            CUDA_CHECK(cudaMemcpy(h_out_aos, d_y_aos, ny * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
-            return verify_aos(ny, h_out_aos, h_ref_aos);
-        };
-        CUDA_CHECK(cudaMemcpy(d_y_aos, h_y_aos, ny * sizeof(cuDoubleComplex), cudaMemcpyHostToDevice));
-        run_variant("aos_scatter", launch, verify);
-    }
+    // AoS scatter
+    {auto kfn=aos_scat_tbl[coarsen];
+     CUDA_CHECK(cudaMemcpy(d_xa,h_xa,nx*sizeof(cuDoubleComplex),cudaMemcpyHostToDevice));
+     auto L=[&]{kfn<<<nblk,tpb>>>(nx,d_ym,d_xa,d_ya);};
+     auto V=[&]()->bool{
+        CUDA_CHECK(cudaMemcpy(d_ya,h_ya,ny*sizeof(cuDoubleComplex),cudaMemcpyHostToDevice));
+        L();CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(h_oa,d_ya,ny*sizeof(cuDoubleComplex),cudaMemcpyDeviceToHost));
+        return verify_aos(ny,h_oa,h_ra);};
+     CUDA_CHECK(cudaMemcpy(d_ya,h_ya,ny*sizeof(cuDoubleComplex),cudaMemcpyHostToDevice));
+     run("aos_scatter",L,V);}
 
-    // =========== AoS sorted ===========
-    {
-        auto kfn = aos_sorted_tbl[coarsen];
-        CUDA_CHECK(cudaMemcpy(d_x_aos, h_x_aos, nx * sizeof(cuDoubleComplex), cudaMemcpyHostToDevice));
-        auto launch = [&]() { kfn<<<num_blocks, tpb>>>(nx, d_ymap_s, d_xmap, d_x_aos, d_y_aos); };
-        auto verify = [&]() -> bool {
-            CUDA_CHECK(cudaMemcpy(d_y_aos, h_y_aos, ny * sizeof(cuDoubleComplex), cudaMemcpyHostToDevice));
-            launch(); CUDA_CHECK(cudaDeviceSynchronize());
-            CUDA_CHECK(cudaMemcpy(h_out_aos, d_y_aos, ny * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
-            return verify_aos(ny, h_out_aos, h_ref_aos);
-        };
-        CUDA_CHECK(cudaMemcpy(d_y_aos, h_y_aos, ny * sizeof(cuDoubleComplex), cudaMemcpyHostToDevice));
-        run_variant("aos_sorted", launch, verify);
-    }
+    // AoS sorted
+    {auto kfn=aos_sort_tbl[coarsen];
+     CUDA_CHECK(cudaMemcpy(d_xa,h_xa,nx*sizeof(cuDoubleComplex),cudaMemcpyHostToDevice));
+     auto L=[&]{kfn<<<nblk,tpb>>>(nx,d_yms,d_xm,d_xa,d_ya);};
+     auto V=[&]()->bool{
+        CUDA_CHECK(cudaMemcpy(d_ya,h_ya,ny*sizeof(cuDoubleComplex),cudaMemcpyHostToDevice));
+        L();CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(h_oa,d_ya,ny*sizeof(cuDoubleComplex),cudaMemcpyDeviceToHost));
+        return verify_aos(ny,h_oa,h_ra);};
+     CUDA_CHECK(cudaMemcpy(d_ya,h_ya,ny*sizeof(cuDoubleComplex),cudaMemcpyHostToDevice));
+     run("aos_sorted",L,V);}
 
-    // =========== SoA scatter ===========
-    {
-        auto kfn = soa_scatter_tbl[coarsen];
-        CUDA_CHECK(cudaMemcpy(d_x_re, h_x_re, nx * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_x_im, h_x_im, nx * sizeof(double), cudaMemcpyHostToDevice));
-        auto launch = [&]() { kfn<<<num_blocks, tpb>>>(nx, d_ymap, d_x_re, d_x_im, d_y_re, d_y_im); };
-        auto verify = [&]() -> bool {
-            CUDA_CHECK(cudaMemcpy(d_y_re, h_y_re, ny * sizeof(double), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_y_im, h_y_im, ny * sizeof(double), cudaMemcpyHostToDevice));
-            launch(); CUDA_CHECK(cudaDeviceSynchronize());
-            CUDA_CHECK(cudaMemcpy(h_out_re, d_y_re, ny * sizeof(double), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_out_im, d_y_im, ny * sizeof(double), cudaMemcpyDeviceToHost));
-            return verify_soa(ny, h_out_re, h_out_im, h_ref_re, h_ref_im);
-        };
-        CUDA_CHECK(cudaMemcpy(d_y_re, h_y_re, ny * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_y_im, h_y_im, ny * sizeof(double), cudaMemcpyHostToDevice));
-        run_variant("soa_scatter", launch, verify);
-    }
+    // SoA scatter
+    {auto kfn=soa_scat_tbl[coarsen];
+     CUDA_CHECK(cudaMemcpy(d_xr,h_xr,nx*sizeof(double),cudaMemcpyHostToDevice));
+     CUDA_CHECK(cudaMemcpy(d_xi,h_xi,nx*sizeof(double),cudaMemcpyHostToDevice));
+     auto L=[&]{kfn<<<nblk,tpb>>>(nx,d_ym,d_xr,d_xi,d_yr,d_yi);};
+     auto V=[&]()->bool{
+        CUDA_CHECK(cudaMemcpy(d_yr,h_yr,ny*sizeof(double),cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_yi,h_yi,ny*sizeof(double),cudaMemcpyHostToDevice));
+        L();CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(h_or,d_yr,ny*sizeof(double),cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_oi,d_yi,ny*sizeof(double),cudaMemcpyDeviceToHost));
+        return verify_soa(ny,h_or,h_oi,h_rr,h_ri);};
+     CUDA_CHECK(cudaMemcpy(d_yr,h_yr,ny*sizeof(double),cudaMemcpyHostToDevice));
+     CUDA_CHECK(cudaMemcpy(d_yi,h_yi,ny*sizeof(double),cudaMemcpyHostToDevice));
+     run("soa_scatter",L,V);}
 
-    // =========== SoA sorted ===========
-    {
-        auto kfn = soa_sorted_tbl[coarsen];
-        CUDA_CHECK(cudaMemcpy(d_x_re, h_x_re, nx * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_x_im, h_x_im, nx * sizeof(double), cudaMemcpyHostToDevice));
-        auto launch = [&]() { kfn<<<num_blocks, tpb>>>(nx, d_ymap_s, d_xmap, d_x_re, d_x_im, d_y_re, d_y_im); };
-        auto verify = [&]() -> bool {
-            CUDA_CHECK(cudaMemcpy(d_y_re, h_y_re, ny * sizeof(double), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_y_im, h_y_im, ny * sizeof(double), cudaMemcpyHostToDevice));
-            launch(); CUDA_CHECK(cudaDeviceSynchronize());
-            CUDA_CHECK(cudaMemcpy(h_out_re, d_y_re, ny * sizeof(double), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(h_out_im, d_y_im, ny * sizeof(double), cudaMemcpyDeviceToHost));
-            return verify_soa(ny, h_out_re, h_out_im, h_ref_re, h_ref_im);
-        };
-        CUDA_CHECK(cudaMemcpy(d_y_re, h_y_re, ny * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_y_im, h_y_im, ny * sizeof(double), cudaMemcpyHostToDevice));
-        run_variant("soa_sorted", launch, verify);
-    }
+    // SoA sorted
+    {auto kfn=soa_sort_tbl[coarsen];
+     CUDA_CHECK(cudaMemcpy(d_xr,h_xr,nx*sizeof(double),cudaMemcpyHostToDevice));
+     CUDA_CHECK(cudaMemcpy(d_xi,h_xi,nx*sizeof(double),cudaMemcpyHostToDevice));
+     auto L=[&]{kfn<<<nblk,tpb>>>(nx,d_yms,d_xm,d_xr,d_xi,d_yr,d_yi);};
+     auto V=[&]()->bool{
+        CUDA_CHECK(cudaMemcpy(d_yr,h_yr,ny*sizeof(double),cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_yi,h_yi,ny*sizeof(double),cudaMemcpyHostToDevice));
+        L();CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(h_or,d_yr,ny*sizeof(double),cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_oi,d_yi,ny*sizeof(double),cudaMemcpyDeviceToHost));
+        return verify_soa(ny,h_or,h_oi,h_rr,h_ri);};
+     CUDA_CHECK(cudaMemcpy(d_yr,h_yr,ny*sizeof(double),cudaMemcpyHostToDevice));
+     CUDA_CHECK(cudaMemcpy(d_yi,h_yi,ny*sizeof(double),cudaMemcpyHostToDevice));
+     run("soa_sorted",L,V);}
 
-    // ---- Cleanup ----
-    CUDA_CHECK(cudaEventDestroy(e0));
-    CUDA_CHECK(cudaEventDestroy(e1));
-    CUDA_CHECK(cudaFree(d_y_aos)); CUDA_CHECK(cudaFree(d_x_aos));
-    CUDA_CHECK(cudaFree(d_y_re));  CUDA_CHECK(cudaFree(d_y_im));
-    CUDA_CHECK(cudaFree(d_x_re));  CUDA_CHECK(cudaFree(d_x_im));
-    CUDA_CHECK(cudaFree(d_ymap));  CUDA_CHECK(cudaFree(d_ymap_s));
-    CUDA_CHECK(cudaFree(d_xmap));
-
-    free(h_y_aos); free(h_x_aos); free(h_out_aos); free(h_ref_aos);
-    free(h_y_re);  free(h_y_im);  free(h_x_re);    free(h_x_im);
-    free(h_out_re); free(h_out_im); free(h_ref_re); free(h_ref_im);
+    CUDA_CHECK(cudaEventDestroy(e0)); CUDA_CHECK(cudaEventDestroy(e1));
+    CUDA_CHECK(cudaFree(d_ya)); CUDA_CHECK(cudaFree(d_xa));
+    CUDA_CHECK(cudaFree(d_yr)); CUDA_CHECK(cudaFree(d_yi));
+    CUDA_CHECK(cudaFree(d_xr)); CUDA_CHECK(cudaFree(d_xi));
+    CUDA_CHECK(cudaFree(d_ym)); CUDA_CHECK(cudaFree(d_yms)); CUDA_CHECK(cudaFree(d_xm));
+    free(h_ya);free(h_xa);free(h_oa);free(h_ra);
+    free(h_yr);free(h_yi);free(h_xr);free(h_xi);
+    free(h_or);free(h_oi);free(h_rr);free(h_ri);
 }
 
 /* ================================================================ */
-/*  Helpers: sort, sample, binary I/O                               */
+/*  Helpers                                                          */
 /* ================================================================ */
 
-void sortWithIndices(int N, const int *input, int *sortedValues, int *sortedIndices)
+void sortWithIndices(int N, const int *in, int *sv, int *si)
 {
-    std::iota(sortedIndices, sortedIndices + N, 0);
-    std::sort(sortedIndices, sortedIndices + N,
-              [&input](int a, int b) { return input[a] < input[b]; });
-    for (int i = 0; i < N; ++i)
-        sortedValues[i] = input[sortedIndices[i]];
+    std::iota(si, si+N, 0);
+    std::sort(si, si+N, [&in](int a, int b){return in[a]<in[b];});
+    for (int i=0;i<N;i++) sv[i]=in[si[i]];
 }
 
 std::vector<int> uniformSample(int nx, int ny, std::mt19937 &rng)
 {
     std::vector<int> pool(ny);
     std::iota(pool.begin(), pool.end(), 0);
-    for (int i = 0; i < nx; ++i)
-    {
-        std::uniform_int_distribution<int> dist(i, ny - 1);
-        std::swap(pool[i], pool[dist(rng)]);
+    for (int i=0;i<nx;i++){
+        std::uniform_int_distribution<int> d(i,ny-1);
+        std::swap(pool[i], pool[d(rng)]);
     }
-    return std::vector<int>(pool.begin(), pool.begin() + nx);
+    return std::vector<int>(pool.begin(), pool.begin()+nx);
 }
 
 std::vector<int> normalSample(int nx, int ny, std::mt19937 &rng)
 {
-    const double mu = (ny - 1) / 2.0;
-    const double sigma = ny / 6.0;
-    std::normal_distribution<double> dist(mu, sigma);
+    double mu=(ny-1)/2.0, sigma=ny/6.0;
+    std::normal_distribution<double> dist(mu,sigma);
     std::unordered_set<int> seen;
-    std::vector<int> result;
-    result.reserve(nx);
-    while ((int)result.size() < nx)
-    {
-        int s = static_cast<int>(std::round(dist(rng)));
-        if (s < 0 || s >= ny) continue;
-        if (!seen.insert(s).second) continue;
-        result.push_back(s);
+    std::vector<int> res; res.reserve(nx);
+    while ((int)res.size()<nx){
+        int s=(int)std::round(dist(rng));
+        if(s<0||s>=ny) continue;
+        if(!seen.insert(s).second) continue;
+        res.push_back(s);
     }
-    return result;
+    return res;
 }
 
-int *readBinaryFile(const std::string &filepath, int &N)
+int *readBinaryFile(const std::string &fp, int &N)
 {
-    std::ifstream file(filepath, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-        throw std::runtime_error("Could not open file: " + filepath);
-    std::streamsize sz = file.tellg();
-    if (sz % sizeof(int) != 0)
-        throw std::runtime_error("File size not multiple of sizeof(int).");
-    N = sz / sizeof(int);
-    file.seekg(0, std::ios::beg);
-    int *data = new int[N];
-    if (!file.read(reinterpret_cast<char *>(data), sz))
-    {
-        delete[] data;
-        throw std::runtime_error("Failed to read file: " + filepath);
+    std::ifstream f(fp, std::ios::binary|std::ios::ate);
+    if(!f.is_open()) throw std::runtime_error("Cannot open "+fp);
+    auto sz=f.tellg();
+    if(sz%sizeof(int)!=0) throw std::runtime_error("Bad size");
+    N=sz/sizeof(int); f.seekg(0);
+    int *d=new int[N];
+    if(!f.read((char*)d,sz)){delete[]d; throw std::runtime_error("Read fail");}
+    return d;
+}
+
+/**
+ * Tile an index map K times with offsets.
+ * Tile k: out[k*nx_base + i] = base[i] + k*ny_base
+ */
+std::vector<int> tileIndexMap(const int *base, int nx_base, int ny_base,
+                              size_t target_bytes)
+{
+    size_t bpt = (size_t)(ny_base + nx_base) * 16;
+    int K = std::max(1, (int)(target_bytes / bpt));
+    int nx_t = K * nx_base;
+    std::vector<int> out(nx_t);
+    for (int k=0; k<K; k++){
+        int yo = k*ny_base, xo = k*nx_base;
+        for (int i=0; i<nx_base; i++) out[xo+i] = base[i] + yo;
     }
-    return data;
+    printf("    Tiled K=%d  nx=%d ny=%d  footprint=%.0f MB\n",
+           K, nx_t, K*ny_base,
+           (double)(K*(size_t)(ny_base+nx_base)*16)/(1024.0*1024.0));
+    return out;
 }
 
 /* ================================================================ */
-/*  CSV header                                                       */
+/*  Sweep driver                                                     */
 /* ================================================================ */
-static const char *CSV_HEADER = "variant,experiment,ny,nx,tpb,coarsen,rep,time_ms\n";
+
+static const char *CSV_HDR = "variant,experiment,ny,nx,tpb,coarsen,rep,time_ms\n";
+
+void sweep_all_configs(
+    FILE *csv, const char *ename,
+    int ny, int nx,
+    int *ymap, int *ymap_s, int *xmap,
+    const std::array<int,7> &tpbs,
+    const std::array<int,4> &cfs,
+    int iters, int warmup)
+{
+    for (int tpb : tpbs)
+        for (int cf : cfs) {
+            printf("  %s tpb=%d cf=%d\n", ename, tpb, cf);
+            profile_config(csv, ename, ny, nx, ymap, ymap_s, xmap,
+                           tpb, cf, iters, warmup, 0);
+            fflush(csv);
+        }
+}
 
 /* ================================================================ */
 /*  Main                                                             */
@@ -471,124 +408,126 @@ static const char *CSV_HEADER = "variant,experiment,ny,nx,tpb,coarsen,rep,time_m
 int main(void)
 {
     constexpr int ITERS  = 100;
-    constexpr int WARMUP = 5;
+    constexpr int WARMUP = 10;
     constexpr int NUM_SAMPLES = 5;
+    constexpr size_t TARGET_1GB = 1ULL << 30;
 
-    std::array<int, 7> tpb_values     = {32, 64, 128, 256, 384, 512, 1024};
-    std::array<int, 4> coarsen_values = {1, 2, 4, 8};
-    std::array<int, 5> ny_multiples   = {1, 2, 4, 8, 16};
+    // nat20 base dimensions
+    constexpr int NX_BASE = 110273;
+    constexpr int NY_BASE = 225001;
+    const char *QE_BIN   = "./bin/vexx_k_gpu__dfftt__nl_nat20.bin";
+
+    std::array<int,7> tpbs = {32, 64, 128, 256, 384, 512, 1024};
+    std::array<int,4> cfs  = {1, 2, 4, 8};
 
     std::mt19937 rng(42);
     init_flush();
 
-    // ============================================================
-    //  QE real-world data
-    // ============================================================
-    struct QECase { const char *name; int ny; int nx; const char *binfile; };
-    QECase qe_cases[] = {
-        {"qe_nat05", 64001,  27609,  "./bin/vexx_k_gpu__dfftt__nl_nat05.bin"},
-        {"qe_nat10", 120001, 55191,  "./bin/vexx_k_gpu__dfftt__nl_nat10.bin"},
-        {"qe_nat20", 225001, 110273, "./bin/vexx_k_gpu__dfftt__nl_nat20.bin"},
-    };
+    // ── Load QE base index map ──────────────────────────────────────────
+    int N = 0;
+    int *qe_base = readBinaryFile(QE_BIN, N);
+    assert(N == NX_BASE);
 
-    FILE *csv = fopen("zaxpy_sweep_qe.csv", "w");
-    fprintf(csv, "%s", CSV_HEADER);
+    // ================================================================
+    //  SMALL scale (nat20 original sizes)
+    // ================================================================
+    FILE *csv = fopen("zaxpy_sweep_small.csv", "w");
+    fprintf(csv, "%s", CSV_HDR);
 
-    for (auto &qe : qe_cases)
+    // -- QE --
     {
-        printf("\n>>> %s  ny=%d nx=%d\n", qe.name, qe.ny, qe.nx);
-        int N = 0;
-        int *ymap = readBinaryFile(qe.binfile, N);
-        assert(N == qe.nx);
+        printf("\n>>> SMALL qe  ny=%d nx=%d\n", NY_BASE, NX_BASE);
+        int *ys = new int[NX_BASE], *xm = new int[NX_BASE];
+        sortWithIndices(NX_BASE, qe_base, ys, xm);
+        sweep_all_configs(csv, "qe", NY_BASE, NX_BASE, qe_base, ys, xm,
+                          tpbs, cfs, ITERS, WARMUP);
+        delete[] ys; delete[] xm;
+    }
 
-        int *ymap_s = new int[qe.nx];
-        int *xmap   = new int[qe.nx];
-        sortWithIndices(qe.nx, ymap, ymap_s, xmap);
+    // -- Uniform (NUM_SAMPLES samples) --
+    for (int s = 0; s < NUM_SAMPLES; s++)
+    {
+        char en[64]; snprintf(en, sizeof(en), "uniform_s%d", s);
+        printf("\n>>> SMALL %s  ny=%d nx=%d\n", en, NY_BASE, NX_BASE);
+        auto yv = uniformSample(NX_BASE, NY_BASE, rng);
+        int *ys = new int[NX_BASE], *xm = new int[NX_BASE];
+        sortWithIndices(NX_BASE, yv.data(), ys, xm);
+        sweep_all_configs(csv, en, NY_BASE, NX_BASE, yv.data(), ys, xm,
+                          tpbs, cfs, ITERS, WARMUP);
+        delete[] ys; delete[] xm;
+    }
 
-        for (int tpb : tpb_values)
-            for (int cf : coarsen_values)
-            {
-                printf("  tpb=%d coarsen=%d\n", tpb, cf);
-                profile_config(csv, qe.name, qe.ny, qe.nx,
-                               ymap, ymap_s, xmap, tpb, cf, ITERS, WARMUP, 0);
-                fflush(csv);
-            }
-
-        delete[] ymap; delete[] ymap_s; delete[] xmap;
+    // -- Normal (NUM_SAMPLES samples) --
+    for (int s = 0; s < NUM_SAMPLES; s++)
+    {
+        char en[64]; snprintf(en, sizeof(en), "normal_s%d", s);
+        printf("\n>>> SMALL %s  ny=%d nx=%d\n", en, NY_BASE, NX_BASE);
+        auto yv = normalSample(NX_BASE, NY_BASE, rng);
+        int *ys = new int[NX_BASE], *xm = new int[NX_BASE];
+        sortWithIndices(NX_BASE, yv.data(), ys, xm);
+        sweep_all_configs(csv, en, NY_BASE, NX_BASE, yv.data(), ys, xm,
+                          tpbs, cfs, ITERS, WARMUP);
+        delete[] ys; delete[] xm;
     }
     fclose(csv);
 
-    // ============================================================
-    //  Synthetic: uniform
-    // ============================================================
-    int nx = 1024 * 1024;
-    int *ymap_s = new int[nx];
-    int *xmap   = new int[nx];
+    // ================================================================
+    //  1 GB scale (tiled with offsets)
+    // ================================================================
+    csv = fopen("zaxpy_sweep_1gb.csv", "w");
+    fprintf(csv, "%s", CSV_HDR);
 
-    csv = fopen("zaxpy_sweep_uniform.csv", "w");
-    fprintf(csv, "%s", CSV_HEADER);
-
-    for (int mult : ny_multiples)
+    // -- QE tiled --
     {
-        int ny = mult * nx;
-        printf("\n>>> uniform_mult%d  ny=%d nx=%d\n", mult, ny, nx);
+        printf("\n>>> 1GB qe_tiled\n");
+        auto tv = tileIndexMap(qe_base, NX_BASE, NY_BASE, TARGET_1GB);
+        int nx_t = (int)tv.size();
+        int K = nx_t / NX_BASE;
+        int ny_t = K * NY_BASE;
+        int *ys = new int[nx_t], *xm = new int[nx_t];
+        sortWithIndices(nx_t, tv.data(), ys, xm);
+        sweep_all_configs(csv, "qe_tiled", ny_t, nx_t, tv.data(), ys, xm,
+                          tpbs, cfs, ITERS, WARMUP);
+        delete[] ys; delete[] xm;
+    }
 
-        for (int s = 0; s < NUM_SAMPLES; s++)
-        {
-            auto ymap_vec = uniformSample(nx, ny, rng);
-            sortWithIndices(nx, ymap_vec.data(), ymap_s, xmap);
+    // -- Uniform tiled --
+    for (int s = 0; s < NUM_SAMPLES; s++)
+    {
+        char en[64]; snprintf(en, sizeof(en), "uniform_tiled_s%d", s);
+        printf("\n>>> 1GB %s\n", en);
+        auto ubase = uniformSample(NX_BASE, NY_BASE, rng);
+        auto tv = tileIndexMap(ubase.data(), NX_BASE, NY_BASE, TARGET_1GB);
+        int nx_t = (int)tv.size();
+        int K = nx_t / NX_BASE;
+        int ny_t = K * NY_BASE;
+        int *ys = new int[nx_t], *xm = new int[nx_t];
+        sortWithIndices(nx_t, tv.data(), ys, xm);
+        sweep_all_configs(csv, en, ny_t, nx_t, tv.data(), ys, xm,
+                          tpbs, cfs, ITERS, WARMUP);
+        delete[] ys; delete[] xm;
+    }
 
-            char ename[80];
-            snprintf(ename, sizeof(ename), "uniform_mult%d_s%d", mult, s);
-
-            for (int tpb : tpb_values)
-                for (int cf : coarsen_values)
-                {
-                    printf("  %s tpb=%d coarsen=%d\n", ename, tpb, cf);
-                    profile_config(csv, ename, ny, nx,
-                                   ymap_vec.data(), ymap_s, xmap,
-                                   tpb, cf, ITERS, WARMUP, 0);
-                    fflush(csv);
-                }
-        }
+    // -- Normal tiled --
+    for (int s = 0; s < NUM_SAMPLES; s++)
+    {
+        char en[64]; snprintf(en, sizeof(en), "normal_tiled_s%d", s);
+        printf("\n>>> 1GB %s\n", en);
+        auto nbase = normalSample(NX_BASE, NY_BASE, rng);
+        auto tv = tileIndexMap(nbase.data(), NX_BASE, NY_BASE, TARGET_1GB);
+        int nx_t = (int)tv.size();
+        int K = nx_t / NX_BASE;
+        int ny_t = K * NY_BASE;
+        int *ys = new int[nx_t], *xm = new int[nx_t];
+        sortWithIndices(nx_t, tv.data(), ys, xm);
+        sweep_all_configs(csv, en, ny_t, nx_t, tv.data(), ys, xm,
+                          tpbs, cfs, ITERS, WARMUP);
+        delete[] ys; delete[] xm;
     }
     fclose(csv);
 
-    // ============================================================
-    //  Synthetic: normal
-    // ============================================================
-    csv = fopen("zaxpy_sweep_normal.csv", "w");
-    fprintf(csv, "%s", CSV_HEADER);
-
-    for (int mult : ny_multiples)
-    {
-        int ny = mult * nx;
-        printf("\n>>> normal_mult%d  ny=%d nx=%d\n", mult, ny, nx);
-
-        for (int s = 0; s < NUM_SAMPLES; s++)
-        {
-            auto ymap_vec = normalSample(nx, ny, rng);
-            sortWithIndices(nx, ymap_vec.data(), ymap_s, xmap);
-
-            char ename[80];
-            snprintf(ename, sizeof(ename), "normal_mult%d_s%d", mult, s);
-
-            for (int tpb : tpb_values)
-                for (int cf : coarsen_values)
-                {
-                    printf("  %s tpb=%d coarsen=%d\n", ename, tpb, cf);
-                    profile_config(csv, ename, ny, nx,
-                                   ymap_vec.data(), ymap_s, xmap,
-                                   tpb, cf, ITERS, WARMUP, 0);
-                    fflush(csv);
-                }
-        }
-    }
-    fclose(csv);
-
-    delete[] ymap_s; delete[] xmap;
+    delete[] qe_base;
     if (d_flush) cudaFree(d_flush);
-
-    printf("\nDone. CSVs: zaxpy_sweep_qe.csv, zaxpy_sweep_uniform.csv, zaxpy_sweep_normal.csv\n");
+    printf("\nDone.  CSVs: zaxpy_sweep_small.csv  zaxpy_sweep_1gb.csv\n");
     return 0;
 }
