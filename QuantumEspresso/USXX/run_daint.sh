@@ -41,6 +41,6 @@ nvcc -O3 -std=c++17 \
     -Xcompiler -fopenmp \
     -Xcompiler -march=native \
     -o addusxx_gpu_daint \
-    main.cu usxx_kernels.cu usxx_kernels_soa.cu
-
+    main.cu 
+    
 ./addusxx_gpu_daint
