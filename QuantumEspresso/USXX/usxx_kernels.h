@@ -1,0 +1,119 @@
+#pragma once
+#include "types.h"
+
+// ============================================================
+// Fortran column-major indexing helpers
+// All arrays loaded from Fortran binary files are column-major.
+// ============================================================
+
+// 2D column-major: A(nrows, ncols) => A[col * nrows + row]  (0-based)
+#define IDX2(row, col, nrows) ((col) * (nrows) + (row))
+
+// 3D column-major: A(n1, n2, n3) => A[k*n1*n2 + j*n1 + i]  (0-based)
+#define IDX3(i, j, k, n1, n2) ((k) * (n1) * (n2) + (j) * (n1) + (i))
+
+// eigts1 has Fortran bounds (-108:108, 10), stored as 217 * 10 column-major
+// eigts1(ig, na) with ig in [-108,108], na in [1,10]
+// => offset: (na-1)*217 + (ig + 108)
+#define EIGTS1_IDX(ig, na) ((na) * 217 + ((ig) + 108))
+#define EIGTS2_IDX(ig, na) ((na) * 109 + ((ig) + 54))
+#define EIGTS3_IDX(ig, na) ((na) * 109 + ((ig) + 54))
+
+// Transposed: eigts1_T(10, -108:108) => col-major: (ig+108)*10 + na
+#define EIGTS1T_IDX(na, ig) (((ig) + 108) * 10 + (na))
+#define EIGTS2T_IDX(na, ig) (((ig) + 54) * 10 + (na))
+#define EIGTS3T_IDX(na, ig) (((ig) + 54) * 10 + (na))
+
+// ============================================================
+// CPU baseline kernel (host-only)
+// ============================================================
+void addusxx_g_cpu(
+    Complex_DP* rhoc, const DP* xkq, const DP* xk, const DP* tau,
+    const Complex_DP* becphi_c, const Complex_DP* becpsi_c,
+    int nkb, int ngms, int nat, int ntyp,
+    const int* upf_tvanp, const int* nij_type, const int* ityp,
+    const int* ofsbeta, const int* nh, const int* ijtoh,
+    const Complex_DP* qgm, const Complex_DP* eigts1,
+    const Complex_DP* eigts2, const Complex_DP* eigts3,
+    const int* mill, const int* dfftt__nl);
+
+// ============================================================
+// GPU baseline kernel (no layout transforms)
+// ============================================================
+void addusxx_g_gpu(
+    Complex_DP* d_rhoc, const DP* d_xkq, const DP* d_xk, const DP* d_tau,
+    const Complex_DP* d_becphi_c, const Complex_DP* d_becpsi_c,
+    int nkb, int ngms, int nat, int ntyp,
+    const int* d_upf_tvanp, const int* d_nij_type, const int* d_ityp,
+    const int* d_ofsbeta, const int* d_nh, const int* d_ijtoh,
+    const Complex_DP* d_qgm, const Complex_DP* d_eigts1,
+    const Complex_DP* d_eigts2, const Complex_DP* d_eigts3,
+    const int* d_mill, const int* d_dfftt__nl,
+    // Host-side params needed to launch kernels:
+    const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh);
+
+// ============================================================
+// GPU optimized kernel (transposed layouts + sorted nl)
+// ============================================================
+void addusxx_g_gpu_optimized(
+    Complex_DP* d_rhoc, const DP* d_xkq, const DP* d_xk, const DP* d_tau,
+    const Complex_DP* d_becphi_c, const Complex_DP* d_becpsi_c,
+    int nkb, int ngms, int nat, int ntyp,
+    const int* d_upf_tvanp, const int* d_nij_type, const int* d_ityp,
+    const int* d_ofsbeta, const int* d_nh, const int* d_ijtoh,
+    const Complex_DP* d_qgm_T, const Complex_DP* d_eigts1_T,
+    const Complex_DP* d_eigts2_T, const Complex_DP* d_eigts3_T,
+    const int* d_mill, const int* d_dfftt__nl_sorted, const int* d_dfftt__nl_ix,
+    const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh);
+
+// ============================================================
+// GPU baseline kernel — SoA layout (split real/imag)
+// ============================================================
+void addusxx_g_gpu_soa(
+    double* d_rhoc_re, double* d_rhoc_im,
+    const DP* d_xkq, const DP* d_xk, const DP* d_tau,
+    const double* d_becphi_re, const double* d_becphi_im,
+    const double* d_becpsi_re, const double* d_becpsi_im,
+    int nkb, int ngms, int nat, int ntyp,
+    const int* d_upf_tvanp, const int* d_nij_type, const int* d_ityp,
+    const int* d_ofsbeta, const int* d_nh, const int* d_ijtoh,
+    const double* d_qgm_re, const double* d_qgm_im,
+    const double* d_eigts1_re, const double* d_eigts1_im,
+    const double* d_eigts2_re, const double* d_eigts2_im,
+    const double* d_eigts3_re, const double* d_eigts3_im,
+    const int* d_mill, const int* d_dfftt__nl,
+    const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh);
+
+// ============================================================
+// GPU optimized kernel — SoA layout (transposed + sorted nl)
+// ============================================================
+void addusxx_g_gpu_optimized_soa(
+    double* d_rhoc_re, double* d_rhoc_im,
+    const DP* d_xkq, const DP* d_xk, const DP* d_tau,
+    const double* d_becphi_re, const double* d_becphi_im,
+    const double* d_becpsi_re, const double* d_becpsi_im,
+    int nkb, int ngms, int nat, int ntyp,
+    const int* d_upf_tvanp, const int* d_nij_type, const int* d_ityp,
+    const int* d_ofsbeta, const int* d_nh, const int* d_ijtoh,
+    const double* d_qgm_T_re, const double* d_qgm_T_im,
+    const double* d_eigts1_T_re, const double* d_eigts1_T_im,
+    const double* d_eigts2_T_re, const double* d_eigts2_T_im,
+    const double* d_eigts3_T_re, const double* d_eigts3_T_im,
+    const int* d_mill, const int* d_dfftt__nl_sorted, const int* d_dfftt__nl_ix,
+    const int* h_upf_tvanp, const int* h_nij_type, const int* h_nh);
+
+// ============================================================
+// Utility: deinterleave AoS Complex_DP array into SoA
+// ============================================================
+inline void aos_to_soa(const Complex_DP* aos, double* re, double* im, int n) {
+    for (int i = 0; i < n; i++) {
+        re[i] = cuCreal(aos[i]);
+        im[i] = cuCimag(aos[i]);
+    }
+}
+
+inline void soa_to_aos(const double* re, const double* im, Complex_DP* aos, int n) {
+    for (int i = 0; i < n; i++) {
+        aos[i] = make_cuDoubleComplex(re[i], im[i]);
+    }
+}
