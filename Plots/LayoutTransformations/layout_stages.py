@@ -50,21 +50,21 @@ def gy(r, nr): return (nr-1-r) * cell + cell/2
 
 def dashed_grid(ax, nr, nc, x_off=0):
     for c in range(nc+1):
-        ax.plot([x_off+c*cell]*2, [0, nr*cell], ls='--', color='#aaa', lw=1.5, dashes=(3,3))
+        ax.plot([x_off+c*cell]*2, [0, nr*cell], ls='--', color='#777', lw=2, dashes=(3,3))
     for r in range(nr+1):
-        ax.plot([x_off, x_off+nc*cell], [r*cell]*2, ls='--', color='#aaa', lw=1.5, dashes=(3,3))
+        ax.plot([x_off, x_off+nc*cell], [r*cell]*2, ls='--', color='#777', lw=2, dashes=(3,3))
 
 def dashed_rows(ax, nr, nc, x_off=0):
     for c in [0, nc]:
-        ax.plot([x_off+c*cell]*2, [0, nr*cell], ls='--', color='#aaa', lw=1.5, dashes=(3,3))
+        ax.plot([x_off+c*cell]*2, [0, nr*cell], ls='--', color='#777', lw=2, dashes=(3,3))
     for r in range(nr+1):
-        ax.plot([x_off, x_off+nc*cell], [r*cell]*2, ls='--', color='#aaa', lw=1.5, dashes=(3,3))
+        ax.plot([x_off, x_off+nc*cell], [r*cell]*2, ls='--', color='#777', lw=2, dashes=(3,3))
 
 def dashed_blocks(ax, nr, nc, x_off=0):
     for c in [0, nc//2, nc]:
-        ax.plot([x_off+c*cell]*2, [0, nr*cell], ls='--', color='#aaa', lw=1.5, dashes=(3,3))
+        ax.plot([x_off+c*cell]*2, [0, nr*cell], ls='--', color='#777', lw=2, dashes=(3,3))
     for r in [0, nr//2, nr]:
-        ax.plot([x_off, x_off+nc*cell], [r*cell]*2, ls='--', color='#aaa', lw=1.5, dashes=(3,3))
+        ax.plot([x_off, x_off+nc*cell], [r*cell]*2, ls='--', color='#777', lw=2, dashes=(3,3))
 
 def draw_cache_outlines_4x3(ax, x_off=0):
     """Draw L/Z/L dashed outlines for cache lines (B=4) on a 4×3 grid.
@@ -73,7 +73,7 @@ def draw_cache_outlines_4x3(ax, x_off=0):
     CL1: (1,1)(1,2)(2,0)(2,1) → Z
     CL2: (2,2)(3,0)(3,1)(3,2) → L inverted"""
     c = cell
-    cl_colors = ['#aaa', '#aaa', '#aaa']
+    cl_colors = ['#777', '#777', '#777']
 
     # CL0: L shape
     poly0 = [(0,4*c),(3*c,4*c),(3*c,3*c),(1*c,3*c),(1*c,2*c),(0,2*c)]
@@ -84,8 +84,9 @@ def draw_cache_outlines_4x3(ax, x_off=0):
 
     for poly, color in zip([poly0, poly1, poly2], cl_colors):
         shifted = [(x + x_off, y) for x, y in poly]
-        ax.add_patch(plt.Polygon(shifted, closed=True, fill=False,
+        p = ax.add_patch(plt.Polygon(shifted, closed=True, fill=False,
             edgecolor=color, linewidth=1.5, linestyle='--', zorder=5))
+        p.set_linestyle((0, (4, 3)))  # explicit dash pattern
 
 def bg_cols(ax, nc, nr, names, x_off=0):
     for c, n in enumerate(names):
