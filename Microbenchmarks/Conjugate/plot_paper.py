@@ -131,7 +131,7 @@ def draw_panel(ax, groups, title, peak=None, add_peak=True):
         ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5, zorder=1)
         ax.text(ps_all[0], peak * 1.02,
                 f"STREAM {peak:.2f} TB/s",
-                fontsize=9, color="dimgray", va="bottom")
+                fontsize=9, color="dimgray", va="bottom", zorder=1)
         if peak > ymax:
             ymax = peak
 
@@ -145,9 +145,10 @@ def draw_panel(ax, groups, title, peak=None, add_peak=True):
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
     ax.yaxis.set_minor_locator(AutoMinorLocator(4))
     ax.tick_params(axis="y", which="minor", length=3)
-    ax.grid(axis="y", alpha=0.25)
-    ax.grid(axis="y", which="minor", alpha=0.12, ls=":")
-    ax.grid(axis="x", alpha=0.12, ls=":")
+    ax.grid(axis="y", alpha=0.25, zorder=0)
+    ax.grid(axis="y", which="minor", alpha=0.12, ls=":", zorder=0)
+    ax.grid(axis="x", alpha=0.12, ls=":", zorder=0)
+    ax.set_axisbelow(True)
     ax.set_title(title, fontsize=11)
 
 # ══════════════════════════════════════════════════════════════════════
@@ -168,7 +169,7 @@ def build_figure(grid, mode_label, out_stem):
     ncols = len(active_cols)
 
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(3.6 * ncols, 2.8 * nrows + 0.8),
+                             figsize=(3.6 * ncols, 2.8 * nrows + 1.0),
                              squeeze=False)
 
     for ri, rk in enumerate(active_rows):
@@ -192,7 +193,7 @@ def build_figure(grid, mode_label, out_stem):
     if handles:
         fig.legend(handles, labels,
                    loc="lower center", ncol=len(labels),
-                   fontsize=9, frameon=True, fancybox=True,
+                   fontsize=10, frameon=True, fancybox=True,
                    bbox_to_anchor=(0.5, 0.02))
 
     titles = {
@@ -201,8 +202,8 @@ def build_figure(grid, mode_label, out_stem):
     }
     fig.suptitle(
         f"{titles[mode_label]}",
-        fontsize=15, y=0.87 if nrows > 1 else 0.98)
-    fig.text(0.5, 0.83 if nrows > 1 else 0.95,
+        fontsize=15, y=0.89 if nrows > 1 else 0.98)
+    fig.text(0.5, 0.85 if nrows > 1 else 0.95,
              "% annotations relative to STREAM peak bandwidth",
              ha='center', va='top', fontsize=12, color='dimgray')
     fig.tight_layout(rect=[0, 0.06, 1, 0.89 if nrows > 1 else 0.92])
