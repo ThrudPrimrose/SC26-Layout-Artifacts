@@ -1,27 +1,19 @@
 #!/usr/bin/env python3
 """
 plot_zaxpy_sweep.py
-Violin bandwidth plots for indirect zaxpy benchmark.
+Violin bandwidth plots for indirect scatter-accumulate benchmark.
 
-Two PNGs: "small" (nat20 original) and "1gb" (tiled).
-Columns: AMD (left), NVIDIA (right).
-Rows: GPU only (1 row) or CPU + GPU (2 rows) when --cpu-amd-dir given.
+    y[σ(i)] += x[i],  i = 0 … nx−1
+
+Two violins per distribution group:
+    Orange = Baseline (original index order — sequential reads, scattered writes)
+    Blue   = Best write-optimized layout (sorted or NUMA-partitioned)
+
+GPU picks best of {aos_sorted, soa_sorted}.
+CPU picks best of {aos_sorted, soa_sorted, aos_partitioned, soa_partitioned}.
 
 Usage:
-    python plot_zaxpy_sweep.py --amd-dir results/beverin --nv-dir results/daint
-
-    # With CPU row:
-python plot_zaxpy_sweep.py \
-  --amd-dir results/beverin --nv-dir results/daint \
-  --cpu-amd-dir results/beverin_cpu --cpu-nv-dir results/daint_cpu \
-  --add-peak
-
-python plot_zaxpy_sweep.py \
-  --amd-dir . --nv-dir . \
-  --cpu-amd-dir . --cpu-nv-dir . \
-  --add-peak
-  
-Each directory should contain zaxpy_sweep_small.csv and zaxpy_sweep_1gb.csv.
+    python plot_zaxpy_sweep.py --amd-dir results/beverin --nv-dir results/daint --with-cpu --add-peak
 """
 import matplotlib
 matplotlib.use("Agg")
@@ -30,28 +22,19 @@ from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
 import pandas as pd, numpy as np, argparse, sys, os
 
-# ── Colour / label scheme ────────────────────────────────────────────────────
-VCOL = {
-    "aos_scatter":      "#e67e22",
-    "aos_sorted":       "#2980b9",
-    "soa_scatter":      "#c0392b",
-    "soa_sorted":       "#27ae60",
-    "aos_partitioned":  "#8e44ad",   # purple
-    "soa_partitioned":  "#16a085",   # teal
-}
+# ── Two-violin scheme ────────────────────────────────────────────────────────
+VCOL = {"baseline": "#e67e22", "optimized": "#2980b9"}
 VLAB = {
-    "aos_scatter":      "AoS Scatter (original)",
-    "aos_sorted":       "AoS Sorted",
-    "soa_scatter":      "SoA Scatter",
-    "soa_sorted":       "SoA Sorted",
-    "aos_partitioned":  "AoS NUMA-part.",
-    "soa_partitioned":  "SoA NUMA-part.",
+    "baseline":  "Original Order",
+    "optimized": "Sorted (Shuffle)",
 }
+VIOLIN_KEYS = ["baseline", "optimized"]
 
-# GPU has 4 variants; CPU has 6 (with partitioned)
-GPU_VARIANTS = ["aos_scatter", "aos_sorted", "soa_scatter", "soa_sorted"]
-CPU_VARIANTS = ["aos_scatter", "aos_sorted", "soa_scatter", "soa_sorted",
-                "aos_partitioned", "soa_partitioned"]
+# Which CSV variants feed each violin
+BASELINE_CANDIDATES  = ["aos_scatter", "soa_scatter"]
+GPU_OPT_CANDIDATES   = ["aos_sorted", "soa_sorted"]
+CPU_OPT_CANDIDATES   = ["aos_sorted", "soa_sorted",
+                         "aos_partitioned", "soa_partitioned"]
 
 # Bytes per element (minimum traffic model)
 BYTES_PER_ELEM = {
@@ -61,17 +44,20 @@ BYTES_PER_ELEM = {
 }
 
 DIST_ORDER = ["uniform", "normal", "qe"]
-DIST_LABEL = {"uniform": "Uniform", "normal": "Normal", "qe": "QE"}
+DIST_LABEL = {
+    "uniform": "Uniform",
+    "normal":  r"Normal",
+    "qe":      "Exact",
+}
 
 STREAM_PEAK = {
-    "MI300A Zen CPU":  1228    * 1e-3,   # TB/s
+    "MI300A Zen CPU":  1228    * 1e-3,
     "Grace CPU":       1700.62 * 1e-3,
     "MI300A GPU":      4294    * 1e-3,
     "GH200 GPU":       3780    * 1e-3,
 }
 
-# Per-subplot dimensions (inches)
-GPU_W, GPU_H = 3.6, 1.6
+GPU_W, GPU_H = 4.2*(1/1.7), 4.5*(1/1.7)
 CPU_W, CPU_H = 2.8, 1.6
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -90,18 +76,31 @@ def compute_bandwidth(time_ms, nx, variant):
     return nx * BYTES_PER_ELEM[variant] / (time_ms * 1e-3) / 1e12
 
 
-def best_config_bw(df, variant):
+def best_config_bw(df, variant, max_threads_only=False):
+    """Best (tpb, coarsen) for a single variant by highest median BW."""
     sub = df[df["variant"] == variant].copy()
     if sub.empty:
-        return np.array([])
+        return np.array([]), -1.0, variant
+    if max_threads_only and "tpb" in sub.columns:
+        sub = sub[sub["tpb"] == sub["tpb"].max()]
     sub["bw"] = compute_bandwidth(sub["time_ms"].values,
                                   sub["nx"].values, variant)
     medians = sub.groupby(["tpb", "coarsen"])["bw"].median()
     if medians.empty:
-        return np.array([])
+        return np.array([]), -1.0, variant
     best = medians.idxmax()
     vals = sub[(sub["tpb"] == best[0]) & (sub["coarsen"] == best[1])]["bw"].values
-    return vals
+    return vals, np.median(vals), variant
+
+
+def best_across_variants(df, candidate_list, max_threads_only=False):
+    """Pick the variant+config with highest median BW from a candidate list."""
+    best_vals, best_med, best_vk = np.array([]), -1.0, ""
+    for vk in candidate_list:
+        vals, med, _ = best_config_bw(df, vk, max_threads_only)
+        if med > best_med:
+            best_vals, best_med, best_vk = vals, med, vk
+    return best_vals, best_vk
 
 
 def select_dist(df, dist_key, tiled):
@@ -116,12 +115,12 @@ def select_dist(df, dist_key, tiled):
         return df[df["experiment"].str.startswith(prefix)]
 
 
-def load_dir(d):
-    """Load small and 1gb CSVs from a directory."""
+def load_dir(d, cpu=False):
+    sfx = "_cpu" if cpu else ""
     out = {}
-    for key, fn in [("small", "zaxpy_sweep_small.csv"),
-                    ("1gb",   "zaxpy_sweep_1gb.csv")]:
-        p = os.path.join(d, fn)
+    for key, base in [("small", "zaxpy_sweep_small"),
+                      ("1gb",   "zaxpy_sweep_1gb")]:
+        p = os.path.join(d, f"{base}{sfx}.csv")
         try:
             out[key] = pd.read_csv(p)
             print(f"  Loaded {p}  ({len(out[key])} rows)")
@@ -133,10 +132,10 @@ def load_dir(d):
 
 # ── Subplot painter ──────────────────────────────────────────────────────────
 
-def paint_subplot(ax, df, peak_label, tiled, variant_list, add_peak=False):
-    nvars = len(variant_list)
-    group_spacing = nvars + 1.5
+def paint_subplot(ax, df, peak_label, tiled, is_cpu, add_peak=False):
+    opt_candidates = CPU_OPT_CANDIDATES if is_cpu else GPU_OPT_CANDIDATES
 
+    group_spacing = 3   # 2 violins + 1 gap
     positions, data_all, col_all = [], [], []
     medians_annot = []
     xticks, xlabels = [], []
@@ -144,17 +143,21 @@ def paint_subplot(ax, df, peak_label, tiled, variant_list, add_peak=False):
     for di, dist_key in enumerate(DIST_ORDER):
         df_slice = select_dist(df, dist_key, tiled)
 
-        for vi, vk in enumerate(variant_list):
-            vals = best_config_bw(df_slice, vk)
+        for vi, vk in enumerate(VIOLIN_KEYS):
+            if vk == "baseline":
+                vals, chosen = best_across_variants(df_slice, BASELINE_CANDIDATES, is_cpu)
+            else:
+                vals, chosen = best_across_variants(df_slice, opt_candidates, is_cpu)
+
             vals = remove_outliers(vals)
             pos = di * group_spacing + vi
             if len(vals) > 0:
                 data_all.append(vals)
                 positions.append(pos)
                 col_all.append(VCOL[vk])
-                medians_annot.append((pos, np.median(vals), vk))
+                medians_annot.append((pos, np.median(vals), np.min(vals), vk))
 
-        xticks.append(di * group_spacing + (nvars - 1) / 2.0)
+        xticks.append(di * group_spacing + 0.5)
         xlabels.append(DIST_LABEL[dist_key])
 
     # Y-axis
@@ -171,7 +174,7 @@ def paint_subplot(ax, df, peak_label, tiled, variant_list, add_peak=False):
     if data_all:
         parts = ax.violinplot(data_all, positions=positions,
                               showmeans=True, showmedians=True,
-                              showextrema=False, widths=0.9)
+                              showextrema=False, widths=1.2)
         for i, body in enumerate(parts["bodies"]):
             body.set_facecolor(col_all[i])
             body.set_edgecolor("black")
@@ -195,48 +198,46 @@ def paint_subplot(ax, df, peak_label, tiled, variant_list, add_peak=False):
     # Horizontal peak line
     if add_peak and peak_label in STREAM_PEAK:
         peak = STREAM_PEAK[peak_label]
-        ax.axhline(y=peak, color='red', ls='--', lw=1.2, alpha=0.7)
+        ax.axhline(y=peak, color='dimgray', ls='--', lw=0.8, alpha=0.7)
 
     # % annotations
     if peak_label in STREAM_PEAK:
         peak = STREAM_PEAK[peak_label]
-        off = 0.045 * top
-        for pos, med, vk in medians_annot:
+        yrange = top
+        off = 0.045 * yrange
+        for pos, med, vmin, vk in medians_annot:
             pct = 100.0 * med / peak
-            ax.text(pos, med - off, f'{pct:.0f}%',
-                    ha='center', va='top',
-                    fontsize=7, color=VCOL[vk], fontweight='bold')
-
+            color = VCOL[vk]
+            if vk == "baseline":
+                xoff, ha = 0.3, 'right'
+            else:
+                xoff, ha = -0.3, 'left'
+            ax.text(pos + xoff, vmin - off, f'{pct:.0f}%',
+                    ha=ha, va='top',
+                    fontsize=8.5, color=color, fontweight='bold')
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--amd-dir", default="results/beverin",
-                    help="Dir with GPU AMD CSVs (default: results/beverin)")
-    ap.add_argument("--nv-dir",  default="results/daint",
-                    help="Dir with GPU NV CSVs (default: results/daint)")
-    ap.add_argument("--cpu-amd-dir", default=None,
-                    help="Dir with CPU AMD CSVs (enables 2×2 grid)")
-    ap.add_argument("--cpu-nv-dir",  default=None,
-                    help="Dir with CPU NV CSVs (enables 2×2 grid)")
-    ap.add_argument("--add-peak", action="store_true",
-                    help="Draw horizontal STREAM peak line")
+    ap.add_argument("--amd-dir", default="results/beverin")
+    ap.add_argument("--nv-dir",  default="results/daint")
+    ap.add_argument("--with-cpu", action="store_true")
+    ap.add_argument("--add-peak", action="store_true")
     args = ap.parse_args()
 
-    # ── Load ─────────────────────────────────────────────────────────────
     print("Loading GPU AMD:")
-    gpu_amd = load_dir(args.amd_dir)
+    gpu_amd = load_dir(args.amd_dir, cpu=False)
     print("Loading GPU NV:")
-    gpu_nv  = load_dir(args.nv_dir)
+    gpu_nv  = load_dir(args.nv_dir, cpu=False)
 
-    have_cpu = args.cpu_amd_dir is not None and args.cpu_nv_dir is not None
+    have_cpu = args.with_cpu
     cpu_amd, cpu_nv = {}, {}
     if have_cpu:
         print("Loading CPU AMD:")
-        cpu_amd = load_dir(args.cpu_amd_dir)
+        cpu_amd = load_dir(args.amd_dir, cpu=True)
         print("Loading CPU NV:")
-        cpu_nv  = load_dir(args.cpu_nv_dir)
+        cpu_nv  = load_dir(args.nv_dir, cpu=True)
         if any(cpu_amd.get(k) is None for k in ["small","1gb"]) or \
            any(cpu_nv.get(k) is None for k in ["small","1gb"]):
             print("WARN: CPU CSVs incomplete, GPU-only.")
@@ -244,10 +245,9 @@ def main():
 
     plt.rcParams.update({
         "font.size": 10, "axes.titlesize": 10, "axes.labelsize": 9,
-        "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 8,
+        "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 9,
     })
 
-    # ── One figure per scale ─────────────────────────────────────────────
     scales = [
         ("small", False, gpu_amd.get("small"), gpu_nv.get("small"),
                          cpu_amd.get("small"), cpu_nv.get("small")),
@@ -259,59 +259,60 @@ def main():
         if ga is None or gn is None:
             print(f"Skipping {scale_name}: missing GPU data"); continue
 
-        # Build grid: list of (label, df, peak_key, variant_list, subplot_w, subplot_h)
+        # Build grid: (label, df, peak_key, is_cpu, subplot_w, subplot_h)
         rows = []
         if have_cpu and ca is not None and cn is not None:
             rows.append([
-                ("MI300A Zen CPU", ca, "MI300A Zen CPU", CPU_VARIANTS, CPU_W, CPU_H),
-                ("Grace CPU",      cn, "Grace CPU",      CPU_VARIANTS, CPU_W, CPU_H),
+                ("MI300A Zen CPU", ca, "MI300A Zen CPU", True, CPU_W, CPU_H),
+                ("Grace CPU",      cn, "Grace CPU",      True, CPU_W, CPU_H),
             ])
         rows.append([
-            ("MI300A GPU", ga, "MI300A GPU", GPU_VARIANTS, GPU_W, GPU_H),
-            ("GH200 GPU",  gn, "GH200 GPU", GPU_VARIANTS, GPU_W, GPU_H),
+            ("MI300A GPU", ga, "MI300A GPU", False, GPU_W, GPU_H),
+            ("GH200 GPU",  gn, "GH200 GPU", False, GPU_W, GPU_H),
         ])
 
         nrows = len(rows)
         ncols = 2
-
-        # Compute figure size from per-row heights and per-col widths
-        # Use max width across columns for each col (they're equal here)
-        col_w = max(rows[0][0][4], rows[0][1][4])  # both same per row
+        col_w = max(rows[r][c][4] for r in range(nrows) for c in range(ncols))
         row_heights = [rows[r][0][5] for r in range(nrows)]
         fig_w = col_w * ncols
         fig_h = sum(row_heights)
 
         fig, axes = plt.subplots(
-            nrows, ncols,
-            figsize=(fig_w, fig_h),
-            squeeze=False,
-            gridspec_kw={"height_ratios": row_heights},
+            nrows, ncols, figsize=(fig_w, fig_h), squeeze=False,
         )
 
         title_scale = "nat20 original" if not tiled else "\u22481 GiB tiled"
-        fig.suptitle(f"Indirect ZAXPY \u2014 {title_scale}",
-                     fontsize=11, y=0.995)
+        fig.suptitle(
+            f"Indirect Scatter-Accumulate",
+            fontsize=10, y=0.998,
+        )
+        fig.text(0.5, 0.95,
+                 r"Original: $y[\sigma(i)]\ {+}{=}\ x[i]$"
+                 "\n"
+                 r"Write-coalesced: $y[\sigma(\pi(i))]\ {+}{=}\ x[\pi(i)]$,"
+                 r"$\;\pi = \mathrm{argsort}(\sigma)$",
+                 ha='center', va='top', fontsize=9.5, color='dimgray')
 
         for ri, row_data in enumerate(rows):
-            for ci, (label, df, peak_label, vlist, sw, sh) in enumerate(row_data):
+            for ci, (label, df, peak_label, is_cpu, sw, sh) in enumerate(row_data):
                 ax = axes[ri, ci]
                 ax.set_title(label, fontsize=9, pad=3)
                 if ci == 0:
                     ax.set_ylabel("BW [TB/s]", fontsize=8)
-                paint_subplot(ax, df, peak_label, tiled, vlist,
+                paint_subplot(ax, df, peak_label, tiled, is_cpu,
                               add_peak=args.add_peak)
 
-        # ── Legend ────────────────────────────────────────────────────────
-        # Collect all variants used
-        all_vk = GPU_VARIANTS if not have_cpu else CPU_VARIANTS
+        # Legend
         handles = [Patch(facecolor=VCOL[v], edgecolor="black", label=VLAB[v])
-                   for v in all_vk]
+                   for v in VIOLIN_KEYS]
         fig.legend(handles=handles, loc='lower center',
-                   bbox_to_anchor=(0.5, -0.01),
-                   ncol=3 if len(all_vk) > 4 else len(all_vk),
-                   framealpha=0.9, columnspacing=0.8, fontsize=7)
+                   bbox_to_anchor=(0.5, -0.01), ncol=2,
+                   framealpha=0.9, columnspacing=1.0, fontsize=8)
 
-        fig.tight_layout(rect=[0, 0.06, 1, 0.97])
+        fig.subplots_adjust(left=0.04, right=0.99,
+                            top=0.98, bottom=0.12, hspace=0.05, wspace=0.05)
+        fig.tight_layout(rect=[0, 0.05, 1, 0.95])
         sfx = "_w_stream_peak" if args.add_peak else ""
         stem = f"zaxpy_violins_{scale_name}{sfx}"
         fig.savefig(f"{stem}.png", dpi=200, bbox_inches='tight')
@@ -320,36 +321,39 @@ def main():
         print(f"Saved {stem}.png / .pdf")
 
     # ── Summary table ────────────────────────────────────────────────────
-    print(f"\n{'Scale':<8} {'Platform':<22} {'Dist':<10} {'Variant':<20} "
-          f"{'Best (tpb,cf)':<16} {'Median TB/s':<12} {'% Peak'}")
-    print("-" * 100)
+    print(f"\n{'Scale':<8} {'Platform':<22} {'Dist':<10} {'Violin':<12} "
+          f"{'Chosen variant':<22} {'Median TB/s':<12} {'% Peak'}")
+    print("-" * 96)
     for scale_name, tiled, ga, gn, ca, cn in scales:
         entries = []
         if ga is not None:
-            entries.append(("MI300A GPU", ga, "MI300A GPU", GPU_VARIANTS))
+            entries.append(("MI300A GPU", ga, "MI300A GPU", False))
         if gn is not None:
-            entries.append(("GH200 GPU",  gn, "GH200 GPU", GPU_VARIANTS))
+            entries.append(("GH200 GPU",  gn, "GH200 GPU", False))
         if have_cpu and ca is not None:
-            entries.append(("MI300A Zen CPU", ca, "MI300A Zen CPU", CPU_VARIANTS))
+            entries.append(("MI300A Zen CPU", ca, "MI300A Zen CPU", True))
         if have_cpu and cn is not None:
-            entries.append(("Grace CPU",      cn, "Grace CPU",      CPU_VARIANTS))
+            entries.append(("Grace CPU",      cn, "Grace CPU",      True))
 
-        for label, df, pk, vlist in entries:
+        for label, df, pk, is_cpu in entries:
             peak = STREAM_PEAK.get(pk, 1.0)
+            opt_cands = CPU_OPT_CANDIDATES if is_cpu else GPU_OPT_CANDIDATES
             for dk in DIST_ORDER:
                 sl = select_dist(df, dk, tiled)
-                for vk in vlist:
-                    sub = sl[sl["variant"] == vk].copy()
-                    if sub.empty: continue
-                    sub["bw"] = compute_bandwidth(sub["time_ms"].values,
-                                                  sub["nx"].values, vk)
-                    meds = sub.groupby(["tpb","coarsen"])["bw"].median()
-                    if meds.empty: continue
-                    bt, bc = meds.idxmax()
-                    m = meds.max()
-                    p = 100*m/peak
-                    print(f"{scale_name:<8} {label:<22} {dk:<10} {vk:<20} "
-                          f"({bt},{bc}){'':>8} {m:.4f}      {p:.1f}%")
+                # Baseline
+                vals, chosen = best_across_variants(sl, BASELINE_CANDIDATES, is_cpu)
+                if len(vals) > 0:
+                    med = np.median(vals)
+                    pct = 100*med/peak
+                    print(f"{scale_name:<8} {label:<22} {dk:<10} {'baseline':<12} "
+                          f"{chosen:<22} {med:.4f}      {pct:.1f}%")
+                # Optimized
+                vals, chosen = best_across_variants(sl, opt_cands, is_cpu)
+                if len(vals) > 0:
+                    med = np.median(vals)
+                    pct = 100*med/peak
+                    print(f"{scale_name:<8} {label:<22} {dk:<10} {'optimized':<12} "
+                          f"{chosen:<22} {med:.4f}      {pct:.1f}%")
 
 
 if __name__ == "__main__":
