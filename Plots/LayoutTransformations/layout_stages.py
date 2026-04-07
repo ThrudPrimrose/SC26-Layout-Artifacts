@@ -293,10 +293,10 @@ def stage6(name):
     plt.savefig(f'{name}.png', bbox_inches='tight', dpi=300)
     plt.close(); print(f"Done: {name}")
 
-
-stage1('layout_1_original')
-stage2('layout_2_pad')
-stage3('layout_3_permute')
-stage4('layout_4_block')
-stage5('layout_5_shuffle')
-stage6('layout_6_combined')
+if __name__ == "__main__":
+    stage1('layout_1_original')
+    stage2('layout_2_pad')
+    stage3('layout_3_permute')
+    stage4('layout_4_block')
+    stage5('layout_5_shuffle')
+    stage6('layout_6_combined')
