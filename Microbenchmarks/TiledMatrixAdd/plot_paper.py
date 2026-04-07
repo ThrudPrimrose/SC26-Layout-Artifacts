@@ -255,9 +255,10 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
                 color="#555555", ls=":", lw=1.5, alpha=0.5)
         ax.plot([p_target, arrow_x], [y_target, y_target],
                 color="#555555", ls=":", lw=1.5, alpha=0.5)
+        style = "|-|, widthA=0.15, widthB=0.15" if abs(y_target - y_tiled) < 0.05 * ymax else "<->"
         ax.annotate("", xy=(arrow_x, y_target), xytext=(arrow_x, y_tiled),
-                    arrowprops=dict(arrowstyle="<->", color="#555555",
-                                   lw=1.5, shrinkA=2, shrinkB=2))
+                    arrowprops=dict(arrowstyle=style, color="#555555",
+                                    lw=1.5, shrinkA=0, shrinkB=0))
         mid_y = (y_tiled + y_target) / 2
         y_off = 0.21 * ymax if gpu else 0.12 * ymax
         text_y = mid_y - y_off
