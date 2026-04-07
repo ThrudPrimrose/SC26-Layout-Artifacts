@@ -18,9 +18,10 @@ Usage:
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator, AutoMinorLocator
+from matplotlib.ticker import MaxNLocator, AutoMinorLocator, FormatStrFormatter
 import numpy as np, argparse, re
 from collections import defaultdict
+from scipy.stats import bootstrap
 
 # ══════════════════════════════════════════════════════════════════════
 #  Constants
@@ -79,6 +80,36 @@ def remove_outliers(v, k=3.0):
     q1, q3 = np.percentile(v, [25, 75]); iqr = q3 - q1
     c = v[(v >= q1 - k * iqr) & (v <= q3 + k * iqr)]
     return c if len(c) > 2 else v
+
+import warnings
+
+def bootstrap_ci(arr, confidence_level=0.95, n_resamples=10000):
+    """Bootstrap CI of the median using scipy BCa method, fallback to percentile."""
+    if len(arr) < 3:
+        med = np.median(arr)
+        return med, med
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            res = bootstrap((arr,), np.median,
+                            confidence_level=confidence_level,
+                            n_resamples=n_resamples, method='BCa')
+            lo, hi = res.confidence_interval.low, res.confidence_interval.high
+            if np.isnan(lo) or np.isnan(hi):
+                raise ValueError("BCa returned nan")
+            return lo, hi
+        except Exception:
+            try:
+                res = bootstrap((arr,), np.median,
+                                confidence_level=confidence_level,
+                                n_resamples=n_resamples, method='percentile')
+                lo, hi = res.confidence_interval.low, res.confidence_interval.high
+                if np.isnan(lo) or np.isnan(hi):
+                    raise ValueError("percentile returned nan")
+                return lo, hi
+            except Exception:
+                med = np.median(arr)
+                return med, med
 
 def best_of(groups):
     if not groups: return None
@@ -185,8 +216,33 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
             body.set_facecolor(colors[i])
             body.set_edgecolor("black")
             body.set_alpha(0.75)
+            body.set_zorder(2)
         parts["cmeans"].set_color("black")
+        parts["cmeans"].set_zorder(3)
         parts["cmedians"].set_color("white")
+        parts["cmedians"].set_zorder(3)
+
+        # Bootstrap 95% CI of median
+        ci_color = "#FF69B4"  # soft hot pink
+        for i, arr in enumerate(data):
+            ci_lo, ci_hi = bootstrap_ci(arr)
+            print(f"  CI [{title}] pos={positions[i]}: lo={ci_lo:.4f} hi={ci_hi:.4f} span={ci_hi-ci_lo:.6f} top={top:.4f}")
+            # Ensure minimum visual height so CI is always visible
+            ci_mid = (ci_lo + ci_hi) / 2
+            min_height = 0.01 * top if top > 0 else 0.001
+            if (ci_hi - ci_lo) < min_height:
+                ci_lo = ci_mid - min_height / 2
+                ci_hi = ci_mid + min_height / 2
+            ax.vlines(positions[i], ci_lo, ci_hi,
+                      color="black", lw=3.5, zorder=10)
+            ax.vlines(positions[i], ci_lo, ci_hi,
+                      color=ci_color, lw=1.8, zorder=11)
+            cap_w = 0.08
+            for y in (ci_lo, ci_hi):
+                ax.hlines(y, positions[i] - cap_w, positions[i] + cap_w,
+                          color="black", lw=3, zorder=10)
+                ax.hlines(y, positions[i] - cap_w, positions[i] + cap_w,
+                          color=ci_color, lw=1.5, zorder=11)
 
     # separator
     if sep_x is not None:
@@ -199,21 +255,21 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
     ax.set_xticks(positions)
     ax.set_xticklabels(xlabels, fontsize=9)
     ax.set_yticks(ticks)
-    from matplotlib.ticker import FormatStrFormatter
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
     ax.yaxis.set_minor_locator(AutoMinorLocator(4))
     ax.tick_params(axis='y', which='minor', length=3)
     ax.set_ylim(0, top)
     ax.set_title(title, fontsize=11)
-    ax.grid(axis="y", alpha=0.25)
-    ax.grid(axis="y", which='minor', alpha=0.12, ls=':')
+    ax.grid(axis="y", alpha=0.25, zorder=0)
+    ax.grid(axis="y", which='minor', alpha=0.12, ls=':', zorder=0)
+    ax.set_axisbelow(True)  # force grid behind all data
 
     # STREAM peak
     if peak:
         ax.text(0.03, 0.97, f"STREAM {peak:.2f} TB/s",
                 transform=ax.transAxes, ha="left", va="top",
-                fontsize=9, color="dimgray")
-        ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5)
+                fontsize=9, color="dimgray", zorder=1)
+        ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5, zorder=1)
 
     # % annotations
     if peak:
@@ -228,8 +284,6 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
                 ax.text(p, vmin - off, f"{pct:.0f}%",
                         ha="center", va="top", fontsize=10,
                         color=VCOL[vk], fontweight="bold")
-
-
 
         if peak > 3000:
             if top < peak*1.1:
@@ -269,13 +323,11 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
         print(perm_min, text_y)
         if perm_min < text_y * 1.3:
             text_y = perm_min - 0.25 * ymax
-        #raise Exception(y_tiled, y_target)
         if y_target - y_tiled > 0.15 * peak:
             ax.text(arrow_x + 0.08, text_y - 0.05,
                     "Gap between\nbest schedule\nand best layout",
                     fontsize=9, color="#555555", va="center", ha="left",
                     style="italic")
-            
 
     # Arrow 2: perm → blk, only if blk wasn't already Arrow 1 target
     if "perm" in med_dict and "blk" in med_dict and layout_target != "blk":
@@ -366,12 +418,9 @@ def main():
             if ci == 0:
                 ax.set_ylabel("Bandwidth [TB/s]", fontsize=11)
 
-    #import matplotlib
-    #matplotlib.rcParams['text.usetex'] = True
-
     fig.suptitle("Matrix Addition (C += A + B) with Suboptimal Layouts",
                  fontsize=15, y=0.89 if nrows > 1 else 0.98)
-    fig.text(0.5, 0.85 if nrows > 1 else 0.95, 
+    fig.text(0.5, 0.85 if nrows > 1 else 0.95,
             "% annotations relative to STREAM peak bandwidth",
             ha='center', va='top', fontsize=12, color='dimgray')
     fig.tight_layout(rect=[0, 0, 1, 0.89 if nrows > 1 else 0.92])
