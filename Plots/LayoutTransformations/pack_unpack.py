@@ -50,7 +50,7 @@ def draw_outline(ax, x0, y0, w, h):
     rect = mpatches.FancyBboxPatch(
         (x0, y0), w, h,
         boxstyle="square,pad=0",
-        facecolor='none', edgecolor='#888888', linewidth=1.2,
+        facecolor='none', edgecolor='#777', linewidth=2.0,
         linestyle='--'
     )
     ax.add_patch(rect)
