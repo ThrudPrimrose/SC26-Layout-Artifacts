@@ -27,7 +27,7 @@ from collections import defaultdict
 # ══════════════════════════════════════════════════════════════════════
 
 STREAM_PEAK = {
-    "MI300A Zen CPU": 1228*1e-3,  "GH200 Grace CPU": 1806.62*1e-3,
+    "MI300A Zen CPU": 1161*1e-3,  "GH200 Grace CPU": 1806.62*1e-3,
     "MI300A GPU":       4294*1e-3,     "GH200 Hopper GPU": 3780*1e-3,
 }
 
@@ -167,6 +167,9 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
     ymax = float(np.max(np.concatenate(data))) if data else 1
     if add_peak and peak and peak > ymax:
         ymax = peak
+    if ymax > 3.5 and ymax < 4.9:
+        ymax += 0.15
+    ax.set_ylim(0, ymax)
     loc = MaxNLocator(nbins=5, min_n_ticks=5)
     ticks = loc.tick_values(0, ymax)
     ticks = ticks[ticks >= 0]
@@ -188,13 +191,13 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
     # separator
     if sep_x is not None:
         ax.axvline(x=sep_x, color="gray", ls="--", lw=1.5, alpha=0.6)
-        ax.text(sep_x - 0.1, top * 0.128, "Schedule\nOnly",
-                ha="right", va="top", fontsize=8, color="gray", fontweight="bold")
-        ax.text(sep_x + 0.1, top * 0.128, "With Layout\nTransformations",
-                ha="left", va="top", fontsize=8, color="gray", fontweight="bold")
+        ax.text(sep_x - 0.1, top * 0.158, "Schedule\nOnly",
+                ha="right", va="top", fontsize=9, color="gray", fontweight="bold")
+        ax.text(sep_x + 0.1, top * 0.158, "With Layout\nTransformations",
+                ha="left", va="top", fontsize=9, color="gray", fontweight="bold")
 
     ax.set_xticks(positions)
-    ax.set_xticklabels(xlabels, fontsize=8)
+    ax.set_xticklabels(xlabels, fontsize=9)
     ax.set_yticks(ticks)
     from matplotlib.ticker import FormatStrFormatter
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
@@ -209,7 +212,7 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
     if peak:
         ax.text(0.03, 0.97, f"STREAM {peak:.2f} TB/s",
                 transform=ax.transAxes, ha="left", va="top",
-                fontsize=8, color="dimgray")
+                fontsize=9, color="dimgray")
         ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5)
 
     # % annotations
@@ -268,9 +271,9 @@ def draw_panel(ax, cats, title, peak=None, add_peak=False, xlabels_map=None, gpu
             text_y = perm_min - 0.25 * ymax
         #raise Exception(y_tiled, y_target)
         if y_target - y_tiled > 0.15 * peak:
-            ax.text(arrow_x + 0.08, text_y,
+            ax.text(arrow_x + 0.08, text_y - 0.05,
                     "Gap between\nbest schedule\nand best layout",
-                    fontsize=8, color="#555555", va="center", ha="left",
+                    fontsize=9, color="#555555", va="center", ha="left",
                     style="italic")
             
 
