@@ -169,12 +169,13 @@ def build_figure(grid, mode_label, out_stem):
     ncols = len(active_cols)
 
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(3.6 * ncols, 2.8 * nrows + 1.0),
+                             figsize=(3.6 * ncols, 2.8 * nrows + 0.8),
                              squeeze=False)
 
     for ri, rk in enumerate(active_rows):
         for ci, ck in enumerate(active_cols):
             ax = axes[ri, ci]
+            ax.set_box_aspect(2.8 / 4.8)
             if (rk, ck) not in grid:
                 ax.set_visible(False); continue
             title, groups, peak = grid[(rk, ck)]

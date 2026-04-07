@@ -409,6 +409,7 @@ def main():
     for ri, row_key in enumerate(active_rows):
         for ci, col_key in enumerate(active_cols):
             ax = axes[ri, ci]
+            ax.set_box_aspect(2.8 / 4.8)
             if (row_key, col_key) not in grid:
                 ax.set_visible(False)
                 continue
