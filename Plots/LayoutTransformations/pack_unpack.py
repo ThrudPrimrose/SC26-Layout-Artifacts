@@ -95,7 +95,7 @@ a2x = pack_x0 - cell/2 - 0.15
 a2y = pack_y + 0.15
 ax.annotate('', xy=(a2x, a2y), xytext=(a1x, a1y), arrowprops=arrow_kw)
 mx, my = (a1x+a2x)/2, (a1y+a2y)/2
-ax.text(mx+0.1 , my + 0.28, 'Pack', ha='center', va='center',
+ax.text(mx+0.1 , my + 0.28, 'Zip', ha='center', va='center',
         fontsize=13, fontstyle='italic', color='#333',
         bbox=dict(boxstyle='round,pad=0.15', facecolor='white',
                   edgecolor='#999999', linewidth=0.8))
@@ -107,7 +107,7 @@ b2x = f_x0 + cell + cell/2 + 0.15
 b2y = f_y + 0.15
 ax.annotate('', xy=(b2x, b2y), xytext=(b1x, b1y), arrowprops=arrow_kw)
 mx2, my2 = (b1x+b2x)/2, (b1y+b2y)/2
-ax.text(mx2+0.1 , my2 - 0.28, 'Unpack', ha='center', va='center',
+ax.text(mx2+0.1 , my2 - 0.28, 'Unzip', ha='center', va='center',
         fontsize=13, fontstyle='italic', color='#333',
         bbox=dict(boxstyle='round,pad=0.15', facecolor='white',
                   edgecolor='#999999', linewidth=0.8))
