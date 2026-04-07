@@ -26,8 +26,8 @@ from collections import defaultdict
 # ══════════════════════════════════════════════════════════════════════
 
 STREAM_PEAK = {
-    "MI300A Zen CPU":  1240.35,   "GH200 Grace CPU":  1946.62,
-    "MI300A GPU":  4294,      "GH200 Hopper GPU":  3780,
+    "MI300A Zen CPU":  1161*1e-3,   "GH200 Grace CPU":  1806.62*1e-3,
+    "MI300A GPU":      4294*1e-3,   "GH200 Hopper GPU": 3780*1e-3,
 }
 
 LAYOUTS = ["AoS", "SoA", "AoSoA-16"] # , "AoSoA-16", "AoSoA-32"
@@ -56,7 +56,7 @@ def parse_csv(path):
             try:
                 P      = int(parts[0])
                 layout = parts[1].strip()
-                gbps   = float(parts[4])
+                gbps   = float(parts[4]) * 1e-3  # GB/s → TB/s
                 groups[(P, layout)].append(gbps)
             except (ValueError, IndexError):
                 continue
@@ -130,8 +130,8 @@ def draw_panel(ax, groups, title, peak=None, add_peak=True):
     if add_peak and peak:
         ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5, zorder=1)
         ax.text(ps_all[0], peak * 1.02,
-                f"STREAM {peak:.0f} GB/s",
-                fontsize=7.5, color="dimgray", va="bottom")
+                f"STREAM {peak:.2f} TB/s",
+                fontsize=9, color="dimgray", va="bottom")
         if peak > ymax:
             ymax = peak
 
@@ -140,7 +140,9 @@ def draw_panel(ax, groups, title, peak=None, add_peak=True):
     ax.set_xlim(ps_all[0] - 1, ps_all[-1] + 1)
     top = ymax * 1.12
     ax.set_ylim(0, top)
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=5, integer=True))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=5))
+    from matplotlib.ticker import FormatStrFormatter
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
     ax.yaxis.set_minor_locator(AutoMinorLocator(4))
     ax.tick_params(axis="y", which="minor", length=3)
     ax.grid(axis="y", alpha=0.25)
@@ -166,7 +168,7 @@ def build_figure(grid, mode_label, out_stem):
     ncols = len(active_cols)
 
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(3.6 * ncols, 2.8 * nrows),
+                             figsize=(3.6 * ncols, 2.8 * nrows + 0.8),
                              squeeze=False)
 
     for ri, rk in enumerate(active_rows):
@@ -177,9 +179,9 @@ def build_figure(grid, mode_label, out_stem):
             title, groups, peak = grid[(rk, ck)]
             draw_panel(ax, groups, title, peak)
             if ci == 0:
-                ax.set_ylabel("Bandwidth [GB/s]", fontsize=10)
+                ax.set_ylabel("Bandwidth [TB/s]", fontsize=11)
             if ri == nrows - 1:
-                ax.set_xlabel("Number of complex arrays (P)", fontsize=10)
+                ax.set_xlabel("Number of complex arrays (P)", fontsize=11)
 
     # Legend from bottom-right panel (most likely to have all layouts)
     handles, labels = axes[-1, -1].get_legend_handles_labels()
@@ -191,21 +193,19 @@ def build_figure(grid, mode_label, out_stem):
         fig.legend(handles, labels,
                    loc="lower center", ncol=len(labels),
                    fontsize=9, frameon=True, fancybox=True,
-                   bbox_to_anchor=(0.5, -0.01))
+                   bbox_to_anchor=(0.5, 0.02))
 
     titles = {
         "In-Place":      r"In-Place Conjugate: $A = \bar{A}$ for P Complex Arrays",
         "Out-of-Place":  r"Out-of-Place Conjugate: $B = \bar{A}$ P Complex Arrays",
     }
     fig.suptitle(
-        f"{titles[mode_label]}"
-        if mode_label == "In-Place" else
         f"{titles[mode_label]}",
-        fontsize=14, y=0.89 if nrows > 1 else 0.99)
-    #fig.text(0.5, 0.85 if nrows > 1 else 0.95,
-    #         "Shaded band / error bars = P5–P95 spread;  dashed line = STREAM peak",
-    #         ha="center", va="top", fontsize=10, color="dimgray")
-    fig.tight_layout(rect=[0, 0.03, 1, 0.90 if nrows > 1 else 0.92])
+        fontsize=15, y=0.87 if nrows > 1 else 0.98)
+    fig.text(0.5, 0.83 if nrows > 1 else 0.95,
+             "% annotations relative to STREAM peak bandwidth",
+             ha='center', va='top', fontsize=12, color='dimgray')
+    fig.tight_layout(rect=[0, 0.06, 1, 0.89 if nrows > 1 else 0.92])
 
     for ext in ("pdf", "png"):
         fig.savefig(f"{out_stem}.{ext}", dpi=200, bbox_inches="tight")
@@ -259,8 +259,8 @@ def main():
             data_max = float(np.max(all_vals))
             if data_max > peak:
                 raise ValueError(
-                    f"[{mode_label}] {label}: measured BW ({data_max:.1f} GB/s) "
-                    f"exceeds STREAM peak ({peak:.1f} GB/s). "
+                    f"[{mode_label}] {label}: measured BW ({data_max:.3f} TB/s) "
+                    f"exceeds STREAM peak ({peak:.3f} TB/s). "
                     f"Check your BW formula or update STREAM_PEAK."
                 )
 
@@ -289,7 +289,7 @@ def main():
                     if key in groups:
                         m, _, _ = stats(groups[key])
                         pct = f"({100*m/peak:.0f}%)" if peak else ""
-                        vals.append(f"{m:7.1f}{pct:>5}")
+                        vals.append(f"{m:7.3f}{pct:>5}")
                     else:
                         vals.append(f"{'—':>12}")
                 print(f"    {p:3d}  " + "  ".join(vals))
