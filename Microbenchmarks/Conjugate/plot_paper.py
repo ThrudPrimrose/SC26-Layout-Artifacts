@@ -169,7 +169,7 @@ def build_figure(grid, mode_label, out_stem):
     ncols = len(active_cols)
 
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(3.6 * ncols, 2.8 * nrows + 0.8),
+                             figsize=(3.6 * ncols, 2.8 * nrows + 1.1),
                              squeeze=False)
 
     for ri, rk in enumerate(active_rows):
@@ -207,8 +207,8 @@ def build_figure(grid, mode_label, out_stem):
     fig.text(0.5, 0.85 if nrows > 1 else 0.95,
              "% annotations relative to STREAM peak bandwidth",
              ha='center', va='top', fontsize=12, color='dimgray')
-    fig.tight_layout(rect=[0, 0.06, 1, 0.91 if nrows > 1 else 0.92],
-                      h_pad=4.0)
+    fig.tight_layout(rect=[0, 0.06, 1, 0.92 if nrows > 1 else 0.92],
+                      h_pad=2)
 
     for ext in ("pdf", "png"):
         fig.savefig(f"{out_stem}.{ext}", dpi=200, bbox_inches="tight")
