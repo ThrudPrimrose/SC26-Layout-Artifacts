@@ -1,49 +1,35 @@
 // bench_goto_vec.cpp
 // ═══════════════════════════════════════════════════════════════════════════
-// GOTO GEMM with auto-vectorized microkernel + SUMMA / Cannon over NUMA
+// GOTO GEMM — no-pack microkernel + CANNON over NUMA domains
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Implements the GOTO 5-loop nest with a pure C microkernel that the
-// compiler auto-vectorizes via #pragma omp simd and -O3 -march=native.
-// No inline intrinsics, no AMX, no vendor tile extensions.
-// Portable: works on AVX-512, AVX2, SVE — whatever -march=native implies.
+// Key design decisions (see DECISION markers throughout):
 //
-// Target: AMD Zen4 (MI300A CPU side, EPYC 9004 "Genoa")
+//   1. NO PACKING.  The microkernel reads A and B directly from domain-local
+//      arrays with their natural strides.  Packing was copying ~280 MB per
+//      GEMM call for zero vectorization benefit (A is scalar-broadcast,
+//      B rows are already contiguous in row-major layout).
 //
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │  THREE PRIMITIVES (matching the AMX tile.hpp interface)                 │
-// │                                                                        │
-// │  Peak (init)   = NO-OP.  No tile config register, no special state.    │
-// │                                                                        │
-// │  MMAD (mma)    = Plain C loop with #pragma omp simd.                   │
-// │                  Computes D[32×32] += A[32×32] · B[32×32] using       │
-// │                  ikj loop order: broadcast A[i,k], stream B[k,0..31]. │
-// │                  The compiler auto-vectorizes the inner j-loop with    │
-// │                  -O3 -march=native → vfmadd231ps on AVX-512 targets.  │
-// │                  No inline intrinsics anywhere in this file.            │
-// │                                                                        │
-// │  Unpack (store)= NO-OP.  D is a plain fp32[32][32] array on the       │
-// │                  stack.  Stored to strided C via #pragma omp simd loop.│
-// │                                                                        │
-// │  B packing:     Plain row-major tiles (BK×BN), NOT vnni-interleaved.  │
-// │                  The SIMD j-loop reads B as BN consecutive fp16 values │
-// │                  which the compiler converts to fp32 before the FMA.   │
-// └─────────────────────────────────────────────────────────────────────────┘
+//   2. CANNON over 2×2 NUMA grid.  C, A, B are block-distributed across 4
+//      NUMA domains.  CANNON's shift-and-multiply structure ensures all
+//      domains work on local data simultaneously, with global barriers
+//      between steps so pages migrate together.
 //
-// Build (Intel icpx + oneMKL, AMD Zen4 / MI300A):
-//   icpx -O3 -qopenmp -march=native -ffast-math -std=c++17               \
-//       -I${MKLROOT}/include -o bench_goto_vec bench_goto_vec.cpp          \
-//       -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_intel_thread      \
+//   3. MR=8 register blocking.  8 output rows × 32 columns = 16 ZMM
+//      accumulators.  Each B row loaded once, broadcast-multiplied by 8
+//      different A scalars.  8× reduction in B traffic from L1.
+//
+//   4. fp32 accumulation.  fp16 inputs, fp32 accumulator.  Required for
+//      numerical correctness: fp16 has 3.3 decimal digits, K=8192
+//      additions would overflow.  This matches AMX _tdpfp16ps semantics.
+//
+// Build:
+//   icpx -O3 -g -qopenmp -march=native -ffast-math -std=c++17 \
+//       -I${MKLROOT}/include -o bench_goto_vec bench_goto_vec.cpp \
+//       -L${MKLROOT}/lib/intel64 -lmkl_intel_lp64 -lmkl_intel_thread \
 //       -lmkl_core -liomp5 -lpthread -lm
 //
-// Using icpx ensures a single OpenMP runtime (libiomp5) is used by both
-// the compiler and MKL.  GCC's -fopenmp links libgomp, which conflicts
-// with MKL's libiomp5 when linked via -lmkl_intel_thread.
-//
-// Run (MI300A: 4 NUMA nodes × 24 cores = 96 threads):
-//   ./bench_goto_vec 8192 8192 8192 -t 96 -p 2x2
-//
-#include <mkl.h>          // oneMKL — cblas_sgemm baseline
+#include <mkl.h>
 #include <omp.h>
 #include <sched.h>
 #include <sys/mman.h>
@@ -51,55 +37,44 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
-#include <numeric>
 #include <string>
 #include <vector>
 
-// ═══════════════════════════════════════════════════════════════════════════
-// §1  COMPILE-TIME CONSTANTS
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// We keep the same BM=BN=BK=32 tile dimensions as the AMX version so that
-// blocking parameters, packing layouts, and GOTO loop structure are
-// directly comparable.  The only difference is how the 32×32×32 tile
-// multiply-accumulate is implemented (vector FMA vs. AMX tdp).
-//
-// NOTE: _Float16 requires GCC 12+ with -march=znver4 / -march=native on Zen4.
-//       Will fail if compiled without proper arch flags.
-//
 using IN_T  = _Float16;
 using OUT_T = float;
 
-static constexpr int BM = 32;            // tile rows   (= MR in GOTO)
-static constexpr int BN = 32;            // tile cols   (= NR in GOTO)
-static constexpr int BK = 32;            // tile depth
-static constexpr int A_TSZ = BM * BK;    // packed-A tile: 32×32 = 1024 fp16 elements
-static constexpr int B_TSZ = BK * BN;    // packed-B tile: 32×32 = 1024 fp16 elements
-                                          // ^^^ plain row-major, NOT vnni
-
-static constexpr int DEFAULT_MC = 1024;
-static constexpr int DEFAULT_KC = 256;
-static constexpr int DEFAULT_NC = 4096;
-
 // ═══════════════════════════════════════════════════════════════════════════
-// §2  GLOBALS
+// §1  CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════
 
-static int  g_warmup  = 5;
-static int  g_iters   = 50;
-static int  g_threads = 32;
-static int  g_PX      = 2;
-static int  g_PY      = 2;
+// DECISION: BM=BN=32 matches AVX-512 sweet spot (32 fp32 = 2 ZMM vectors).
+// BK=32 gives 32 k-steps per rank-update, enough to amortize loop overhead.
+static constexpr int BM = 32;
+static constexpr int BN = 32;
+static constexpr int BK = 32;
+
+// DECISION: MR=8.  8 rows × 2 ZMM = 16 accumulators out of 32 ZMM.
+// MR=4: only 8 accumulators, wastes register file.
+// MR=16: needs 32 accumulators, guaranteed register spills.
+static constexpr int MR = 8;
+
+// DECISION: KC controls the rank-update depth.  MC controls IC-parallel
+// granularity.  NC is irrelevant when N_local ≤ NC (JC loop runs once).
+// Best empirical config from sweep: MC=256, KC=512.
+static constexpr int DEFAULT_MC = 256;
+static constexpr int DEFAULT_KC = 512;
+
+static int  g_warmup  = 3;
+static int  g_iters   = 20;
+static int  g_threads = 96;
 static int  g_MC      = DEFAULT_MC;
 static int  g_KC      = DEFAULT_KC;
-static int  g_NC      = DEFAULT_NC;
 static const char* g_outfile = "bench_goto_vec.csv";
 
 static inline double now_ns() {
@@ -108,14 +83,8 @@ static inline double now_ns() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §3  NUMA UTILITIES  (identical to bench_goto_numa.cpp)
+// §2  NUMA UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════
-
-static int get_numa_node() {
-    unsigned cpu, node;
-    syscall(__NR_getcpu, &cpu, &node, nullptr);
-    return (int)node;
-}
 
 static int get_num_numa_nodes() {
     int n = 0; char path[256];
@@ -133,9 +102,14 @@ static std::vector<int> cpus_on_node(int node) {
     char buf[4096];
     if (!fgets(buf, sizeof(buf), f)) { fclose(f); return cpus; }
     fclose(f);
+    char* end = buf + strlen(buf);
+    while (end > buf && (end[-1]=='\n'||end[-1]=='\r'||end[-1]==' ')) *--end = '\0';
     char* p = buf;
     while (*p) {
-        int lo = (int)strtol(p, &p, 10), hi = lo;
+        char* next = p;
+        int lo = (int)strtol(p, &next, 10);
+        if (next == p) break;
+        p = next; int hi = lo;
         if (*p == '-') { ++p; hi = (int)strtol(p, &p, 10); }
         for (int c = lo; c <= hi; ++c) cpus.push_back(c);
         if (*p == ',') ++p;
@@ -145,803 +119,567 @@ static std::vector<int> cpus_on_node(int node) {
 }
 
 static void* numa_alloc(size_t bytes) {
-    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) {
-        fprintf(stderr, "mmap failed for %zu bytes: ", bytes);
-        perror("");
-        std::abort();
-    }
+    void* p = mmap(nullptr, bytes, PROT_READ|PROT_WRITE,
+                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { perror("mmap"); std::abort(); }
     madvise(p, bytes, MADV_HUGEPAGE);
     return p;
 }
 static void numa_free(void* p, size_t bytes) { if (p && bytes) munmap(p, bytes); }
+template<typename T> T* typed_alloc(size_t n) { return (T*)numa_alloc(n*sizeof(T)); }
+template<typename T> void typed_free(T* p, size_t n) { numa_free(p, n*sizeof(T)); }
 
-template <typename T> static T* typed_alloc(size_t n) {
-    return static_cast<T*>(numa_alloc(n * sizeof(T)));
-}
-template <typename T> static void typed_free(T* p, size_t n) {
-    numa_free(p, n * sizeof(T));
-}
-
-static void pin_thread_to_cpus(const std::vector<int>& cpus) {
-    cpu_set_t set; CPU_ZERO(&set);
-    for (int c : cpus) CPU_SET(c, &set);
-    sched_setaffinity(0, sizeof(set), &set);
+static void pin_to_cpu(int cpu) {
+    cpu_set_t s; CPU_ZERO(&s); CPU_SET(cpu, &s);
+    sched_setaffinity(0, sizeof(s), &s);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §3b  OPENMP REFERENCE GEMM (scalar ground truth)
-// ═══════════════════════════════════════════════════════════════════════════
-
-static void ref_gemm_omp(const IN_T* __restrict__ A,
-                         const IN_T* __restrict__ B,
-                         OUT_T* __restrict__ C,
-                         int M, int N, int K) {
-    memset(C, 0, (size_t)M * N * sizeof(OUT_T));
-    constexpr int BLK = 64;
-    #pragma omp parallel for collapse(2) num_threads(g_threads) schedule(static)
-    for (int bi = 0; bi < M; bi += BLK) {
-        for (int bj = 0; bj < N; bj += BLK) {
-            for (int bk = 0; bk < K; bk += BLK) {
-                int mi = std::min(bi + BLK, M);
-                int nj = std::min(bj + BLK, N);
-                int pk = std::min(bk + BLK, K);
-                for (int i = bi; i < mi; ++i)
-                    for (int k = bk; k < pk; ++k) {
-                        float a_val = (float)A[i * K + k];
-                        for (int j = bj; j < nj; ++j)
-                            C[i * N + j] += a_val * (float)B[k * N + j];
-                    }
-            }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// §4  PACKING ROUTINES (plain row-major — no VNNI)
+// §3  NO-PACK MICROKERNEL
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// A packing is identical to the AMX version: each BM×BK tile is copied
-// contiguously in row-major order.
+// DECISION: No packing.  The microkernel reads A and B with their natural
+// strides (lda, ldb).  This eliminates ~280 MB of redundant copies per
+// GEMM call.  It works because:
 //
-// B packing is DIFFERENT from AMX: we use plain row-major tiles (BK×BN),
-// NOT vnni-interleaved.  The auto-vectorized microkernel reads B as
-// BN consecutive fp16 values in the N dimension, which the compiler
-// converts to fp32 before the FMA.  Plain row-major within the tile.
+//   A access: scalar A[row * lda + k], one element per k-step, broadcast.
+//     Scalar loads are stride-insensitive.  The hardware does not care
+//     whether lda=32 (packed) or lda=4096 (natural).
 //
-
-static void pack_A_block(const IN_T* __restrict__ A, IN_T* __restrict__ dst,
-                         int row0, int col0, int mc, int kc, int lda) {
-    const int tm_ = mc / BM, tk_ = kc / BK;
-    for (int tm = 0; tm < tm_; ++tm)
-        for (int tk = 0; tk < tk_; ++tk) {
-            IN_T* d = dst + (size_t)(tm * tk_ + tk) * A_TSZ;
-            int gr = row0 + tm * BM, gc = col0 + tk * BK;
-            for (int li = 0; li < BM; ++li)
-                for (int lk = 0; lk < BK; ++lk)
-                    d[li * BK + lk] = A[(gr + li) * lda + (gc + lk)];
-        }
-}
-
-// ── B packing: plain row-major tiles (NOT vnni) ─────────────────────────
+//   B access: B[k * ldb + j] for j=0..BN-1, consecutive in memory.
+//     Row-major B means BN consecutive fp16 values are contiguous.
+//     The j-loop vectorizes as: load 16 fp16 → vcvtph2ps → vfmadd231ps.
+//     Stride ldb between k-steps is handled by the hardware prefetcher.
 //
-// For tile (tn, tk), the packed layout is:
-//   dst[(tn * tk_ + tk) * B_TSZ + k * BN + n]
-//     = B[(row0 + tk*BK + k) * ldb + (col0 + tn*BN + n)]
+// ── No-pack rank-BK update for MR=8 rows ────────────────────────────────
+// C[i0:i0+MR, j0:j0+BN] += A[i0:i0+MR, k0:k0+BK] × B[k0:k0+BK, j0:j0+BN]
 //
-// This is a simple contiguous copy of each BK×BN sub-matrix of B.
-// The auto-vectorized microkernel reads B row-by-row:
-//   for j in 0..BN-1:  D[i][j] += A_val * (float)B[k*BN + j]
-// The compiler vectorizes this inner j-loop with #pragma omp simd.
-//
-static void pack_B_panel(const IN_T* __restrict__ B, IN_T* __restrict__ dst,
-                         int row0, int col0, int kc, int nc, int ldb) {
-    const int tk_ = kc / BK, tn_ = nc / BN;
-    for (int tn = 0; tn < tn_; ++tn)
-        for (int tk = 0; tk < tk_; ++tk) {
-            IN_T* d = dst + (size_t)(tn * tk_ + tk) * B_TSZ;
-            int gr = row0 + tk * BK, gc = col0 + tn * BN;
-            for (int k = 0; k < BK; ++k)
-                for (int n = 0; n < BN; ++n)
-                    d[k * BN + n] = B[(gr + k) * ldb + (gc + n)];
-        }
-}
-
-// Parallel packing helpers
-static void pack_A_block_par(const IN_T* A, IN_T* dst,
-                             int row0, int col0, int mc, int kc, int lda,
-                             int tid, int nth) {
-    const int tm_ = mc / BM, tk_ = kc / BK, total = tm_ * tk_;
-    int base = total / nth, extra = total % nth;
-    int start = tid * base + std::min(tid, extra);
-    int count = base + (tid < extra ? 1 : 0);
-    for (int idx = start; idx < start + count; ++idx) {
-        int tm = idx / tk_, tk = idx % tk_;
-        IN_T* d = dst + (size_t)(tm * tk_ + tk) * A_TSZ;
-        int gr = row0 + tm * BM, gc = col0 + tk * BK;
-        for (int li = 0; li < BM; ++li)
-            for (int lk = 0; lk < BK; ++lk)
-                d[li * BK + lk] = A[(gr + li) * lda + (gc + lk)];
-    }
-}
-
-static void pack_B_panel_par(const IN_T* B, IN_T* dst,
-                             int row0, int col0, int kc, int nc, int ldb,
-                             int tid, int nth) {
-    const int tk_ = kc / BK, tn_ = nc / BN, total = tn_ * tk_;
-    int base = total / nth, extra = total % nth;
-    int start = tid * base + std::min(tid, extra);
-    int count = base + (tid < extra ? 1 : 0);
-    for (int idx = start; idx < start + count; ++idx) {
-        int tn = idx / tk_, tk = idx % tk_;
-        IN_T* d = dst + (size_t)(tn * tk_ + tk) * B_TSZ;
-        int gr = row0 + tk * BK, gc = col0 + tn * BN;
-        for (int k = 0; k < BK; ++k)
-            for (int n = 0; n < BN; ++n)
-                d[k * BN + n] = B[(gr + k) * ldb + (gc + n)];
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// §5  AUTO-VECTORIZED MICROKERNEL
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │  No inline intrinsics.  Pure C with #pragma omp simd.                  │
-// │                                                                        │
-// │  The compiler (-O3 -march=native -ffast-math) will:                    │
-// │    1. Convert the fp16 → fp32 cast to vcvtph2ps (F16C)               │
-// │    2. Broadcast the A scalar to vbroadcastss                          │
-// │    3. Fuse multiply-add into vfmadd231ps (FMA3)                       │
-// │    4. Vectorize the j-loop with BN=32 / SIMD_width iterations         │
-// │                                                                        │
-// │  On Zen4 (AVX-512, 16 floats/vector): j-loop = 2 iterations           │
-// │  On Zen2/3 (AVX2, 8 floats/vector): j-loop = 4 iterations            │
-// │                                                                        │
-// │  This is portable: the same source works on AVX2, AVX-512, SVE, etc.  │
-// │  The compiler picks the right instructions for -march=native.          │
-// └─────────────────────────────────────────────────────────────────────────┘
-
-// ── Peak: no-op ─────────────────────────────────────────────────────────
-//
-// AMX needs _tile_loadconfig to program tile register dimensions.
-// Vector units have no such configuration — they're always ready.
-static inline void vec_init() { /* no-op */ }
-
-// ── MMAD: auto-vectorized FMA microkernel ───────────────────────────────
-//
-// Computes D[BM×BN] += A_tile[BM×BK] × B_tile[BK×BN], fp16→fp32.
-//
-// No inline intrinsics.  The compiler auto-vectorizes the inner j-loop
-// with -O3 -march=native, producing AVX-512 vfmadd231ps instructions
-// (or whatever the target supports).  The #pragma omp simd ensures
-// vectorization even when the compiler's cost model is conservative.
-//
-// The loop structure is ikj (broadcast A[i,k], stream B[k,0..BN-1]):
-//   - The j-loop is the SIMD dimension (BN=32 = 2 AVX-512 vectors).
-//   - The i-loop iterates over output rows.
-//   - The k-loop accumulates the rank-BK partial product.
-//
-// This handles ONE BK=32 K-tile step.  The caller loops over kc_tiles.
-//
-static inline void vec_mma_rank32(const IN_T* __restrict__ ap,
-                                  const IN_T* __restrict__ bp,
-                                  OUT_T* __restrict__ D)
+static inline void microkernel_mr8(
+    const IN_T* __restrict__ A, int lda,
+    const IN_T* __restrict__ B, int ldb,
+    int i0, int j0, int k0,
+    float* __restrict__ d0, float* __restrict__ d1,
+    float* __restrict__ d2, float* __restrict__ d3,
+    float* __restrict__ d4, float* __restrict__ d5,
+    float* __restrict__ d6, float* __restrict__ d7)
 {
-    for (int i = 0; i < BM; ++i) {
-        OUT_T* __restrict__ di = D + i * BN;
-        const IN_T* __restrict__ ai = ap + i * BK;
-        for (int k = 0; k < BK; ++k) {
-            const float a_val = (float)ai[k];
-            const IN_T* __restrict__ bk = bp + k * BN;
-            #pragma omp simd
-            for (int j = 0; j < BN; ++j) {
-                di[j] += a_val * (float)bk[j];
-            }
-        }
-    }
-}
+    for (int k = k0; k < k0 + BK; ++k) {
+        // Scalar loads from A: one per row, broadcast.
+        // lda-strided, but the access is one element — no cache line waste.
+        const float a0 = (float)A[(i0+0)*lda + k];
+        const float a1 = (float)A[(i0+1)*lda + k];
+        const float a2 = (float)A[(i0+2)*lda + k];
+        const float a3 = (float)A[(i0+3)*lda + k];
+        const float a4 = (float)A[(i0+4)*lda + k];
+        const float a5 = (float)A[(i0+5)*lda + k];
+        const float a6 = (float)A[(i0+6)*lda + k];
+        const float a7 = (float)A[(i0+7)*lda + k];
 
-// ── Full microkernel: accumulate over kc_tiles K-tile steps ─────────────
-//
-// Overwrites C_ptr with the accumulated result.
-static inline void vec_microkernel(const IN_T* __restrict__ ap,
-                                   const IN_T* __restrict__ bp,
-                                   OUT_T* __restrict__ C_ptr,
-                                   int kc_tiles, int ldc,
-                                   int a_stride, int b_stride)
-{
-    // D accumulator: BM×BN = 32×32 = 1024 fp32 = 4 KB on the stack.
-    alignas(64) OUT_T D[BM * BN] = {};   // zero-init
-
-    for (int tk = 0; tk < kc_tiles; ++tk) {
-        vec_mma_rank32(ap, bp, D);
-        ap += a_stride;
-        bp += b_stride;
-    }
-
-    // ── Unpack: no-op.  D is already row-major fp32. ────────────────
-    // Store D to C (D has stride BN=32, C has stride ldc).
-    for (int i = 0; i < BM; ++i) {
-        const OUT_T* __restrict__ di = D + i * BN;
-        OUT_T* __restrict__ ci = C_ptr + i * ldc;
+        // Vector load from B: BN=32 consecutive fp16, contiguous in memory.
+        const IN_T* __restrict__ brow = &B[k * ldb + j0];
         #pragma omp simd
-        for (int j = 0; j < BN; ++j)
-            ci[j] = di[j];
+        for (int j = 0; j < BN; ++j) {
+            const float bv = (float)brow[j];
+            d0[j] += a0 * bv;  d1[j] += a1 * bv;
+            d2[j] += a2 * bv;  d3[j] += a3 * bv;
+            d4[j] += a4 * bv;  d5[j] += a5 * bv;
+            d6[j] += a6 * bv;  d7[j] += a7 * bv;
+        }
     }
 }
 
-// Accumulate variant: adds MMA result to existing C.
-static inline void vec_microkernel_accum(const IN_T* __restrict__ ap,
-                                         const IN_T* __restrict__ bp,
-                                         OUT_T* __restrict__ C_ptr,
-                                         int kc_tiles, int ldc,
-                                         int a_stride, int b_stride)
+// ── Full tile: loop over KC in BK steps, store to C ─────────────────────
+static inline void tile_gemm(
+    const IN_T* __restrict__ A, int lda,
+    const IN_T* __restrict__ B, int ldb,
+    OUT_T* __restrict__ C, int ldc,
+    int i0, int j0, int k0, int kc,
+    bool accum)
 {
-    alignas(64) OUT_T D[BM * BN] = {};
+    for (int ri = 0; ri < BM; ri += MR) {
+        alignas(64) float d0[BN]={},d1[BN]={},d2[BN]={},d3[BN]={};
+        alignas(64) float d4[BN]={},d5[BN]={},d6[BN]={},d7[BN]={};
 
-    for (int tk = 0; tk < kc_tiles; ++tk) {
-        vec_mma_rank32(ap, bp, D);
-        ap += a_stride;
-        bp += b_stride;
-    }
+        // Accumulate over KC in steps of BK.
+        for (int kk = k0; kk < k0 + kc; kk += BK) {
+            microkernel_mr8(A, lda, B, ldb, i0+ri, j0, kk,
+                            d0,d1,d2,d3,d4,d5,d6,d7);
+        }
 
-    // Add D to existing C.
-    for (int i = 0; i < BM; ++i) {
-        const OUT_T* __restrict__ di = D + i * BN;
-        OUT_T* __restrict__ ci = C_ptr + i * ldc;
-        #pragma omp simd
-        for (int j = 0; j < BN; ++j)
-            ci[j] += di[j];
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// §6  GOTO GEMM — 5-LOOP NEST (vector version)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Identical loop structure to bench_goto_numa.cpp §6.
-// Only the microkernel call is replaced: vec_microkernel instead of
-// amx_microkernel.  The B packing stride changes because B_TSZ = BK*BN
-// (plain) instead of (BK/2)*(2*BN) (vnni) — but both equal 1024.
-//
-
-struct GotoParams { int MC, KC, NC; };
-
-static void goto_gemm(const IN_T* __restrict__ A,
-                      const IN_T* __restrict__ B,
-                      OUT_T* __restrict__ C,
-                      int M, int N, int K,
-                      int nthreads,
-                      const GotoParams& p,
-                      bool accum = false)
-{
-    const int MC = p.MC, KC = p.KC, NC = p.NC;
-    const size_t Bp_sz = (size_t)KC * NC;
-    const size_t Ap_sz = (size_t)MC * KC;
-    IN_T* Bp      = typed_alloc<IN_T>(Bp_sz);
-    IN_T* Ap_pool = typed_alloc<IN_T>(Ap_sz * nthreads);
-
-    if (!accum) memset(C, 0, (size_t)M * N * sizeof(OUT_T));
-
-    // Loop 5 (JC)
-    for (int jc = 0; jc < N; jc += NC) {
-        const int nc = std::min(NC, N - jc);
-
-        // Loop 4 (PC)
-        for (int pc = 0; pc < K; pc += KC) {
-            const int kc = std::min(KC, K - pc);
-            const int kc_tiles = kc / BK;
-
-            // Pack B̃ (plain row-major tiles, NOT vnni)
-            #pragma omp parallel num_threads(nthreads) proc_bind(close)
-            {
-                pack_B_panel_par(B, Bp, pc, jc, kc, nc, N,
-                                 omp_get_thread_num(), omp_get_num_threads());
+        // Store to C.
+        float* rows[MR] = {d0,d1,d2,d3,d4,d5,d6,d7};
+        for (int r = 0; r < MR; ++r) {
+            OUT_T* __restrict__ ci = &C[(i0+ri+r)*ldc + j0];
+            const float* __restrict__ di = rows[r];
+            if (accum) {
+                #pragma omp simd
+                for (int j = 0; j < BN; ++j) ci[j] += di[j];
+            } else {
+                #pragma omp simd
+                for (int j = 0; j < BN; ++j) ci[j] = di[j];
             }
+        }
+    }
+}
 
-            const int tn_ = nc / BN;
-            const int tk_ = kc / BK;
+// ═══════════════════════════════════════════════════════════════════════════
+// §4  GOTO 5-LOOP (no packing, direct array access)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// DECISION: Eliminated JC/NC loop entirely.  With 2×2 grid, N_local=4096.
+// The entire N_local is processed without column partitioning.  The loop
+// nest reduces to: PC → IC(parallel) → JR → IR.
+//
+// DECISION: No Bp/Ap buffers allocated.  The microkernel reads A_local
+// and B_local directly.  Workspace is zero.
 
-            // Loop 3 (IC) — parallelised
-            #pragma omp parallel num_threads(nthreads) proc_bind(close)
-            {
-                // Peak: no-op (no tile config needed for vector units)
-                vec_init();
+static void goto_gemm_nopack(
+    const IN_T* __restrict__ A, int lda,  // [M_local × K_dim]
+    const IN_T* __restrict__ B, int ldb,  // [K_dim × N_local]
+    OUT_T* __restrict__ C, int ldc,       // [M_local × N_local]
+    int M, int N, int K,
+    int nthreads, int KC)
+{
+    const int tn = N / BN;   // tiles in N direction
 
-                int tid = omp_get_thread_num();
-                int nth = omp_get_num_threads();
-                IN_T* Ap = Ap_pool + (size_t)tid * Ap_sz;
+    for (int pc = 0; pc < K; pc += KC) {
+        const int kc = std::min(KC, K - pc);
+        const bool accum = (pc > 0);
 
-                int ic_total = (M + MC - 1) / MC;
-                int ic_base = ic_total / nth, ic_extra = ic_total % nth;
-                int ic_start = tid * ic_base + std::min(tid, ic_extra);
-                int ic_count = ic_base + (tid < ic_extra ? 1 : 0);
+        #pragma omp parallel num_threads(nthreads) proc_bind(close)
+        {
+            int tid = omp_get_thread_num();
+            int nth = omp_get_num_threads();
 
-                for (int ic_idx = ic_start; ic_idx < ic_start + ic_count; ++ic_idx) {
-                    int ic = ic_idx * MC;
-                    int mc = std::min(MC, M - ic);
-                    int tm_ = mc / BM;
+            // IC partition: divide M rows across threads.
+            int ic_total = M / BM;  // number of BM-row blocks
+            int ic_base = ic_total / nth, ic_extra = ic_total % nth;
+            int ic_start = tid * ic_base + std::min(tid, ic_extra);
+            int ic_count = ic_base + (tid < ic_extra ? 1 : 0);
 
-                    // Pack Ã (private per thread)
-                    pack_A_block(A, Ap, ic, pc, mc, kc, K);
-
-                    // Loop 2 (JR)
-                    for (int jr = 0; jr < tn_; ++jr) {
-                        const IN_T* bp_base = Bp + (size_t)jr * tk_ * B_TSZ;
-
-                        // Loop 1 (IR)
-                        for (int ir = 0; ir < tm_; ++ir) {
-                            const IN_T* ap_base = Ap + (size_t)ir * tk_ * A_TSZ;
-                            OUT_T* C_ptr = C + (ic + ir * BM) * N + (jc + jr * BN);
-
-                            if (accum || pc > 0) {
-                                vec_microkernel_accum(ap_base, bp_base, C_ptr,
-                                                      kc_tiles, N, A_TSZ, B_TSZ);
-                            } else {
-                                vec_microkernel(ap_base, bp_base, C_ptr,
-                                                kc_tiles, N, A_TSZ, B_TSZ);
-                            }
-                        }
-                    }
+            for (int ic_idx = ic_start; ic_idx < ic_start + ic_count; ++ic_idx) {
+                int i0 = ic_idx * BM;
+                // JR loop: sweep across N in BN-wide tiles.
+                for (int jr = 0; jr < tn; ++jr) {
+                    int j0 = jr * BN;
+                    tile_gemm(A, lda, B, ldb, C, ldc,
+                              i0, j0, pc, kc, accum);
                 }
-            } // end IC parallel
-        } // end PC
-    } // end JC
-
-    typed_free(Bp, Bp_sz);
-    typed_free(Ap_pool, Ap_sz * nthreads);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// §6b  PER-DOMAIN SPINNING BARRIER
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Within a single flat OMP parallel region (all 96 threads), threads are
-// partitioned into domains (e.g. 4 × 24).  We need barriers that only
-// synchronize the threads within one domain, not all 96.
-//
-// OMP's #pragma omp barrier always syncs the entire team, so we use a
-// simple spinning atomic barrier per domain.  On NUMA this is cheap:
-// all threads in a domain are on the same CCD sharing L3, so the atomic
-// stays in the local cache coherence domain.
-//
-struct DomainBarrier {
-    alignas(64) std::atomic<int> count{0};
-    alignas(64) std::atomic<int> generation{0};
-    int team_size = 0;
-
-    void init(int n) { count = 0; generation = 0; team_size = n; }
-
-    void wait() {
-        int gen = generation.load(std::memory_order_relaxed);
-        if (count.fetch_add(1, std::memory_order_acq_rel) == team_size - 1) {
-            // Last thread to arrive: reset counter, advance generation.
-            count.store(0, std::memory_order_relaxed);
-            generation.fetch_add(1, std::memory_order_release);
-        } else {
-            // Spin until the last thread advances the generation.
-            while (generation.load(std::memory_order_acquire) == gen) {
-                // Yield hint — compiler will emit PAUSE on x86, YIELD on ARM
-                #if defined(__x86_64__) || defined(__i386__)
-                    __builtin_ia32_pause();
-                #elif defined(__aarch64__)
-                    asm volatile("yield");
-                #endif
             }
         }
     }
-};
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §7-11  NUMA GRID + STATIC / SUMMA / CANNON
+// §5  NUMA GRID
 // ═══════════════════════════════════════════════════════════════════════════
-//
-// All NUMA variants use the same approach:
-//   1. ONE flat OMP parallel region with all threads (e.g. 96).
-//   2. Threads are partitioned into domains: thread gtid belongs to
-//      domain d = gtid / cores_per, with local ID ltid = gtid % cores_per.
-//   3. Within each domain, threads collaborate on the GOTO loop body:
-//      - Collaborative B̃ packing (each thread packs its share of tiles).
-//      - Per-domain barrier (DomainBarrier, spinning atomic).
-//      - IC-loop: each thread takes its share of MC-blocks.
-//      - Per-domain barrier (before the next PC step overwrites B̃).
-//   4. All domains run simultaneously → all cores active at all times.
 
 struct NumaDomain {
-    int node_id; std::vector<int> cpus; int cores;
-    IN_T* A_local; size_t A_bytes;
-    IN_T* B_local; size_t B_bytes;
-    OUT_T* C_local; size_t C_bytes;
-    int M_local, N_local;
+    int node_id;
+    std::vector<int> cpus;
+    int cores;
 };
 
 struct NumaGrid {
-    int PX, PY, total_threads;
-    std::vector<NumaDomain> domains;
+    int P;                           // number of NUMA domains
+    int total_threads;
+    std::vector<NumaDomain> domains; // P domains
 
-    void init(int px, int py, int total_cores) {
-        PX = px; PY = py; total_threads = total_cores;
-        int nd = px * py; domains.resize(nd);
+    void init(int p, int total_cores) {
+        P = p; total_threads = total_cores;
+        domains.resize(p);
         int num_nodes = get_num_numa_nodes();
-        int cores_per = total_cores / nd;
-        for (int d = 0; d < nd; ++d) {
+        int cores_per = total_cores / p;
+        for (int d = 0; d < p; ++d) {
             domains[d].node_id = d % num_nodes;
             domains[d].cores = cores_per;
             auto all = cpus_on_node(domains[d].node_id);
             int off = (d / num_nodes) * cores_per;
-            for (int i = 0; i < cores_per && (off + i) < (int)all.size(); ++i)
+            for (int i = 0; i < cores_per && (off+i) < (int)all.size(); ++i)
                 domains[d].cpus.push_back(all[off + i]);
-            while ((int)domains[d].cpus.size() < cores_per && !all.empty())
-                domains[d].cpus.push_back(all[domains[d].cpus.size() % all.size()]);
-        }
-    }
-    void alloc_buffers(int M, int N, int K) {
-        int Mp = M / PX, Np = N / PY;
-        for (int px = 0; px < PX; ++px) for (int py = 0; py < PY; ++py) {
-            int d = px * PY + py; auto& dom = domains[d];
-            dom.M_local = Mp; dom.N_local = Np;
-            dom.A_bytes = (size_t)Mp * K * sizeof(IN_T);
-            dom.B_bytes = (size_t)K * Np * sizeof(IN_T);
-            dom.C_bytes = (size_t)Mp * Np * sizeof(OUT_T);
-            dom.A_local = static_cast<IN_T*>(numa_alloc(dom.A_bytes));
-            dom.B_local = static_cast<IN_T*>(numa_alloc(dom.B_bytes));
-            dom.C_local = static_cast<OUT_T*>(numa_alloc(dom.C_bytes));
-        }
-    }
-    void free_buffers() {
-        for (auto& dom : domains) {
-            numa_free(dom.A_local, dom.A_bytes);
-            numa_free(dom.B_local, dom.B_bytes);
-            numa_free(dom.C_local, dom.C_bytes);
         }
     }
 };
 
-static void scatter_A_rows(const IN_T* A, IN_T* dst, int row0, int nrows, int K) {
-    memcpy(dst, A + (size_t)row0 * K, (size_t)nrows * K * sizeof(IN_T));
-}
-static void scatter_B_cols(const IN_T* B, IN_T* dst, int col0, int ncols, int K, int N) {
-    for (int k = 0; k < K; ++k)
-        memcpy(dst + (size_t)k * ncols, B + (size_t)k * N + col0, ncols * sizeof(IN_T));
-}
-static void gather_C_block(OUT_T* C, const OUT_T* src, int r0, int c0, int nr, int nc, int N) {
-    for (int i = 0; i < nr; ++i)
-        memcpy(C + (size_t)(r0 + i) * N + c0, src + (size_t)i * nc, nc * sizeof(OUT_T));
-}
-
-static void numa_static_gemm(const IN_T* A, const IN_T* B, OUT_T* C,
-                             int M, int N, int K, NumaGrid& grid, const GotoParams& gp) {
-    const int PX = grid.PX, PY = grid.PY;
-    const int Ml = M / PX, Nl = N / PY, nd = PX * PY;
+// ═══════════════════════════════════════════════════════════════════════════
+// §6  CANNON OVER NUMA DOMAINS
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// DECISION: CANNON (not SUMMA) for the 2×2 case.
+//
+//   CANNON requires a square P×P grid and K divisible by P.
+//   For P=2, K=8192: K_blk = 4096.  Exactly 2 steps.
+//
+//   Advantages over SUMMA:
+//     • Constant memory per domain: one M_loc × K_blk A-block and one
+//       K_blk × N_loc B-block.  No growing panel buffers.
+//     • Nearest-neighbor shifts (not broadcasts).
+//     • All domains shift simultaneously → pages migrate together.
+//
+//   Algorithm:
+//     1. Partition C into P×P blocks.  Domain (i,j) owns C(i,j).
+//     2. Initial skew: domain (i,j) gets A(i, (j+i)%P) and B((i+j)%P, j).
+//     3. For step = 0 to P-1:
+//          a. C_local += A_block × B_block   (local GOTO, all domains)
+//          b. Shift A blocks LEFT by 1 in each row (circular).
+//          c. Shift B blocks UP by 1 in each column (circular).
+//          d. Global barrier (all threads sync before next step).
+//
+// DECISION: All buffers are allocated and first-touched inside the flat
+// parallel region so pages land on the correct NUMA node.  The "shift"
+// is a memcpy into a double-buffer, with the destination first-touched
+// by the receiving domain's thread → pages migrate to the receiver.
+//
+static void cannon_gemm(const IN_T* A, const IN_T* B, OUT_T* C,
+                        int M, int N, int K,
+                        NumaGrid& grid, int KC) {
+    const int nd = grid.P;                       // total domains (e.g. 4)
+    const int Pc = (int)sqrt((double)nd);        // grid side (e.g. 2)
+    const int Ml = M / Pc, Nl = N / Pc, Kl = K / Pc;
     const int cores_per = grid.domains[0].cores;
-    const int MC = gp.MC, KC = gp.KC, NC = gp.NC;
-    const size_t Bp_sz = (size_t)KC * NC;
-    const size_t Ap_sz = (size_t)MC * KC;
 
-    // Per-domain workspace: shared B̃ + per-thread Ã pool
-    std::vector<IN_T*>  Bp_bufs(nd);
-    std::vector<IN_T*>  Ap_pools(nd);
-    std::vector<DomainBarrier> barriers(nd);
+    std::vector<IN_T*>  A_blk(nd), B_blk(nd), A_tmp(nd), B_tmp(nd);
+    std::vector<OUT_T*> C_loc(nd);
     for (int d = 0; d < nd; ++d) {
-        Bp_bufs[d]  = typed_alloc<IN_T>(Bp_sz);
-        Ap_pools[d] = typed_alloc<IN_T>(Ap_sz * cores_per);
-        barriers[d].init(cores_per);
+        A_blk[d] = typed_alloc<IN_T>((size_t)Ml * Kl);
+        B_blk[d] = typed_alloc<IN_T>((size_t)Kl * Nl);
+        A_tmp[d] = typed_alloc<IN_T>((size_t)Ml * Kl);
+        B_tmp[d] = typed_alloc<IN_T>((size_t)Kl * Nl);
+        C_loc[d] = typed_alloc<OUT_T>((size_t)Ml * Nl);
     }
 
-    // ── One flat parallel region: all threads, all domains simultaneously ──
-    #pragma omp parallel num_threads(nd * cores_per) proc_bind(close)
-    {
-        const int gtid = omp_get_thread_num();
-        const int d    = gtid / cores_per;         // which NUMA domain
-        const int ltid = gtid % cores_per;         // local thread ID within domain
-        auto& dom = grid.domains[d];
-
-        // Pin this thread to its domain's CPUs for NUMA locality.
-        if (ltid < (int)dom.cpus.size())
-            pin_thread_to_cpus({dom.cpus[ltid]});
-
-        vec_init();  // Peak: no-op
-
-        // ── Phase 1: Scatter A rows / B cols to NUMA-local buffers ──────
-        // Each thread copies its share of the domain's data (first-touch).
-        {
-            int px = d / PY, py = d % PY;
-            // A rows: contiguous, partition rows across domain threads.
-            size_t a_elts = (size_t)Ml * K;
-            size_t a_lo = ltid * a_elts / cores_per;
-            size_t a_hi = (ltid + 1) * a_elts / cores_per;
-            memcpy(dom.A_local + a_lo, A + (size_t)px * Ml * K + a_lo,
-                   (a_hi - a_lo) * sizeof(IN_T));
-
-            // B cols: not contiguous in source, but contiguous in dest.
-            size_t b_elts = (size_t)K * Nl;
-            size_t b_lo = ltid * b_elts / cores_per;
-            size_t b_hi = (ltid + 1) * b_elts / cores_per;
-            // First-touch the dest pages, then copy row-by-row.
-            memset(dom.B_local + b_lo, 0, (b_hi - b_lo) * sizeof(IN_T));
-            // Full scatter (each thread does all K rows for its column range).
-            int col_lo = ltid * Nl / cores_per;
-            int col_hi = (ltid + 1) * Nl / cores_per;
-            int ncols = col_hi - col_lo;
-            if (ncols > 0) {
-                for (int k = 0; k < K; ++k)
-                    memcpy(dom.B_local + (size_t)k * Nl + col_lo,
-                           B + (size_t)k * N + py * Nl + col_lo,
-                           ncols * sizeof(IN_T));
-            }
-
-            // Zero local C
-            size_t c_elts = (size_t)Ml * Nl;
-            size_t c_lo = ltid * c_elts / cores_per;
-            size_t c_hi = (ltid + 1) * c_elts / cores_per;
-            memset(dom.C_local + c_lo, 0, (c_hi - c_lo) * sizeof(OUT_T));
-        }
-        barriers[d].wait();
-
-        // ── Phase 2: GOTO 5-loop inline, per domain ─────────────────────
-        // All cores_per threads in domain d collaborate on this domain's GEMM.
-        IN_T* Bp = Bp_bufs[d];
-        IN_T* Ap = Ap_pools[d] + (size_t)ltid * Ap_sz;
-
-        // JC loop
-        for (int jc = 0; jc < Nl; jc += NC) {
-            const int nc = std::min(NC, Nl - jc);
-
-            // PC loop
-            for (int pc = 0; pc < K; pc += KC) {
-                const int kc = std::min(KC, K - pc);
-                const int kc_tiles = kc / BK;
-                const int tn_ = nc / BN;
-                const int tk_ = kc / BK;
-
-                // Collaborative B̃ packing within domain.
-                pack_B_panel_par(dom.B_local, Bp, pc, jc, kc, nc, Nl,
-                                 ltid, cores_per);
-                barriers[d].wait();  // all domain threads must see packed B̃
-
-                // IC loop: partitioned across domain threads.
-                int ic_total = (Ml + MC - 1) / MC;
-                int ic_base = ic_total / cores_per, ic_extra = ic_total % cores_per;
-                int ic_start = ltid * ic_base + std::min(ltid, ic_extra);
-                int ic_count = ic_base + (ltid < ic_extra ? 1 : 0);
-
-                for (int ic_idx = ic_start; ic_idx < ic_start + ic_count; ++ic_idx) {
-                    int ic = ic_idx * MC;
-                    int mc = std::min(MC, Ml - ic);
-                    int tm_ = mc / BM;
-
-                    // Private Ã packing (NUMA-local, in this thread's L2).
-                    pack_A_block(dom.A_local, Ap, ic, pc, mc, kc, K);
-
-                    // JR loop (over B̃ micro-panels)
-                    for (int jr = 0; jr < tn_; ++jr) {
-                        const IN_T* bp_base = Bp + (size_t)jr * tk_ * B_TSZ;
-                        // IR loop (over Ã micro-panels)
-                        for (int ir = 0; ir < tm_; ++ir) {
-                            const IN_T* ap_base = Ap + (size_t)ir * tk_ * A_TSZ;
-                            OUT_T* C_ptr = dom.C_local
-                                         + (ic + ir * BM) * Nl + (jc + jr * BN);
-                            if (pc > 0)
-                                vec_microkernel_accum(ap_base, bp_base, C_ptr,
-                                                      kc_tiles, Nl, A_TSZ, B_TSZ);
-                            else
-                                vec_microkernel(ap_base, bp_base, C_ptr,
-                                                kc_tiles, Nl, A_TSZ, B_TSZ);
-                        }
-                    }
-                }
-                barriers[d].wait();  // sync before next PC step overwrites B̃
-            } // end PC
-        } // end JC
-    } // end flat parallel
-
-    // Gather C blocks back to global layout.
-    for (int px = 0; px < PX; ++px)
-        for (int py = 0; py < PY; ++py) {
-            int d = px * PY + py;
-            gather_C_block(C, grid.domains[d].C_local,
-                           px * Ml, py * Nl, Ml, Nl, N);
-        }
-
-    for (int d = 0; d < nd; ++d) {
-        typed_free(Bp_bufs[d], Bp_sz);
-        typed_free(Ap_pools[d], Ap_sz * cores_per);
-    }
-}
-
-static void numa_summa_gemm(const IN_T* A, const IN_T* B, OUT_T* C,
-                            int M, int N, int K, NumaGrid& grid,
-                            const GotoParams& gp, int KC_summa = 0) {
-    const int PX = grid.PX, PY = grid.PY;
-    const int Ml = M / PX, Nl = N / PY, nd = PX * PY;
-    const int cores_per = grid.domains[0].cores;
-    const int MC = gp.MC, KC = gp.KC, NC = gp.NC;
-
-    if (KC_summa <= 0) KC_summa = K;
-    KC_summa = ((KC_summa + BK - 1) / BK) * BK;
-    if (KC_summa > K) KC_summa = K;
-
-    // Per-domain: SUMMA panel buffers + GOTO workspace
-    const size_t Bp_sz = (size_t)KC * NC;
-    const size_t Ap_sz = (size_t)MC * KC;
-    size_t panel_A_sz = (size_t)Ml * KC_summa;
-    size_t panel_B_sz = (size_t)KC_summa * Nl;
-
-    std::vector<IN_T*>  panel_A(nd), panel_B(nd);
-    std::vector<IN_T*>  Bp_bufs(nd), Ap_pools(nd);
-    std::vector<DomainBarrier> barriers(nd);
-
-    for (int d = 0; d < nd; ++d) {
-        panel_A[d]  = typed_alloc<IN_T>(panel_A_sz);
-        panel_B[d]  = typed_alloc<IN_T>(panel_B_sz);
-        Bp_bufs[d]  = typed_alloc<IN_T>(Bp_sz);
-        Ap_pools[d] = typed_alloc<IN_T>(Ap_sz * cores_per);
-        barriers[d].init(cores_per);
-        memset(grid.domains[d].C_local, 0, grid.domains[d].C_bytes);
-    }
-    memset(C, 0, (size_t)M * N * sizeof(OUT_T));
-
-    // ── One flat parallel region for the entire SUMMA outer loop ─────────
     #pragma omp parallel num_threads(nd * cores_per) proc_bind(close)
     {
         const int gtid = omp_get_thread_num();
         const int d    = gtid / cores_per;
         const int ltid = gtid % cores_per;
-        const int px = d / PY, py = d % PY;
+        const int pi = d / Pc, pj = d % Pc;
         auto& dom = grid.domains[d];
 
-        if (ltid < (int)dom.cpus.size())
-            pin_thread_to_cpus({dom.cpus[ltid]});
-        vec_init();
+        // Pin thread to its domain's CPU.
+        if (ltid < (int)dom.cpus.size()) pin_to_cpu(dom.cpus[ltid]);
 
-        IN_T* Bp_local = Bp_bufs[d];
-        IN_T* Ap_local = Ap_pools[d] + (size_t)ltid * Ap_sz;
+        // ── First-touch: zero C_local, copy initial skewed A/B blocks ──
+        // CANNON initial skew: domain (pi,pj) gets:
+        //   A_block from column-block (pj+pi) % Pc
+        //   B_block from row-block    (pi+pj) % Pc
+        {
+            int a_col = (pj + pi) % Pc;
+            int b_row = (pi + pj) % Pc;
 
-        // ── SUMMA outer K-panel loop ────────────────────────────────
-        for (int kp = 0; kp < K; kp += KC_summa) {
-            int kc = std::min(KC_summa, K - kp);
-
-            // Phase 1: Copy panels to NUMA-local buffers (parallel within domain).
-            // A_panel: rows [px*Ml..(px+1)*Ml), cols [kp..kp+kc)
-            {
-                int row_lo = ltid * Ml / cores_per;
-                int row_hi = (ltid + 1) * Ml / cores_per;
-                for (int i = row_lo; i < row_hi; ++i)
-                    memcpy(panel_A[d] + (size_t)i * kc,
-                           A + (size_t)(px * Ml + i) * K + kp,
-                           kc * sizeof(IN_T));
+            // Parallel first-touch copy of A_block.
+            size_t a_elts = (size_t)Ml * Kl;
+            size_t a_lo = ltid * a_elts / cores_per;
+            size_t a_hi = (ltid+1) * a_elts / cores_per;
+            for (size_t idx = a_lo; idx < a_hi; ++idx) {
+                int r = (int)(idx / Kl), c = (int)(idx % Kl);
+                A_blk[d][idx] = A[(pi*Ml + r) * K + a_col*Kl + c];
             }
-            // B_panel: rows [kp..kp+kc), cols [py*Nl..(py+1)*Nl)
-            {
-                int k_lo = ltid * kc / cores_per;
-                int k_hi = (ltid + 1) * kc / cores_per;
-                for (int k = k_lo; k < k_hi; ++k)
-                    memcpy(panel_B[d] + (size_t)k * Nl,
-                           B + (size_t)(kp + k) * N + py * Nl,
-                           Nl * sizeof(IN_T));
+
+            // Parallel first-touch copy of B_block.
+            size_t b_elts = (size_t)Kl * Nl;
+            size_t b_lo = ltid * b_elts / cores_per;
+            size_t b_hi = (ltid+1) * b_elts / cores_per;
+            for (size_t idx = b_lo; idx < b_hi; ++idx) {
+                int r = (int)(idx / Nl), c = (int)(idx % Nl);
+                B_blk[d][idx] = B[(b_row*Kl + r) * N + pj*Nl + c];
             }
-            barriers[d].wait();
 
-            // Phase 2: Local GOTO on the panel (inline, all domain threads).
-            // C_local += panel_A[Ml × kc] · panel_B[kc × Nl]
-            bool accum = (kp > 0);
-            int local_KC = std::min(KC, kc);
-            local_KC = ((local_KC + BK - 1) / BK) * BK;
+            // Zero C_local.
+            size_t c_elts = (size_t)Ml * Nl;
+            size_t c_lo = ltid * c_elts / cores_per;
+            size_t c_hi = (ltid+1) * c_elts / cores_per;
+            memset(C_loc[d] + c_lo, 0, (c_hi - c_lo) * sizeof(OUT_T));
 
-            for (int jc = 0; jc < Nl; jc += NC) {
-                int nc = std::min(NC, Nl - jc);
-                for (int pc = 0; pc < kc; pc += local_KC) {
-                    int lkc = std::min(local_KC, kc - pc);
-                    int kc_tiles = lkc / BK;
-                    int tn_ = nc / BN, tk_ = lkc / BK;
+            // First-touch the double-buffers too (for shift step).
+            memset(A_tmp[d] + a_lo, 0, (a_hi - a_lo) * sizeof(IN_T));
+            memset(B_tmp[d] + b_lo, 0, (b_hi - b_lo) * sizeof(IN_T));
+        }
 
-                    // Collaborative B̃ packing within domain
-                    pack_B_panel_par(panel_B[d], Bp_local, pc, jc, lkc, nc, Nl,
-                                     ltid, cores_per);
-                    barriers[d].wait();
+        #pragma omp barrier  // all domains ready
 
-                    // IC loop: partitioned across domain threads
-                    int ic_total = (Ml + MC - 1) / MC;
-                    int ic_base = ic_total / cores_per, ic_extra = ic_total % cores_per;
-                    int ic_start = ltid * ic_base + std::min(ltid, ic_extra);
-                    int ic_count = ic_base + (ltid < ic_extra ? 1 : 0);
+        // ── P steps of local-GEMM + shift ──────────────────────────
+        for (int step = 0; step < Pc; ++step) {
+            // (a) Local GOTO GEMM: C_local += A_block × B_block
+            //     All cores_per threads in this domain collaborate via
+            //     IC-parallel partitioning (no packing needed).
+            {
+                int tn = Nl / BN;
+                int ic_total = Ml / BM;
+                int ic_base = ic_total / cores_per;
+                int ic_extra = ic_total % cores_per;
+                int ic_start = ltid * ic_base + std::min(ltid, ic_extra);
+                int ic_count = ic_base + (ltid < ic_extra ? 1 : 0);
 
-                    for (int ic_idx = ic_start; ic_idx < ic_start + ic_count; ++ic_idx) {
-                        int ic = ic_idx * MC;
-                        int mc = std::min(MC, Ml - ic);
-                        int tm_ = mc / BM;
+                for (int pc = 0; pc < Kl; pc += KC) {
+                    int kc = std::min(KC, Kl - pc);
+                    bool accum = (step > 0 || pc > 0);
 
-                        pack_A_block(panel_A[d], Ap_local, ic, pc, mc, lkc, kc);
-
-                        for (int jr = 0; jr < tn_; ++jr) {
-                            const IN_T* bp_base = Bp_local + (size_t)jr * tk_ * B_TSZ;
-                            for (int ir = 0; ir < tm_; ++ir) {
-                                const IN_T* ap_base = Ap_local + (size_t)ir * tk_ * A_TSZ;
-                                OUT_T* C_ptr = dom.C_local
-                                             + (ic + ir * BM) * Nl + (jc + jr * BN);
-                                if (accum || pc > 0)
-                                    vec_microkernel_accum(ap_base, bp_base, C_ptr,
-                                                          kc_tiles, Nl, A_TSZ, B_TSZ);
-                                else
-                                    vec_microkernel(ap_base, bp_base, C_ptr,
-                                                    kc_tiles, Nl, A_TSZ, B_TSZ);
-                            }
+                    for (int ic = ic_start; ic < ic_start + ic_count; ++ic) {
+                        int i0 = ic * BM;
+                        for (int jr = 0; jr < tn; ++jr) {
+                            int j0 = jr * BN;
+                            tile_gemm(A_blk[d], Kl,   // lda = Kl
+                                      B_blk[d], Nl,   // ldb = Nl
+                                      C_loc[d], Nl,   // ldc = Nl
+                                      i0, j0, pc, kc, accum);
                         }
                     }
-                    barriers[d].wait();
-                } // end PC (local)
-            } // end JC (local)
-        } // end SUMMA K-panel loop
+                }
+            }
+
+            #pragma omp barrier  // all domains finish local GEMM
+
+            // (b) Shift A left, B up (except after last step).
+            if (step < Pc - 1) {
+                // A: domain (pi, pj) sends to (pi, (pj-1+P)%P)
+                int dst_a = pi * Pc + (pj - 1 + Pc) % Pc;
+                {
+                    size_t a_elts = (size_t)Ml * Kl;
+                    size_t lo = ltid * a_elts / cores_per;
+                    size_t hi = (ltid+1) * a_elts / cores_per;
+                    // Copy into RECEIVER's tmp buffer → first-touch on receiver's node.
+                    memcpy(A_tmp[dst_a] + lo, A_blk[d] + lo, (hi-lo)*sizeof(IN_T));
+                }
+
+                // B: domain (pi, pj) sends to ((pi-1+P)%P, pj)
+                int dst_b = ((pi - 1 + Pc) % Pc) * Pc + pj;
+                {
+                    size_t b_elts = (size_t)Kl * Nl;
+                    size_t lo = ltid * b_elts / cores_per;
+                    size_t hi = (ltid+1) * b_elts / cores_per;
+                    memcpy(B_tmp[dst_b] + lo, B_blk[d] + lo, (hi-lo)*sizeof(IN_T));
+                }
+
+                #pragma omp barrier  // all shifts complete
+
+                // Swap: A_blk[d] ↔ A_tmp[d], B_blk[d] ↔ B_tmp[d]
+                // Only one thread per domain needs to do the pointer swap.
+                #pragma omp single
+                {
+                    std::swap(A_blk, A_tmp);
+                    std::swap(B_blk, B_tmp);
+                }
+                // implicit barrier after omp single
+            }
+        }
     } // end flat parallel
 
-    // Gather C
-    for (int px = 0; px < PX; ++px)
-        for (int py = 0; py < PY; ++py) {
-            int d = px * PY + py;
-            gather_C_block(C, grid.domains[d].C_local,
-                           px * Ml, py * Nl, Ml, Nl, N);
+    // ── Gather C blocks back to global layout ───────────────────────
+    for (int pi = 0; pi < Pc; ++pi)
+        for (int pj = 0; pj < Pc; ++pj) {
+            int d = pi * Pc + pj;
+            for (int i = 0; i < Ml; ++i)
+                memcpy(&C[(pi*Ml+i)*N + pj*Nl],
+                       &C_loc[d][i*Nl], Nl * sizeof(OUT_T));
         }
 
     for (int d = 0; d < nd; ++d) {
-        typed_free(panel_A[d], panel_A_sz);
-        typed_free(panel_B[d], panel_B_sz);
-        typed_free(Bp_bufs[d], Bp_sz);
-        typed_free(Ap_pools[d], Ap_sz * cores_per);
+        typed_free(A_blk[d], (size_t)Ml*Kl); typed_free(B_blk[d], (size_t)Kl*Nl);
+        typed_free(A_tmp[d], (size_t)Ml*Kl); typed_free(B_tmp[d], (size_t)Kl*Nl);
+        typed_free(C_loc[d], (size_t)Ml*Nl);
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §12  MKL BASELINE
+// §6b  GOTO INNER LOOP (no OMP parallel — called by threads in a region)
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// oneMKL sgemm after upcasting fp16 → fp32.  On Zen4 MKL will use its
-// AVX-512 codepath (not AMX, since there is no AMX on AMD).
-//
-// The fp32 upcast buffers are allocated once per problem size in main()
-// and passed in via global pointers.  This avoids 512 MB of mmap/munmap
-// per call (55 calls × 512 MB = catastrophic overhead).
+// Same loop structure as goto_gemm_nopack, but called by individual
+// threads inside an existing parallel region.  Takes (ltid, nth) instead
+// of creating its own #pragma omp parallel.
 
-static float *g_A32_buf = nullptr, *g_B32_buf = nullptr;
+static void goto_inner(
+    const IN_T* __restrict__ A, int lda,
+    const IN_T* __restrict__ B, int ldb,
+    OUT_T* __restrict__ C, int ldc,
+    int M, int N, int K,
+    int ltid, int nth, int KC)
+{
+    const int tn = N / BN;
+    const int ic_total = M / BM;
+    int ic_base = ic_total / nth, ic_extra = ic_total % nth;
+    int ic_start = ltid * ic_base + std::min(ltid, ic_extra);
+    int ic_count = ic_base + (ltid < ic_extra ? 1 : 0);
 
-static void mkl_sgemm_f32(const IN_T* A, const IN_T* B, OUT_T* C, int M, int N, int K) {
-    mkl_set_dynamic(0); mkl_set_num_threads(g_threads);
-    #pragma omp parallel for num_threads(g_threads) schedule(static)
-    for (size_t i = 0; i < (size_t)M*K; ++i) g_A32_buf[i] = (float)A[i];
-    #pragma omp parallel for num_threads(g_threads) schedule(static)
-    for (size_t i = 0; i < (size_t)K*N; ++i) g_B32_buf[i] = (float)B[i];
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                M, N, K, 1.0f, g_A32_buf, K, g_B32_buf, N, 0.0f, C, N);
+    for (int pc = 0; pc < K; pc += KC) {
+        int kc = std::min(KC, K - pc);
+        bool accum = (pc > 0);
+        for (int ic = ic_start; ic < ic_start + ic_count; ++ic) {
+            int i0 = ic * BM;
+            for (int jr = 0; jr < tn; ++jr)
+                tile_gemm(A, lda, B, ldb, C, ldc,
+                          i0, jr * BN, pc, kc, accum);
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §13-14  VERIFICATION + BENCHMARK
+// §6c  OUTER-PRODUCT SWEEP OVER P NUMA DOMAINS
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// DECISION: 1D distribution — works for ANY number of NUMA domains.
+//
+//   Distribute:
+//     A by rows:     domain d owns A[d·M/P : (d+1)·M/P, :]   → (M/P) × K
+//     B by columns:  domain d owns B[:, d·N/P : (d+1)·N/P]   → K × (N/P)
+//     C by rows:     domain d owns C[d·M/P : (d+1)·M/P, :]   → (M/P) × N
+//
+//   Outer product sweep (P steps):
+//     step s: each domain d computes
+//       C_d[:, src_cols] += A_d × B_src     where src = (d + s) % P
+//
+//   After P steps, every column block of C has been computed.
+//   Total FLOPs = P × P × 2·(M/P)·(N/P)·K = 2·M·N·K.  Correct.
+//
+// DECISION: Global barrier between steps.  Not strictly necessary (B is
+//   read-only after scatter), but keeps all domain threads streaming the
+//   same B_src → better L3 cache utilization within each CCD.
+//
+// DECISION: A_d points directly into global A (contiguous row strip →
+//   no copy needed, NUMA-local via first-touch init).  Only B is copied
+//   into per-domain NUMA-local buffers.  C_d is a per-domain buffer
+//   because the outer-product writes to non-contiguous column slices.
+//
+
+static void outerproduct_gemm(const IN_T* A, const IN_T* B, OUT_T* C,
+                               int M, int N, int K,
+                               NumaGrid& grid, int KC) {
+    const int P = grid.P;
+    const int Ml = M / P;          // rows per domain
+    const int Nl = N / P;          // columns per domain
+    const int cores_per = grid.domains[0].cores;
+
+    // Per-domain buffers.
+    //   B_loc[d]: K × Nl, NUMA-local column strip.
+    //   C_loc[d]: Ml × N, full row strip (writes to different col slices per step).
+    // A is NOT copied — domain d reads A + d*Ml*K directly (contiguous rows,
+    // already NUMA-local from the first-touch init in main).
+    std::vector<IN_T*>  B_loc(P);
+    std::vector<OUT_T*> C_loc(P);
+    for (int d = 0; d < P; ++d) {
+        B_loc[d] = typed_alloc<IN_T>((size_t)K * Nl);
+        C_loc[d] = typed_alloc<OUT_T>((size_t)Ml * N);
+    }
+
+    #pragma omp parallel num_threads(P * cores_per) proc_bind(close)
+    {
+        const int gtid = omp_get_thread_num();
+        const int d    = gtid / cores_per;
+        const int ltid = gtid % cores_per;
+        auto& dom = grid.domains[d];
+
+        if (ltid < (int)dom.cpus.size()) pin_to_cpu(dom.cpus[ltid]);
+
+        // ── First-touch scatter ─────────────────────────────────────
+        // B columns: non-contiguous in source (stride N), contiguous in dest (stride Nl).
+        {
+            int col_lo = ltid * Nl / cores_per;
+            int col_hi = (ltid + 1) * Nl / cores_per;
+            int ncols = col_hi - col_lo;
+            if (ncols > 0)
+                for (int k = 0; k < K; ++k)
+                    memcpy(&B_loc[d][(size_t)k * Nl + col_lo],
+                           &B[(size_t)k * N + d * Nl + col_lo],
+                           ncols * sizeof(IN_T));
+        }
+
+        // C: zero entire Ml × N buffer.
+        {
+            size_t elts = (size_t)Ml * N;
+            size_t lo = ltid * elts / cores_per;
+            size_t hi = (ltid + 1) * elts / cores_per;
+            memset(C_loc[d] + lo, 0, (hi - lo) * sizeof(OUT_T));
+        }
+
+        #pragma omp barrier  // scatter complete
+
+        // ── P-step outer product sweep ──────────────────────────────
+        for (int step = 0; step < P; ++step) {
+            int src = (d + step) % P;
+
+            // Sub-GEMM: C_loc[d][:, src*Nl..(src+1)*Nl] += A_d × B_loc[src]
+            //
+            // A_d:       read from global A, rows d*Ml..(d+1)*Ml.
+            //            lda = K (global row stride).  NUMA-local (first-touch).
+            // B_loc[src]: K × Nl, stride Nl.  At step 0, src=d → local.
+            //            At other steps, src ≠ d → remote NUMA read.
+            //            The hardware prefetcher hides the latency because
+            //            GEMM is compute-bound (AI ≈ 1365 FLOP/byte).
+            // C_loc[d]:  Ml × N, stride N.  Column offset = src * Nl.
+            //            Always local.
+            goto_inner(A + (size_t)d * Ml * K, K,      // A_d, lda=K
+                       B_loc[src], Nl,                  // B_src, ldb=Nl
+                       C_loc[d] + src * Nl, N,          // C_d + col offset, ldc=N
+                       Ml, Nl, K,
+                       ltid, cores_per, KC);
+
+            #pragma omp barrier  // all domains finish step before next
+        }
+    } // end parallel
+
+    // ── Gather C ────────────────────────────────────────────────────
+    for (int d = 0; d < P; ++d)
+        for (int i = 0; i < Ml; ++i)
+            memcpy(&C[(d * Ml + i) * N], &C_loc[d][i * N], N * sizeof(OUT_T));
+
+    for (int d = 0; d < P; ++d) {
+        typed_free(B_loc[d], (size_t)K * Nl);
+        typed_free(C_loc[d], (size_t)Ml * N);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §7  STANDALONE GOTO (no NUMA distribution, for comparison)
+// ═══════════════════════════════════════════════════════════════════════════
+
+static void goto_gemm_flat(const IN_T* A, const IN_T* B, OUT_T* C,
+                           int M, int N, int K, int nthreads, int KC) {
+    // Zero C with NUMA first-touch.
+    #pragma omp parallel num_threads(nthreads) proc_bind(close)
+    {
+        int t = omp_get_thread_num(), n = omp_get_num_threads();
+        size_t lo = (size_t)t * M * N / n, hi = (size_t)(t+1) * M * N / n;
+        memset(C + lo, 0, (hi - lo) * sizeof(OUT_T));
+    }
+    goto_gemm_nopack(A, K, B, N, C, N, M, N, K, nthreads, KC);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §8  MKL BASELINE
+// ═══════════════════════════════════════════════════════════════════════════
+
+static float *g_A32 = nullptr, *g_B32 = nullptr;
+
+static void mkl_sgemm(const IN_T* A, const IN_T* B, OUT_T* C,
+                      int M, int N, int K) {
+    mkl_set_dynamic(0); mkl_set_num_threads(g_threads);
+    #pragma omp parallel for num_threads(g_threads) schedule(static)
+    for (size_t i = 0; i < (size_t)M*K; ++i) g_A32[i] = (float)A[i];
+    #pragma omp parallel for num_threads(g_threads) schedule(static)
+    for (size_t i = 0; i < (size_t)K*N; ++i) g_B32[i] = (float)B[i];
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                M, N, K, 1.0f, g_A32, K, g_B32, N, 0.0f, C, N);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §9  VERIFICATION + BENCHMARK
 // ═══════════════════════════════════════════════════════════════════════════
 
 static bool verify(const OUT_T* C, const OUT_T* ref, int M, int N,
-                   const char* label, float tol = 0.02f) {
-    int bad = 0; double max_abs = 0, max_rel = 0, sum_abs = 0;
-    int first_bad[3] = {-1, -1, -1}; size_t total = (size_t)M * N;
+                   const char* label) {
+    int bad = 0; double max_abs = 0, sum_abs = 0;
+    size_t total = (size_t)M * N;
     for (size_t i = 0; i < total; ++i) {
         double d = fabs((double)C[i] - (double)ref[i]);
         double den = fabs((double)ref[i]);
         double rel = (den > 1e-6) ? d / den : d;
-        sum_abs += d; if (d > max_abs) max_abs = d; if (rel > max_rel) max_rel = rel;
-        if (rel > tol && d > 0.05f) { if (bad < 3) first_bad[bad] = (int)i; ++bad; }
+        sum_abs += d; if (d > max_abs) max_abs = d;
+        if (rel > 0.05 && d > 0.1f) ++bad;
     }
-    if (bad == 0)
-        printf("    [PASS] %-24s max_abs=%.6f max_rel=%.4f%% mean_abs=%.6f\n",
-               label, max_abs, max_rel*100, sum_abs/total);
-    else {
-        printf("    [FAIL] %-24s %d mismatches max_abs=%.6f max_rel=%.4f%%\n",
-               label, bad, max_abs, max_rel*100);
-        for (int k = 0; k < 3 && first_bad[k] >= 0; ++k) {
-            int idx = first_bad[k];
-            printf("           idx=%d (%d,%d) got=%.6f ref=%.6f\n",
-                   idx, idx/N, idx%N, C[idx], ref[idx]);
-        }
-    }
+    printf("    [%s] %-20s max_abs=%.6f mean=%.6f\n",
+           bad ? "FAIL" : "PASS", label, max_abs, sum_abs / total);
+    fflush(stdout);
     return bad == 0;
 }
 
@@ -949,192 +687,168 @@ using KernFn = std::function<void(const IN_T*, const IN_T*, OUT_T*, int, int, in
 
 static void bench_one(FILE* f, const char* name, KernFn fn,
                       const IN_T* A, const IN_T* B, OUT_T* C,
-                      int M, int N, int K, int nthreads) {
+                      int M, int N, int K) {
     double flops = 2.0 * (double)M * N * K;
-
-    // Warmup (with progress so the user knows it's alive)
     for (int w = 0; w < g_warmup; ++w) {
-        double t0 = now_ns();
-        fn(A, B, C, M, N, K);
-        double t1 = now_ns();
-        printf("    %-24s warmup %d/%d  %.2f s  %.2f GF/s\n",
-               name, w + 1, g_warmup, (t1 - t0) * 1e-9, flops / (t1 - t0));
+        double t0 = now_ns(); fn(A,B,C,M,N,K); double t1 = now_ns();
+        printf("    %-20s warmup %d/%d  %.2fs  %.0f GF/s\n",
+               name, w+1, g_warmup, (t1-t0)*1e-9, flops/(t1-t0));
         fflush(stdout);
     }
-
-    // Timed iterations
-    std::vector<double> times(g_iters); double total = 0;
+    std::vector<double> times(g_iters);
     for (int i = 0; i < g_iters; ++i) {
-        double t0 = now_ns(); fn(A, B, C, M, N, K); double t1 = now_ns();
-        times[i] = t1 - t0; total += times[i];
-        // Write to CSV immediately so data appears even if we crash.
+        double t0 = now_ns(); fn(A,B,C,M,N,K); double t1 = now_ns();
+        times[i] = t1 - t0;
         fprintf(f, "%s,%d,%d,%d,%d,%d,%.2f,%.6f\n",
-                name, M, N, K, nthreads, i, times[i], flops / times[i]);
+                name, M, N, K, g_threads, i, times[i], flops/times[i]);
         fflush(f);
     }
-
-    double avg = total / g_iters;
     std::sort(times.begin(), times.end());
-    double med = (g_iters % 2) ? times[g_iters/2]
-                                : (times[g_iters/2-1] + times[g_iters/2]) / 2.0;
-    printf("    %-28s t=%2d avg=%.2f s  med=%.2f s  %.2f GF/s (peak %.2f)\n",
-           name, nthreads, avg * 1e-9, med * 1e-9, flops / avg, flops / times[0]);
+    double med = times[g_iters/2];
+    printf("    %-20s  med=%.2fs  %.0f GF/s (peak %.0f)\n",
+           name, med*1e-9, flops/med, flops/times[0]);
     fflush(stdout);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §15-16  ARG PARSING + MAIN
+// §10  MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 
 struct MNK { int M, N, K; };
 
-static void usage(const char* p) {
-    printf("Usage: %s M N K [...] [-w W] [-i I] [-t T] [-p PXxPY] [-mc MC] [-kc KC] [-nc NC] [-o F]\n", p);
-}
-
 static std::vector<MNK> parse_args(int argc, char** argv) {
     std::vector<MNK> sizes; std::vector<int> nums;
     for (int i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "-w") && i+1<argc) g_warmup = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-i") && i+1<argc) g_iters = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-t") && i+1<argc) g_threads = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-p") && i+1<argc) { ++i; sscanf(argv[i], "%dx%d", &g_PX, &g_PY); }
-        else if (!strcmp(argv[i], "-mc") && i+1<argc) g_MC = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-kc") && i+1<argc) g_KC = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-nc") && i+1<argc) g_NC = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-o") && i+1<argc) g_outfile = argv[++i];
-        else if (!strcmp(argv[i], "-h")) { usage(argv[0]); exit(0); }
+        if (!strcmp(argv[i],"-w") && i+1<argc) g_warmup = atoi(argv[++i]);
+        else if (!strcmp(argv[i],"-i") && i+1<argc) g_iters = atoi(argv[++i]);
+        else if (!strcmp(argv[i],"-t") && i+1<argc) g_threads = atoi(argv[++i]);
+        else if (!strcmp(argv[i],"-mc") && i+1<argc) g_MC = atoi(argv[++i]);
+        else if (!strcmp(argv[i],"-kc") && i+1<argc) g_KC = atoi(argv[++i]);
+        else if (!strcmp(argv[i],"-o") && i+1<argc) g_outfile = argv[++i];
         else nums.push_back(atoi(argv[i]));
     }
-    if (nums.size() % 3 || nums.empty()) { fprintf(stderr, "Need M N K triples\n"); exit(1); }
-    for (size_t i = 0; i < nums.size(); i += 3) sizes.push_back({nums[i], nums[i+1], nums[i+2]});
+    for (size_t i = 0; i+2 < nums.size(); i += 3)
+        sizes.push_back({nums[i], nums[i+1], nums[i+2]});
     return sizes;
 }
 
 int main(int argc, char** argv) {
-    // stderr is unbuffered by default — always visible even if crash follows.
-    fprintf(stderr, "[DIAG] main() entered, argc=%d\n", argc);
-
-    // Force line-buffered stdout so output appears immediately in SLURM logs.
     setvbuf(stdout, nullptr, _IOLBF, 0);
-    if (argc < 4) { usage(argv[0]); return 1; }
+    if (argc < 4) {
+        printf("Usage: %s M N K [-t T] [-mc MC] [-kc KC] [-w W] [-i I] [-o F]\n", argv[0]);
+        return 1;
+    }
     auto sizes = parse_args(argc, argv);
-    GotoParams gp{g_MC, g_KC, g_NC};
-    int nd = g_PX * g_PY;
 
-    fprintf(stderr, "[DIAG] parsed: %zu sizes, t=%d, grid=%dx%d, MC=%d KC=%d NC=%d\n",
-            sizes.size(), g_threads, g_PX, g_PY, gp.MC, gp.KC, gp.NC);
+    // DECISION: P = number of NUMA nodes.  Works for any P (1, 2, 3, 4, 6, ...).
+    // CANNON additionally requires P to be a perfect square.
+    int nn = get_num_numa_nodes();
+    int P = nn;
+    bool can_cannon = false;
+    {   int sq = (int)sqrt((double)P);
+        can_cannon = (sq * sq == P && P > 1); }
 
     printf("════════════════════════════════════════════════════════\n");
-    printf("  GOTO + NUMA GEMM Benchmark  (Auto-Vectorized Version)\n");
-    printf("════════════════════════════════════════════════════════\n");
-    printf("  Threads=%d  Grid=%dx%d  MC=%d KC=%d NC=%d\n",
-           g_threads, g_PX, g_PY, gp.MC, gp.KC, gp.NC);
+    printf("  GOTO GEMM — no-pack, MR=%d, P=%d NUMA domains\n", MR, P);
+    printf("  Threads=%d  Cores/dom=%d  KC=%d\n",
+           g_threads, g_threads / P, g_KC);
+    printf("  Outer loops: flat, outerproduct_%d%s\n",
+           P, can_cannon ? ", cannon" : "");
     printf("════════════════════════════════════════════════════════\n\n");
 
     FILE* fout = fopen(g_outfile, "w");
     if (!fout) { perror("fopen"); return 1; }
     fprintf(fout, "kernel,M,N,K,threads,run,time_ns,gflops\n");
-    fflush(fout);
 
-    fprintf(stderr, "[DIAG] grid.init(%d, %d, %d)\n", g_PX, g_PY, g_threads);
     NumaGrid grid;
-    grid.init(g_PX, g_PY, g_threads);
-    fprintf(stderr, "[DIAG] grid.init done, %d domains\n", nd);
+    grid.init(P, g_threads);
+
+    // For CANNON we need a separate square grid.
+    NumaGrid cannon_grid;
+    int Pc = (int)sqrt((double)P);
+    if (can_cannon) cannon_grid.init(Pc * Pc, g_threads);
 
     for (auto& sz : sizes) {
         int M = sz.M, N = sz.N, K = sz.K;
-        fprintf(stderr, "[DIAG] === M=%d N=%d K=%d ===\n", M, N, K);
-
-        if (M % (g_PX * BM) || N % (g_PY * BN) || K % BK) {
-            fprintf(stderr, "[DIAG] SKIP divisibility\n");
-            continue;
+        printf("═══ %d × %d × %d ═══\n", M, N, K);
+        if (M % (P*BM) || N % (P*BN) || K % BK) {
+            printf("  [SKIP] divisibility\n"); continue;
         }
 
         size_t szA = (size_t)M*K, szB = (size_t)K*N, szC = (size_t)M*N;
-        fprintf(stderr, "[DIAG] alloc A: %zu elts = %zu MB\n", szA, szA*sizeof(IN_T)>>20);
         IN_T*  A    = typed_alloc<IN_T>(szA);
-        fprintf(stderr, "[DIAG] alloc B: %zu MB\n", szB*sizeof(IN_T)>>20);
         IN_T*  B    = typed_alloc<IN_T>(szB);
-        fprintf(stderr, "[DIAG] alloc Cref: %zu MB\n", szC*sizeof(OUT_T)>>20);
         OUT_T* Cref = typed_alloc<OUT_T>(szC);
-        fprintf(stderr, "[DIAG] alloc Cchk: %zu MB\n", szC*sizeof(OUT_T)>>20);
         OUT_T* Cchk = typed_alloc<OUT_T>(szC);
-        fprintf(stderr, "[DIAG] alloc g_A32: %zu MB\n", szA*sizeof(float)>>20);
-        g_A32_buf = typed_alloc<float>(szA);
-        fprintf(stderr, "[DIAG] alloc g_B32: %zu MB\n", szB*sizeof(float)>>20);
-        g_B32_buf = typed_alloc<float>(szB);
+        g_A32       = typed_alloc<float>(szA);
+        g_B32       = typed_alloc<float>(szB);
 
-        fprintf(stderr, "[DIAG] entering OMP parallel (random init, %d threads)...\n", g_threads);
+        // NUMA first-touch init: distribute pages across all nodes.
         #pragma omp parallel num_threads(g_threads) proc_bind(close)
         {
-            int t = omp_get_thread_num(), n_ = omp_get_num_threads();
-            unsigned seed = 42 + t; size_t lo, hi;
-            lo = t*szA/n_; hi = (t+1)*szA/n_;
-            for (size_t i = lo; i < hi; ++i) A[i] = (IN_T)((float)rand_r(&seed)/RAND_MAX - 0.5f);
-            lo = t*szB/n_; hi = (t+1)*szB/n_;
-            for (size_t i = lo; i < hi; ++i) B[i] = (IN_T)((float)rand_r(&seed)/RAND_MAX - 0.5f);
+            int t = omp_get_thread_num(), n = omp_get_num_threads();
+            unsigned seed = 42 + t;
+            size_t lo, hi;
+            lo = t*szA/n; hi = (t+1)*szA/n;
+            for (size_t i = lo; i < hi; ++i)
+                A[i] = (IN_T)((float)rand_r(&seed)/RAND_MAX - 0.5f);
+            lo = t*szB/n; hi = (t+1)*szB/n;
+            for (size_t i = lo; i < hi; ++i)
+                B[i] = (IN_T)((float)rand_r(&seed)/RAND_MAX - 0.5f);
+            lo = t*szA/n; hi = (t+1)*szA/n;
+            memset(g_A32+lo, 0, (hi-lo)*sizeof(float));
+            lo = t*szB/n; hi = (t+1)*szB/n;
+            memset(g_B32+lo, 0, (hi-lo)*sizeof(float));
+            lo = t*szC/n; hi = (t+1)*szC/n;
+            memset(Cref+lo, 0, (hi-lo)*sizeof(OUT_T));
+            memset(Cchk+lo, 0, (hi-lo)*sizeof(OUT_T));
         }
-        fprintf(stderr, "[DIAG] random init done\n");
 
-        fprintf(stderr, "[DIAG] grid.alloc_buffers\n");
-        grid.alloc_buffers(M, N, K);
-        fprintf(stderr, "[DIAG] grid.alloc_buffers done\n");
+        // Reference
+        printf("  MKL reference...\n"); fflush(stdout);
+        mkl_sgemm(A, B, Cref, M, N, K);
 
-        // ── Reference: MKL sgemm (fast, vendor-optimised) ───────────
-        // The scalar OpenMP ref is unusable at 8192³ (takes minutes).
-        // We use MKL as the reference and verify all other kernels against it.
-        printf("  Reference (MKL sgemm)...\n");
-        fflush(stdout);
-        mkl_sgemm_f32(A, B, Cref, M, N, K);
+        printf("  Kernels:\n"); fflush(stdout);
 
-        printf("  Kernels:\n");
-        fflush(stdout);
+        // MKL benchmark
+        bench_one(fout, "mkl_sgemm", mkl_sgemm, A, B, Cchk, M, N, K);
+        verify(Cchk, Cref, M, N, "mkl_sgemm");
 
-        // 0. MKL baseline (same as reference — benchmark timing only)
-        bench_one(fout, "mkl_sgemm_f32", mkl_sgemm_f32, A, B, Cchk, M, N, K, g_threads);
-        verify(Cchk, Cref, M, N, "mkl_sgemm_f32");
-        fflush(stdout);
-
-        // 2. GOTO GEMM (vector microkernel)
-        auto goto_fn = [&](const IN_T* a, const IN_T* b, OUT_T* c, int m, int n, int k) {
-            goto_gemm(a, b, c, m, n, k, g_threads, gp);
+        // Flat GOTO (no NUMA distribution, for comparison)
+        auto flat_fn = [&](const IN_T* a, const IN_T* b, OUT_T* c, int m, int n, int k) {
+            goto_gemm_flat(a, b, c, m, n, k, g_threads, g_KC);
         };
-        bench_one(fout, "goto_vec", goto_fn, A, B, Cchk, M, N, K, g_threads);
-        verify(Cchk, Cref, M, N, "goto_vec");
-        fflush(stdout);
+        bench_one(fout, "goto_flat", flat_fn, A, B, Cchk, M, N, K);
+        verify(Cchk, Cref, M, N, "goto_flat");
 
-        // 3. NUMA-Static
+        // Outer-product sweep over P NUMA domains (works for ANY P)
         {
-            char lbl[64]; snprintf(lbl, sizeof(lbl), "numa_static_%dx%d", g_PX, g_PY);
-            auto fn = [&](const IN_T* a, const IN_T* b, OUT_T* c, int m, int n, int k) {
-                numa_static_gemm(a, b, c, m, n, k, grid, gp);
+            char lbl[64]; snprintf(lbl, sizeof(lbl), "outerproduct_%d", P);
+            auto op_fn = [&](const IN_T* a, const IN_T* b, OUT_T* c, int m, int n, int k) {
+                outerproduct_gemm(a, b, c, m, n, k, grid, g_KC);
             };
-            bench_one(fout, lbl, fn, A, B, Cchk, M, N, K, g_threads);
+            bench_one(fout, lbl, op_fn, A, B, Cchk, M, N, K);
             verify(Cchk, Cref, M, N, lbl);
-        fflush(stdout);
         }
 
-        // 4. NUMA-SUMMA
-        {
-            char lbl[64]; snprintf(lbl, sizeof(lbl), "numa_summa_%dx%d_kc%d", g_PX, g_PY, gp.KC);
-            auto fn = [&](const IN_T* a, const IN_T* b, OUT_T* c, int m, int n, int k) {
-                numa_summa_gemm(a, b, c, m, n, k, grid, gp, gp.KC);
+        // CANNON (only if P is a perfect square and K divisible by sqrt(P))
+        if (can_cannon && K % (Pc * BK) == 0 && M % (Pc * BM) == 0 && N % (Pc * BN) == 0) {
+            char lbl[64]; snprintf(lbl, sizeof(lbl), "cannon_%dx%d", Pc, Pc);
+            auto cn_fn = [&](const IN_T* a, const IN_T* b, OUT_T* c, int m, int n, int k) {
+                cannon_gemm(a, b, c, m, n, k, cannon_grid, g_KC);
             };
-            bench_one(fout, lbl, fn, A, B, Cchk, M, N, K, g_threads);
+            bench_one(fout, lbl, cn_fn, A, B, Cchk, M, N, K);
             verify(Cchk, Cref, M, N, lbl);
-        fflush(stdout);
         }
 
-        grid.free_buffers();
         typed_free(A, szA); typed_free(B, szB);
         typed_free(Cref, szC); typed_free(Cchk, szC);
-        typed_free(g_A32_buf, szA); typed_free(g_B32_buf, szB);
-        g_A32_buf = nullptr; g_B32_buf = nullptr;
+        typed_free(g_A32, szA); typed_free(g_B32, szB);
+        g_A32 = g_B32 = nullptr;
         printf("\n"); fflush(stdout);
     }
 
     fclose(fout);
-    printf("All runs written to %s\n", g_outfile);
+    printf("Done. Results: %s\n", g_outfile);
     return 0;
 }
