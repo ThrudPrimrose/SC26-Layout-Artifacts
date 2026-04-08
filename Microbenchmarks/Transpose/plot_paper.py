@@ -16,17 +16,18 @@ Usage:
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator, AutoMinorLocator
-import numpy as np, argparse, csv as csvmod
+from matplotlib.ticker import MaxNLocator, AutoMinorLocator, FormatStrFormatter
+import numpy as np, argparse, csv as csvmod, warnings
 from collections import defaultdict
+from scipy.stats import bootstrap
 
 # ══════════════════════════════════════════════════════════════════════
 #  Constants
 # ══════════════════════════════════════════════════════════════════════
 
 STREAM_PEAK = {
-    "MI300A Zen CPU":  1160.35*1e-3,   "GH200 Grace CPU":  1806.62*1e-3,
-    "MI300A GPU":  4294*1e-3,      "GH200 Hopper GPU":  3780*1e-3,
+    "MI300A Zen CPU":  1161*1e-3,   "GH200 Grace CPU":  1806.62*1e-3,
+    "MI300A GPU":      4294*1e-3,   "GH200 Hopper GPU": 3780*1e-3,
 }
 VCOL = {
     "lib_rm":  "#e67e22",   # orange
@@ -58,6 +59,34 @@ def remove_outliers(v, k=3.0):
     q1, q3 = np.percentile(v, [25, 75]); iqr = q3 - q1
     c = v[(v >= q1 - k * iqr) & (v <= q3 + k * iqr)]
     return c if len(c) > 2 else v
+
+def bootstrap_ci(arr, confidence_level=0.95, n_resamples=10000):
+    """Bootstrap CI of the median using scipy BCa method, fallback to percentile."""
+    if len(arr) < 3:
+        med = np.median(arr)
+        return med, med
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            res = bootstrap((arr,), np.median,
+                            confidence_level=confidence_level,
+                            n_resamples=n_resamples, method='BCa')
+            lo, hi = res.confidence_interval.low, res.confidence_interval.high
+            if np.isnan(lo) or np.isnan(hi):
+                raise ValueError("BCa returned nan")
+            return lo, hi
+        except Exception:
+            try:
+                res = bootstrap((arr,), np.median,
+                                confidence_level=confidence_level,
+                                n_resamples=n_resamples, method='percentile')
+                lo, hi = res.confidence_interval.low, res.confidence_interval.high
+                if np.isnan(lo) or np.isnan(hi):
+                    raise ValueError("percentile returned nan")
+                return lo, hi
+            except Exception:
+                med = np.median(arr)
+                return med, med
 
 def best_of(groups):
     """Return (best_key, GBS_array) of the config with highest median."""
@@ -241,37 +270,61 @@ def draw_panel(ax, cats, title, peak, add_peak, xlabels_map):
             body.set_facecolor(colors[i])
             body.set_edgecolor("black")
             body.set_alpha(0.75)
+            body.set_zorder(2)
         parts["cmeans"].set_color("black")
+        parts["cmeans"].set_zorder(3)
         parts["cmedians"].set_color("white")
+        parts["cmedians"].set_zorder(3)
+
+        # Bootstrap 95% CI of median
+        ci_color = "#FFB6C1"  # light pink
+        for i, arr in enumerate(data):
+            ci_lo, ci_hi = bootstrap_ci(arr)
+            # Ensure minimum visual height so CI is always visible
+            ci_mid = (ci_lo + ci_hi) / 2
+            min_height = 0.01 * top if top > 0 else 0.001
+            if (ci_hi - ci_lo) < min_height:
+                ci_lo = ci_mid - min_height / 2
+                ci_hi = ci_mid + min_height / 2
+            ax.vlines(positions[i], ci_lo, ci_hi,
+                      color="black", lw=3.5, zorder=10)
+            ax.vlines(positions[i], ci_lo, ci_hi,
+                      color=ci_color, lw=1.8, zorder=11)
+            cap_w = 0.08
+            for y in (ci_lo, ci_hi):
+                ax.hlines(y, positions[i] - cap_w, positions[i] + cap_w,
+                          color="black", lw=3, zorder=10)
+                ax.hlines(y, positions[i] - cap_w, positions[i] + cap_w,
+                          color=ci_color, lw=1.5, zorder=11)
 
     # separator line
     if sep_x is not None:
         ax.axvline(x=sep_x, color="gray", ls="--", lw=1.5, alpha=0.6)
         ax.text(sep_x - 0.1, top * 0.08, "Row-Major",
-                ha="right", va="top", fontsize=8, color="gray", fontweight="bold")
+                ha="right", va="top", fontsize=9, color="gray", fontweight="bold")
         ax.text(sep_x + 0.1, top * 0.08, "Blocked",
-                ha="left", va="top", fontsize=8, color="gray", fontweight="bold")
+                ha="left", va="top", fontsize=9, color="gray", fontweight="bold")
 
     ax.set_xticks(positions)
-    ax.set_xticklabels(xlabels, fontsize=7.5)
+    ax.set_xticklabels(xlabels, fontsize=9)
     ax.set_yticks(ticks)
     if peak > 3.76 and peak < 3.9:
         top *= 1.033
     ax.set_ylim(0, top)
-    from matplotlib.ticker import FormatStrFormatter
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
     ax.yaxis.set_minor_locator(AutoMinorLocator(4))
     ax.tick_params(axis='y', which='minor', length=3)
     ax.set_title(title, fontsize=11)
-    ax.grid(axis="y", alpha=0.25)
-    ax.grid(axis="y", which='minor', alpha=0.12, ls=':')
+    ax.grid(axis="y", alpha=0.25, zorder=0)
+    ax.grid(axis="y", which='minor', alpha=0.12, ls=':', zorder=0)
+    ax.set_axisbelow(True)
 
     # STREAM peak line + label
     if peak:
-        ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5)
+        ax.axhline(y=peak, color="dimgray", ls="--", lw=1, alpha=0.5, zorder=1)
         ax.text(0.03, 0.97, f"STREAM {peak:.2f} TB/s",
                 transform=ax.transAxes, ha="left", va="top",
-                fontsize=8, color="dimgray")
+                fontsize=9, color="dimgray", zorder=1)
         if peak > ymax and top < peak * 1.1:
             ax.set_ylim(0, peak * 1.1)
 
@@ -496,12 +549,17 @@ def main():
     # ── Plot 2×2 ──
     rows_order = ["amd", "nv"]
     cols_order = ["cpu", "gpu"]
+    nrows = len(rows_order)
+    ncols = len(cols_order)
 
-    fig, axes = plt.subplots(2, 2, figsize=(3.6 * 2, 2.8 * 2), squeeze=False)
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(3.6 * ncols, 2.8 * nrows + 0.4),
+                             squeeze=False)
 
     for ri, rk in enumerate(rows_order):
         for ci, ck in enumerate(cols_order):
             ax = axes[ri, ci]
+            ax.set_box_aspect(2.8 / 4.8)
             if (rk, ck) not in grid:
                 ax.set_visible(False); continue
             title, cats, keys, peak, xmap, fmt, mdict = grid[(rk, ck)]
