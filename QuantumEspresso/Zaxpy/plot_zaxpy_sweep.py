@@ -47,7 +47,7 @@ BYTES_PER_ELEM = {
 DIST_ORDER = ["uniform", "qe"]
 DIST_LABEL = {
     "uniform": "Uniform",
-    "qe":      "Exact",
+    "qe":      "BaTiO_3",
 }
 
 STREAM_PEAK = {
@@ -326,7 +326,7 @@ def main():
         )
 
         fig.suptitle(
-            "Indirect Scatter-Accumulate",
+            "Gather-Accumulate-Scatter",
             fontsize=15, y=0.9,
         )
         fig.text(0.5, 0.865,
@@ -335,7 +335,7 @@ def main():
         fig.text(0.5, 0.83,
                  r"Original: $y[\sigma(i)]\ {+\!=}\ x[i]$"
                  r";$\quad$"
-                 r"Write-coalesced: $y[\sigma(\pi(i))]\ {+\!=}\ x[\pi(i)]$,"
+                 r"Shuffled: $y[\sigma(\pi(i))]\ {+\!=}\ x[\pi(i)]$,"
                  r"$\;\pi = \mathrm{argsort}(\sigma)$",
                  ha='center', va='top', fontsize=12.2, color='#444444')
 
@@ -355,7 +355,7 @@ def main():
                    bbox_to_anchor=(0.5, 0.02), ncol=2,
                    framealpha=0.9, columnspacing=1.0, fontsize=10)
 
-        fig.tight_layout(rect=[0, 0.06, 1, 0.87])
+        fig.tight_layout(rect=[0, 0.06, 1, 0.87], h_pad=2.0)
         sfx = "_w_stream_peak" if args.add_peak else ""
         stem = f"zaxpy_violins_{scale_name}{sfx}"
         fig.savefig(f"{stem}.png", dpi=200, bbox_inches='tight')
